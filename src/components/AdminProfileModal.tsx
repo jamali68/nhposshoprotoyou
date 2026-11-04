@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Store,
   User as UserIcon,
@@ -33,13 +33,17 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
 
   const [shopName, setShopName] = useState<string>('');
   const [ownerName, setOwnerName] = useState<string>('');
-  const [password, setPassword] = useState<string>('123456');
+  const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [phone, setPhone] = useState<string>('');
   const [address, setAddress] = useState<string>('');
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [successMessage, setSuccessMessage] = useState<string>('');
   const [error, setError] = useState<string>('');
+
+  const wasOpenRef = useRef<boolean>(false);
+  const hasEditedPasswordRef = useRef<boolean>(false);
+  const initialPasswordRef = useRef<string>('');
 
   // Format permanent system registration date (uneditable)
   const registrationDateFormatted = (() => {
@@ -66,16 +70,23 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
     });
   })();
 
-  // Sync state whenever modal opens or currentShop changes
+  // Sync state ONLY ONCE when modal transitions from closed to open (prevents background sync from resetting password while typing)
   useEffect(() => {
-    if (isOpen && currentShop) {
+    if (isOpen && !wasOpenRef.current && currentShop) {
+      wasOpenRef.current = true;
+      hasEditedPasswordRef.current = false;
+      const initPass = currentShop.password || '123456';
+      initialPasswordRef.current = initPass;
       setShopName(currentShop.shop_name || '');
       setOwnerName(currentShop.owner_name || currentUser?.name || '');
-      setPassword(currentShop.password || '123456');
+      setPassword(initPass);
       setPhone(currentShop.phone || '');
       setAddress(currentShop.address || '');
       setSuccessMessage('');
       setError('');
+    } else if (!isOpen) {
+      wasOpenRef.current = false;
+      hasEditedPasswordRef.current = false;
     }
   }, [isOpen, currentShop, currentUser]);
 
@@ -136,15 +147,15 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
         </button>
 
         {/* Top Header */}
-        <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
+        <div className="flex items-center gap-3 pb-4 pr-8 border-b border-slate-100">
           <TajLogo size="sm" showSubtitle={false} />
-          <div>
-            <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
                 ایڈمن پروفائل اور دکان کی ترتیبات
               </h3>
               <span
-                className={`text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                className={`text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
                   isSuperAdmin
                     ? 'bg-amber-100 text-amber-900 border border-amber-300'
                     : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
@@ -153,7 +164,7 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
                 {isSuperAdmin ? '👑 Super Admin' : '👤 Admin'}
               </span>
             </div>
-            <p className="text-[11px] text-slate-500 font-medium">
+            <p className="text-[11px] text-slate-500 font-medium mt-0.5">
               دکان کا نام اور مالک کا نام تبدیل کریں (رجسٹریشن تاریخ مستقل ہے)
             </p>
           </div>
@@ -178,22 +189,22 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
         {/* Form */}
         <form onSubmit={handleSubmit} className="mt-4 space-y-3.5 text-xs text-left">
           {/* Registered Email (Protected Google Account) */}
-          <div className="p-2.5 bg-blue-50/70 border border-blue-200/80 rounded-2xl flex items-center justify-between">
-            <div className="flex items-center gap-2 min-w-0">
-              <Mail className="w-4 h-4 text-blue-600 shrink-0" />
-              <div className="min-w-0">
-                <span className="text-[10px] text-blue-900 font-bold block">
+          <div className="p-3 bg-blue-50/70 border border-blue-200/80 rounded-2xl space-y-1">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Mail className="w-4 h-4 text-blue-600 shrink-0" />
+                <span className="text-[10px] text-blue-900 font-bold">
                   رجسٹرڈ گوگل اکاؤنٹ (Primary Email)
                 </span>
-                <span className="font-mono font-bold text-blue-950 text-xs truncate block">
-                  {currentUser?.email || currentShop?.owner_email || 'aliimtiaz1126@gmail.com'}
-                </span>
               </div>
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-blue-600 text-white px-2 py-0.5 rounded-full shrink-0">
+                <ShieldCheck className="w-3 h-3" />
+                <span>تصدیق شدہ (Verified)</span>
+              </span>
             </div>
-            <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-blue-600 text-white px-2 py-0.5 rounded-full shrink-0">
-              <ShieldCheck className="w-3 h-3" />
-              <span>تصدیق شدہ (Verified)</span>
-            </span>
+            <div className="pl-5.5 font-mono font-bold text-blue-950 text-xs sm:text-sm break-all">
+              {currentUser?.email || currentShop?.owner_email || 'aliimtiaz1126@gmail.com'}
+            </div>
           </div>
 
           {/* Shop Name Input */}
@@ -250,10 +261,44 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
               <input
                 type={showPassword ? 'text' : 'password'}
                 value={password}
-                onChange={e => setPassword(e.target.value)}
+                onFocus={e => {
+                  if (!hasEditedPasswordRef.current) {
+                    e.currentTarget.select();
+                  }
+                }}
+                onChange={e => {
+                  const val = e.target.value;
+                  const initPass = initialPasswordRef.current;
+                  if (
+                    !hasEditedPasswordRef.current &&
+                    initPass &&
+                    val.length > initPass.length &&
+                    val.startsWith(initPass)
+                  ) {
+                    // User tapped at the end of old password and started typing new password -> start fresh with newly typed char!
+                    hasEditedPasswordRef.current = true;
+                    setPassword(val.slice(initPass.length));
+                    return;
+                  }
+                  hasEditedPasswordRef.current = true;
+                  setPassword(val);
+                }}
                 placeholder="نیا پاس ورڈ درج کریں"
-                className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white text-sm transition-all font-mono"
+                className="w-full pl-10 pr-20 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white text-sm transition-all font-mono"
               />
+              {password.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    hasEditedPasswordRef.current = true;
+                    setPassword('');
+                  }}
+                  className="absolute right-10 top-2.5 text-[10px] font-bold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 px-2 py-1 rounded-lg cursor-pointer transition-colors"
+                  title="پاس ورڈ صاف کریں (Clear)"
+                >
+                  صاف
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}

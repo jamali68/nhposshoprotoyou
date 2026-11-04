@@ -1846,15 +1846,23 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       let isGooglePasswordResetFlow = false;
       try {
         isGooglePasswordResetFlow =
-          Boolean(isGoogleVerified) && sessionStorage.getItem('taj_pos_google_password_reset') === 'true';
+          Boolean(isGoogleVerified) &&
+          (sessionStorage.getItem('taj_pos_google_password_reset') === 'true' ||
+            localStorage.getItem('taj_pos_password_reset_mode') === 'google_verified' ||
+            localStorage.getItem('taj_pos_must_change_password') === 'true');
       } catch {}
 
       if (isGooglePasswordResetFlow) {
         let expectedResetEmail = '';
         try {
-          expectedResetEmail = (sessionStorage.getItem('taj_pos_google_reset_email') || '').trim().toLowerCase();
+          expectedResetEmail = (
+            sessionStorage.getItem('taj_pos_google_reset_email') ||
+            localStorage.getItem('taj_pos_google_reset_email') ||
+            ''
+          ).trim().toLowerCase();
           sessionStorage.removeItem('taj_pos_google_password_reset');
           sessionStorage.removeItem('taj_pos_google_reset_email');
+          localStorage.removeItem('taj_pos_google_reset_email');
         } catch {}
 
         // A. If user entered a specific email on the reset screen, verify the Google account matches it
@@ -1961,9 +1969,18 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           }
         }
       } else {
-        // Logged in with Google: if Google Password Reset flow OR legacy account still using 123456, open New Password Reset popup immediately!
+        // Logged in with Google: ALWAYS open New Password Reset popup when logging in via Google Password Reset or legacy password!
+        let hasPendingResetFlag = false;
+        try {
+          hasPendingResetFlag =
+            localStorage.getItem('taj_pos_must_change_password') === 'true' ||
+            localStorage.getItem('taj_pos_password_reset_mode') === 'google_verified';
+        } catch {}
+
         if (
+          isGoogleVerified ||
           isGooglePasswordResetFlow ||
+          hasPendingResetFlag ||
           existingShop?.isLegacyPassword ||
           existingShop?.password === '123456' ||
           (!existingShop?.passwordHash && !existingShop?.password)
@@ -1972,18 +1989,27 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       }
 
-      setMustChangePassword(needsPasswordChange);
-      try {
-        if (needsPasswordChange) {
+      if (needsPasswordChange) {
+        setMustChangePassword(true);
+        try {
           localStorage.setItem('taj_pos_must_change_password', 'true');
-          if (isGooglePasswordResetFlow) {
+          if (isGoogleVerified || isGooglePasswordResetFlow) {
             localStorage.setItem('taj_pos_password_reset_mode', 'google_verified');
           }
-        } else {
-          localStorage.removeItem('taj_pos_must_change_password');
-          localStorage.removeItem('taj_pos_password_reset_mode');
+        } catch {}
+      } else {
+        // Only clear if not already flagged for Google password reset
+        let keepResetOpen = false;
+        try {
+          keepResetOpen = localStorage.getItem('taj_pos_password_reset_mode') === 'google_verified';
+        } catch {}
+        if (!keepResetOpen) {
+          setMustChangePassword(false);
+          try {
+            localStorage.removeItem('taj_pos_must_change_password');
+          } catch {}
         }
-      } catch {}
+      }
 
       // Ensure any OTP state is completely cleared (Zero OTP required for Google/Gmail password login!)
       setIsOtpVerificationRequired(false);
@@ -2403,15 +2429,19 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   ): Promise<{ success: boolean; error?: string; redirecting?: boolean }> => {
     try {
       sessionStorage.setItem('taj_pos_google_password_reset', 'true');
+      localStorage.setItem('taj_pos_password_reset_mode', 'google_verified');
+      localStorage.setItem('taj_pos_must_change_password', 'true');
       const cleanExpected = (expectedEmail || '').trim().toLowerCase();
       if (cleanExpected && cleanExpected.includes('@')) {
         sessionStorage.setItem('taj_pos_google_reset_email', cleanExpected);
+        localStorage.setItem('taj_pos_google_reset_email', cleanExpected);
         googleProvider.setCustomParameters({
           prompt: 'select_account',
           login_hint: cleanExpected
         });
       } else {
         sessionStorage.removeItem('taj_pos_google_reset_email');
+        localStorage.removeItem('taj_pos_google_reset_email');
         googleProvider.setCustomParameters({
           prompt: 'select_account'
         });
@@ -2419,6 +2449,20 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } catch {}
 
     const res = await loginWithGoogle();
+    if (res.success && !res.redirecting) {
+      setMustChangePassword(true);
+      try {
+        localStorage.setItem('taj_pos_must_change_password', 'true');
+        localStorage.setItem('taj_pos_password_reset_mode', 'google_verified');
+      } catch {}
+    } else if (!res.success) {
+      setMustChangePassword(false);
+      try {
+        localStorage.removeItem('taj_pos_must_change_password');
+        localStorage.removeItem('taj_pos_password_reset_mode');
+        localStorage.removeItem('taj_pos_google_reset_email');
+      } catch {}
+    }
     return {
       success: res.success,
       error: res.error,
@@ -2477,8 +2521,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       });
 
-    // B. Check if Firebase Auth is already signed in
-    if (auth.currentUser && auth.currentUser.email && !isGooglePopupInProgressRef.current) {
+    // B. Check if Firebase Auth is already signed in when no active local user session exists
+    if (
+      auth.currentUser &&
+      auth.currentUser.email &&
+      !isGooglePopupInProgressRef.current &&
+      !localStorage.getItem('taj_pos_user')
+    ) {
       const cleanEmail = auth.currentUser.email.toLowerCase();
       authorizeDeviceForEmail(cleanEmail, 'google_oauth').then(() => {
         loginWithGmail(cleanEmail, auth.currentUser?.displayName || undefined, true, true, undefined, auth.currentUser?.uid);
@@ -2490,7 +2539,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (isGooglePopupInProgressRef.current) return;
       if (firebaseUser && firebaseUser.email) {
         const storedUser = localStorage.getItem('taj_pos_user');
-        if (!storedUser || !currentUser) {
+        if (!storedUser) {
           const cleanEmail = firebaseUser.email.toLowerCase();
           await authorizeDeviceForEmail(cleanEmail, 'google_oauth');
           const loginRes = await loginWithGmail(
@@ -2509,7 +2558,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
 
     return () => unsub();
-  }, [currentUser]);
+  }, []);
 
   const loginAsOwnerDirect = async (
     email: string = 'helpgoodforyouofficial@gmail.com',
@@ -3040,22 +3089,23 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const cleanEmailKey = cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
 
     try {
-      await setDoc(doc(db, 'shops', currentShopId), updated, { merge: true });
+      await setDoc(doc(db, 'shops', currentShopId), sanitizeForFirestore(updated), { merge: true });
       if (cleanEmailKey) {
-        await setDoc(doc(db, 'account_registry', cleanEmailKey), {
+        await setDoc(doc(db, 'account_registry', cleanEmailKey), sanitizeForFirestore({
           shop_name: updated.shop_name,
           owner_name: updated.owner_name,
+          password: finalPassword,
           password_configured: updated.password_configured,
           password_hash: updated.passwordHash || null,
           password_salt: updated.passwordSalt || null,
           last_password_updated_at: new Date().toISOString()
-        }, { merge: true });
+        }), { merge: true });
       }
-      await setDoc(doc(db, 'users', currentShopId), {
+      await setDoc(doc(db, 'users', currentShopId), sanitizeForFirestore({
         displayName: updated.owner_name,
         shopName: updated.shop_name,
         updatedAt: new Date().toISOString()
-      }, { merge: true });
+      }), { merge: true });
     } catch (e) {
       console.warn('updateShopProfile sync note:', e);
     }
@@ -3119,16 +3169,17 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const cleanEmail = (updatedShop.owner_email || currentUser?.email || '').toLowerCase().trim();
       const cleanEmailKey = cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
 
-      // Persist to Firestore
+      // Persist to Firestore (sanitized so undefined fields never fail setDoc)
       if (navigator.onLine) {
-        await setDoc(doc(db, 'shops', currentShopId), updatedShop, { merge: true });
+        await setDoc(doc(db, 'shops', currentShopId), sanitizeForFirestore(updatedShop), { merge: true });
         if (cleanEmailKey) {
-          await setDoc(doc(db, 'account_registry', cleanEmailKey), {
+          await setDoc(doc(db, 'account_registry', cleanEmailKey), sanitizeForFirestore({
+            password: cleanPass,
             password_configured: true,
             password_hash: passwordHash || cleanPass,
             password_salt: passwordSalt || null,
             last_password_updated_at: new Date().toISOString()
-          }, { merge: true });
+          }), { merge: true });
         }
       }
 
