@@ -4,7 +4,6 @@
  */
 
 import React from 'react';
-import { Crown } from 'lucide-react';
 
 interface TajLogoProps {
   size?: 'sm' | 'md' | 'lg';
@@ -14,24 +13,24 @@ interface TajLogoProps {
 export const TajLogo: React.FC<TajLogoProps> = ({ size = 'md', showSubtitle = false }) => {
   const sizeClasses =
     size === 'sm'
-      ? 'w-9 h-9 rounded-xl'
+      ? 'w-10 h-10 rounded-full'
       : size === 'lg'
-      ? 'w-16 h-16 rounded-2xl'
-      : 'w-12 h-12 rounded-2xl';
-
-  const iconSizes =
-    size === 'sm' ? 'w-5 h-5' : size === 'lg' ? 'w-8 h-8' : 'w-6 h-6';
+      ? 'w-20 h-20 rounded-full'
+      : 'w-14 h-14 rounded-full';
 
   return (
-    <div className="inline-flex flex-col items-center">
+    <div className="inline-flex flex-col items-center shrink-0">
       <div
-        className={`${sizeClasses} bg-gradient-to-br from-[#1b263b] via-slate-800 to-[#0d1b2a] border-2 border-amber-400/70 shadow-lg flex items-center justify-center relative overflow-hidden`}
+        className={`${sizeClasses} bg-[#FAF8EC] border-2 border-emerald-600/30 shadow-md flex items-center justify-center relative overflow-hidden`}
       >
-        <div className="absolute inset-0 bg-gradient-to-tr from-amber-500/10 to-emerald-400/10" />
-        <Crown className={`${iconSizes} text-amber-400 drop-shadow-xs relative z-10`} />
+        <img
+          src="./icon-512.png"
+          alt="NH POS Official Logo"
+          className="w-full h-full object-contain"
+        />
       </div>
       {showSubtitle && (
-        <span className="text-[10px] font-bold text-amber-600 mt-1 tracking-wider uppercase">
+        <span className="text-[10px] font-bold text-emerald-700 mt-1 tracking-wider uppercase">
           NH POS Shop
         </span>
       )}

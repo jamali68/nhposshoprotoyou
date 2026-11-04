@@ -1,9 +1,9 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v17.3.1
- * Comprehensive Offline Support for GitHub Pages & Netlify
+ * Version: v17.3.3
+ * Comprehensive Offline & GitHub Pages Support
  */
-const SW_VERSION = 'v17.3.1';
+const SW_VERSION = 'v17.3.3';
 const CACHE_NAME = 'nh-pos-' + SW_VERSION;
 
 // Core static assets to precache immediately on install
@@ -17,18 +17,13 @@ const CORE_ASSETS = [
   'icon.png',
   'icon1.png',
   'apple-touch-icon.png',
-  'icon.svg'
+  'dist-bundle/app.js',
+  'dist-bundle/index.css'
 ];
 
-// INJECTED_ASSETS will be populated by scripts/ensure-pwa.js with compiled bundle hashes
-const INJECTED_ASSETS = [
-  /* __BUILD_ASSETS__ */
-];
+const PRECACHE_ASSETS = Array.from(new Set([...CORE_ASSETS]));
 
-const PRECACHE_ASSETS = Array.from(new Set([...CORE_ASSETS, ...INJECTED_ASSETS]));
-
-// 1. 🛡️ FAIL-SAFE INSTALL:
-// Precache all assets; if one file fails, keep going so cache installation succeeds
+// 1. FAIL-SAFE INSTALL:
 self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil(
@@ -44,23 +39,35 @@ self.addEventListener('install', (event) => {
   );
 });
 
-// 2. ACTIVATE: Purge older caches and claim clients immediately
+// 2. ACTIVATE: Purge older caches, claim clients immediately, and refresh stuck tabs
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
+    (async () => {
+      const keys = await caches.keys();
+      let deletedOldCache = false;
+      await Promise.all(
         keys.map((key) => {
           if (key !== CACHE_NAME) {
+            deletedOldCache = true;
             console.log('[SW] Purging old cache:', key);
             return caches.delete(key);
           }
         })
       );
-    }).then(() => self.clients.claim())
+      await self.clients.claim();
+      if (deletedOldCache) {
+        const windowClients = await self.clients.matchAll({ type: 'window' });
+        for (const client of windowClients) {
+          try {
+            client.postMessage({ type: 'SW_UPDATED', version: SW_VERSION });
+          } catch {}
+        }
+      }
+    })()
   );
 });
 
-// 3. FETCH: Robust Offline Strategy (No ERR_FAILED ever)
+// 3. FETCH: Network-First for HTML/JS/CSS so GitHub Pages updates never get stuck, with full Offline Fallback
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
@@ -68,7 +75,6 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
 
   // Exclude Firebase, Google APIs, and external backend endpoints from SW interception
-  // This prevents Firestore WebChannel streaming and Auth requests from hanging or timing out
   if (
     url.hostname.includes('googleapis.com') ||
     url.hostname.includes('firebase') ||
@@ -79,7 +85,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Exclude dev environments and Vite modules to prevent dual-React / HMR cache collisions
+  // Exclude dev environments and Vite modules
   if (
     url.hostname === 'localhost' ||
     url.hostname === '127.0.0.1' ||
@@ -87,9 +93,7 @@ self.addEventListener('fetch', (event) => {
     url.pathname.startsWith('/@') ||
     url.pathname.includes('/node_modules/') ||
     url.pathname.includes('/src/') ||
-    url.pathname.includes('hot-update') ||
-    url.searchParams.has('v') ||
-    url.searchParams.has('t')
+    url.pathname.includes('hot-update')
   ) {
     return;
   }
@@ -102,63 +106,27 @@ self.addEventListener('fetch', (event) => {
 
   if (isNavigation) {
     event.respondWith(
-      new Promise((resolve) => {
-        let didResolve = false;
-
-        // Fast 2.5s timeout: if network hangs or offline, instantly fall back to cached HTML
-        const timeoutId = setTimeout(() => {
-          if (!didResolve) {
-            fallbackToCachedHtml().then((res) => {
-              if (!didResolve) {
-                didResolve = true;
-                resolve(res);
-              }
-            });
+      fetch(req)
+        .then((networkResp) => {
+          if (networkResp && networkResp.status === 200) {
+            const clone = networkResp.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
+            return networkResp;
           }
-        }, 2500);
-
-        fetch(req)
-          .then((networkResp) => {
-            clearTimeout(timeoutId);
-            if (!didResolve) {
-              didResolve = true;
-              if (networkResp && networkResp.status === 200) {
-                const clone = networkResp.clone();
-                caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
-              }
-              resolve(networkResp);
-            }
-          })
-          .catch(() => {
-            clearTimeout(timeoutId);
-            if (!didResolve) {
-              didResolve = true;
-              fallbackToCachedHtml().then(resolve);
-            }
-          });
-      })
+          return fallbackToCachedHtml();
+        })
+        .catch(() => fallbackToCachedHtml())
     );
     return;
   }
 
-  // Helper to retrieve cached index.html under various path formats (e.g., GitHub Pages subpaths)
   async function fallbackToCachedHtml() {
     const cache = await caches.open(CACHE_NAME);
-    const candidates = [
-      req,
-      './',
-      'index.html',
-      './index.html',
-      '404.html',
-      './404.html'
-    ];
-
+    const candidates = [req, './', 'index.html', './index.html', '404.html', './404.html'];
     for (const candidate of candidates) {
       const match = await cache.match(candidate, { ignoreSearch: true });
       if (match) return match;
     }
-
-    // Try finding any cached HTML file
     const keys = await cache.keys();
     for (const k of keys) {
       if (k.url.endsWith('/') || k.url.endsWith('index.html') || k.url.endsWith('404.html')) {
@@ -166,82 +134,66 @@ self.addEventListener('fetch', (event) => {
         if (match) return match;
       }
     }
-
-    // If completely offline and somehow empty, return a graceful offline HTML page instead of throwing ERR_FAILED
     return new Response(
       '<!doctype html><html lang="ur"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NH POS - Offline</title><style>body{font-family:system-ui,-apple-system,sans-serif;background:#FAF8EC;color:#1e5631;text-align:center;padding:50px 20px;}h1{margin-bottom:8px;font-size:24px;}p{color:#64748b;font-size:14px;margin-bottom:20px;}</style></head><body><h1>NH POS Shop</h1><p>Offline Mode: App is ready. Reopen or reconnect to sync with cloud.</p><button onclick="window.location.reload()" style="background:#1e5631;color:#fff;border:none;padding:12px 24px;border-radius:12px;font-weight:bold;cursor:pointer;">Try Again</button></body></html>',
       { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
     );
   }
 
-  // B. Static Assets (JS, CSS, Images, Fonts, Manifest) - Cache First with Background Update & Auto-Caching
-  const isStaticAsset =
-    url.pathname.includes('/assets/') ||
+  // B. JS & CSS Bundles: Network-First with Cache Fallback so new deployments load immediately
+  const isCodeBundle =
     req.destination === 'script' ||
     req.destination === 'style' ||
-    req.destination === 'image' ||
-    req.destination === 'font' ||
-    req.destination === 'manifest' ||
     url.pathname.endsWith('.js') ||
-    url.pathname.endsWith('.css') ||
-    url.pathname.endsWith('.png') ||
-    url.pathname.endsWith('.svg') ||
-    url.pathname.endsWith('.ico') ||
-    url.pathname.endsWith('.json') ||
-    url.hostname.includes('fonts.googleapis.com') ||
-    url.hostname.includes('fonts.gstatic.com');
+    url.pathname.endsWith('.css');
 
-  if (isStaticAsset) {
+  if (isCodeBundle) {
     event.respondWith(
-      caches.match(req, { ignoreSearch: true }).then((cached) => {
-        if (cached) {
-          // Serve from cache immediately; update cache in background if online
-          fetch(req)
-            .then((networkResp) => {
-              if (networkResp && (networkResp.status === 200 || networkResp.type === 'opaque')) {
-                caches.open(CACHE_NAME).then((cache) => cache.put(req, networkResp));
-              }
-            })
-            .catch(() => {});
-          return cached;
-        }
-
-        // Not in cache: fetch from network and store in cache
-        return fetch(req)
-          .then((networkResp) => {
-            if (networkResp && (networkResp.status === 200 || networkResp.type === 'opaque')) {
-              const clone = networkResp.clone();
-              caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
-            }
-            return networkResp;
-          })
-          .catch(async () => {
-            const cache = await caches.open(CACHE_NAME);
-            const fallback = await cache.match(req, { ignoreSearch: true });
-            if (fallback) return fallback;
-            // Prevent Chrome ERR_FAILED by returning a 503 response instead of failing
-            return new Response('', { status: 503, statusText: 'Offline Asset Unavailable' });
-          });
-      })
+      fetch(req)
+        .then((networkResp) => {
+          if (networkResp && networkResp.status === 200) {
+            const clone = networkResp.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
+          }
+          return networkResp;
+        })
+        .catch(async () => {
+          const cached = await caches.match(req, { ignoreSearch: true });
+          if (cached) return cached;
+          return new Response('', { status: 503, statusText: 'Offline Asset Unavailable' });
+        })
     );
     return;
   }
 
-  // C. General Requests: Network-first, fallback to cache
+  // C. Images, Fonts, Manifest: Cache-First with Background Update
   event.respondWith(
-    fetch(req)
-      .then((networkResp) => {
-        if (networkResp && networkResp.status === 200) {
-          const clone = networkResp.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
-        }
-        return networkResp;
-      })
-      .catch(async () => {
-        const cached = await caches.match(req, { ignoreSearch: true });
-        if (cached) return cached;
-        return new Response('', { status: 503, statusText: 'Offline' });
-      })
+    caches.match(req, { ignoreSearch: true }).then((cached) => {
+      if (cached) {
+        fetch(req)
+          .then((networkResp) => {
+            if (networkResp && (networkResp.status === 200 || networkResp.type === 'opaque')) {
+              caches.open(CACHE_NAME).then((cache) => cache.put(req, networkResp));
+            }
+          })
+          .catch(() => {});
+        return cached;
+      }
+
+      return fetch(req)
+        .then((networkResp) => {
+          if (networkResp && (networkResp.status === 200 || networkResp.type === 'opaque')) {
+            const clone = networkResp.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
+          }
+          return networkResp;
+        })
+        .catch(async () => {
+          const fallback = await caches.match(req, { ignoreSearch: true });
+          if (fallback) return fallback;
+          return new Response('', { status: 503, statusText: 'Offline' });
+        });
+    })
   );
 });
 

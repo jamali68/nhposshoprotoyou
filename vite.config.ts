@@ -1,3 +1,4 @@
+import fs from 'fs';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
@@ -59,10 +60,75 @@ function netlifyFunctionsDevPlugin(): Plugin {
   };
 }
 
+function githubPagesBundleSyncPlugin(): Plugin {
+  return {
+    name: 'github-pages-bundle-sync',
+    closeBundle() {
+      try {
+        const rootDir = process.cwd();
+        const distAssetsDir = path.resolve(rootDir, 'dist', 'assets');
+        const distBundleDir = path.resolve(rootDir, 'dist-bundle');
+        const distInnerBundleDir = path.resolve(rootDir, 'dist', 'dist-bundle');
+
+        if (!fs.existsSync(distBundleDir)) {
+          fs.mkdirSync(distBundleDir, { recursive: true });
+        }
+        if (!fs.existsSync(distInnerBundleDir)) {
+          fs.mkdirSync(distInnerBundleDir, { recursive: true });
+        }
+
+        const jsSrc = path.resolve(distAssetsDir, 'app.js');
+        const cssSrc = path.resolve(distAssetsDir, 'index.css');
+
+        if (fs.existsSync(jsSrc)) {
+          fs.copyFileSync(jsSrc, path.resolve(distBundleDir, 'app.js'));
+          fs.copyFileSync(jsSrc, path.resolve(distInnerBundleDir, 'app.js'));
+        }
+        if (fs.existsSync(cssSrc)) {
+          fs.copyFileSync(cssSrc, path.resolve(distBundleDir, 'index.css'));
+          fs.copyFileSync(cssSrc, path.resolve(distInnerBundleDir, 'index.css'));
+        }
+
+        const publicSw = path.resolve(rootDir, 'public', 'sw.js');
+        const rootSw = path.resolve(rootDir, 'sw.js');
+        if (fs.existsSync(publicSw)) {
+          fs.copyFileSync(publicSw, rootSw);
+        }
+
+        const official192 = path.resolve(rootDir, 'public', 'assets', 'aistudio', '1792729704800_2bd436ee.png');
+        const official512 = path.resolve(rootDir, 'public', 'assets', 'aistudio', '1792729704800__1__bf19ca55.png');
+        if (fs.existsSync(official192)) {
+          for (const target of ['icon-192.png', 'icon.png', 'apple-touch-icon.png']) {
+            fs.copyFileSync(official192, path.resolve(rootDir, target));
+            fs.copyFileSync(official192, path.resolve(rootDir, 'dist', target));
+          }
+        }
+        if (fs.existsSync(official512)) {
+          for (const target of ['icon-512.png', 'icon1.png']) {
+            fs.copyFileSync(official512, path.resolve(rootDir, target));
+            fs.copyFileSync(official512, path.resolve(rootDir, 'dist', target));
+          }
+        }
+      } catch (e) {
+        console.warn('GitHub Pages bundle sync notice:', e);
+      }
+    }
+  };
+}
+
 export default defineConfig(() => {
   return {
     base: './',
-    plugins: [react(), tailwindcss(), netlifyFunctionsDevPlugin()],
+    plugins: [react(), tailwindcss(), netlifyFunctionsDevPlugin(), githubPagesBundleSyncPlugin()],
+    build: {
+      rollupOptions: {
+        output: {
+          inlineDynamicImports: true,
+          entryFileNames: 'assets/app.js',
+          assetFileNames: 'assets/[name].[ext]'
+        }
+      }
+    },
     resolve: {
       dedupe: ['react', 'react-dom'],
       alias: {
