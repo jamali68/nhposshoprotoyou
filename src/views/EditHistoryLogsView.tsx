@@ -4,58 +4,98 @@
  */
 
 import React from 'react';
-import { History, CheckCheck, ArrowLeft } from 'lucide-react';
+import { ArrowLeft, CheckCheck, History, ArrowRight } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
 
 export const EditHistoryLogsView: React.FC = () => {
-  const { editHistory, markAllEditsAsRead, goBack } = usePOS();
+  const {
+    editHistory,
+    markAllEditsAsRead,
+    setActiveView
+  } = usePOS();
 
   return (
-    <div className="space-y-4">
-      <div className="bg-white rounded-2xl p-4 shadow-xs border border-slate-200 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <button type="button" onClick={goBack} className="p-2 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer">
-            <ArrowLeft className="w-4 h-4" />
-          </button>
-          <div>
-            <h2 className="font-black text-base text-slate-900 flex items-center gap-1.5">
-              <History className="w-4 h-4 text-amber-600" />
-              <span>Edit History Logs (تبدیل شدہ ریکارڈز)</span>
-            </h2>
-            <p className="text-[11px] text-slate-500">Audit trail of modified transactions</p>
-          </div>
-        </div>
-        {editHistory.length > 0 && (
-          <button
-            type="button"
-            onClick={markAllEditsAsRead}
-            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer"
-          >
-            <CheckCheck className="w-4 h-4" />
-            <span>Mark All Read</span>
-          </button>
-        )}
+    <div className="space-y-4 pb-12">
+      {/* Top Header */}
+      <div className="flex items-center justify-between bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
+        <button
+          type="button"
+          onClick={() => setActiveView('back_cash')}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2c3e50] hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          <span>Back</span>
+        </button>
+
+        <h2 className="text-base sm:text-lg font-black text-slate-800 text-center tracking-tight flex items-center gap-1.5">
+          <History className="w-4 h-4 text-blue-600" />
+          <span>Edit History Logs</span>
+        </h2>
+
+        <button
+          type="button"
+          onClick={markAllEditsAsRead}
+          className="flex items-center gap-1 px-3 py-1.5 bg-[#27ae60] hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
+        >
+          <CheckCheck className="w-3.5 h-3.5" />
+          <span>Read Clear</span>
+        </button>
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 divide-y divide-slate-100">
-        {editHistory.length === 0 ? (
-          <div className="p-8 text-center text-xs text-slate-400">No edit history logs recorded yet.</div>
-        ) : (
-          editHistory.map(log => (
-            <div key={log.id} className="p-4 flex items-center justify-between text-xs">
-              <div>
-                <div className="font-black text-slate-900">{log.note}</div>
-                <div className="text-[10px] text-slate-500">
-                  Edited by {log.edited_by} • {log.transaction_date}
+      {/* Logs Table */}
+      <div className="bg-white rounded-2xl p-4 shadow-xs border border-slate-200/80 space-y-3">
+        <div className="divide-y divide-slate-100">
+          {editHistory.length > 0 ? (
+            editHistory.map(log => (
+              <div
+                key={log.id}
+                className={`py-3.5 flex items-center justify-between gap-3 text-xs ${
+                  !log.is_read ? 'bg-rose-50/50 p-2.5 rounded-xl border border-rose-100 mb-2' : ''
+                }`}
+              >
+                <div className="flex-1 min-w-0 space-y-1">
+                  <b className="text-slate-800 text-[13px] block">{log.note || 'No Note / General'}</b>
+
+                  <div className="text-[11px] text-slate-400 space-x-2">
+                    {log.transaction_date && <span>Date: {log.transaction_date}</span>}
+                    <span>•</span>
+                    <span>
+                      {new Date(log.edited_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Amount Change */}
+                <div className="text-center px-2">
+                  <div className="font-bold flex items-center gap-1.5 text-xs">
+                    <span className="line-through text-rose-500 font-mono">
+                      Rs. {log.old_amount.toLocaleString()}
+                    </span>
+                    <ArrowRight className="w-3 h-3 text-slate-400" />
+                    <span className="text-emerald-600 font-mono font-black">
+                      Rs. {log.new_amount.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Role badge */}
+                <div className="text-right">
+                  <span
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded text-white uppercase ${
+                      log.edited_by === 'admin' ? 'bg-[#2ecc71]' : 'bg-[#34495e]'
+                    }`}
+                  >
+                    {log.edited_by}
+                  </span>
                 </div>
               </div>
-              <div className="font-mono text-right">
-                <div className="text-rose-600 line-through text-[11px]">Rs. {log.old_amount.toLocaleString()}</div>
-                <div className="font-black text-emerald-700 text-sm">Rs. {log.new_amount.toLocaleString()}</div>
-              </div>
+            ))
+          ) : (
+            <div className="py-12 text-center text-slate-400 text-xs">
+              Koi edit history mojood nahi hai.
             </div>
-          ))
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

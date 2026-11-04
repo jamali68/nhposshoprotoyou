@@ -5,72 +5,78 @@
 
 export type UserRole = 'super_admin' | 'admin' | 'manager' | 'cashier' | 'salesman' | 'user';
 
-export interface User {
-  username: string;
-  name?: string;
-  email?: string;
-  role: UserRole;
-  isGoogleUser?: boolean;
-  isDemo?: boolean;
-  shopId: string;
-  shopName?: string;
-  password?: string;
-}
-
 export interface ShopProfile {
-  id: string;
+  id: string; // Shop ID (matches Owner UID)
   shop_name: string;
   owner_name: string;
   owner_email: string;
   owner_uid: string;
-  google_uid?: string;
-  google_verified?: boolean;
+  google_uid?: string; // Google sub claim UID
+  google_verified?: boolean; // Permanent Google verification status
   google_verified_at?: string;
   password_configured?: boolean;
-  password?: string;
-  passwordHash?: string;
-  passwordSalt?: string;
-  isLegacyPassword?: boolean;
+  password?: string; // Owner password (legacy or display)
+  passwordHash?: string; // Cryptographic PBKDF2 hash
+  passwordSalt?: string; // Cryptographic salt
+  isLegacyPassword?: boolean; // Flagged true when account uses temporary 123456 migration password
   phone?: string;
   address?: string;
   created_at: string;
   last_login?: string;
 }
 
+export interface User {
+  username: string;
+  role: UserRole;
+  name?: string;
+  email?: string;
+  password?: string;
+  isGoogleUser?: boolean;
+  photoURL?: string;
+  shopId: string;
+  shopName?: string;
+  isDemo?: boolean;
+}
+
 export interface StaffAccount {
   id: string;
+  shop_id?: string;
   username: string;
   password: string;
   name: string;
-  role: 'manager' | 'cashier' | 'salesman';
+  role: UserRole;
   phone?: string;
-  shop_id?: string;
-  is_active: boolean;
   created_at: string;
   created_by: string;
+  is_active: boolean;
 }
+
+export type TransactionType = 'opening' | 'in' | 'out' | 'bill_add' | 'payment' | 'shift_closing';
 
 export interface DailyTransaction {
   id: string;
-  type: 'opening' | 'in' | 'out' | 'bill_add';
+  type: TransactionType;
   amount: number;
   description: string;
-  transaction_date: string;
+  transaction_date: string; // YYYY-MM-DD
   created_by: string;
   created_by_name?: string;
   created_at?: string;
-  party_type?: 'wholesaler' | 'customer';
+  party_type?: 'customer' | 'wholesaler' | 'none';
   bill_id?: string;
   linked_transfer_id?: string;
   transfer_direction?: 'from_back_cash' | 'to_back_cash';
+  extra_fields?: Record<string, any>;
 }
+
+export type BackCashType = 'receiving' | 'out' | 'opening' | 'closing' | 'closing_minus' | 'commission' | 'transfer_to_shop' | 'transfer_from_shop' | string;
 
 export interface BackCashTransaction {
   id: string;
-  type: 'in' | 'out' | 'closing' | 'closing_minus' | 'commission' | 'transfer_to_shop' | 'transfer_from_shop';
+  type: 'receiving' | 'out' | 'opening' | 'closing' | 'closing_minus' | 'commission' | 'transfer_to_shop' | 'transfer_from_shop' | string;
   amount: number;
   note: string;
-  transaction_date: string;
+  transaction_date: string; // YYYY-MM-DD
   created_by: string;
   created_by_role?: string;
   created_by_name?: string;
@@ -81,44 +87,53 @@ export interface BackCashTransaction {
   edited_at?: string;
   linked_transfer_id?: string;
   transfer_direction?: 'to_shop' | 'from_shop';
+  extra_fields?: Record<string, any>;
 }
 
 export interface BackCashClosingBreakdown {
   totalBalance: number;
   activeClosing: number;
   remainingCounter: number;
-  userClosings: Array<{
+  userClosings: {
     userId: string;
     userName: string;
     userRole: string;
     amount: number;
-  }>;
+  }[];
 }
 
 export interface WholesalerBill {
   id: string;
   customer_name: string;
-  phone?: string;
   total_bill: number;
   remaining_balance: number;
   created_date: string;
   status: 'pending' | 'paid';
-  note?: string;
+  invoice_number?: string;
+  agency_dealer_number?: string;
+  supplier_number?: string;
+  order_day?: string;
+  supply_day?: string;
+  extra_fields?: Record<string, any>;
 }
 
 export interface CustomerBill {
   id: string;
   customer_name: string;
-  phone?: string;
   total_bill: number;
   remaining_balance: number;
   created_date: string;
   status: 'pending' | 'paid';
-  note?: string;
+  invoice_number?: string;
+  phone_number?: string;
+  address?: string;
+  order_day?: string;
+  supply_day?: string;
+  extra_fields?: Record<string, any>;
 }
 
 export interface EasyloadRecord {
-  date_recorded: string;
+  date_recorded: string; // YYYY-MM-DD
   jazz_opening: number;
   jazz_purchase: number;
   jazz_closing: number;
@@ -137,12 +152,12 @@ export interface EasyloadRecord {
 export interface BottleItem {
   id: string;
   item_name: string;
-  unit_price: number;
-  wholesale_price?: number;
-  salesman_price?: number;
-  commission_per_unit: number;
+  category: string;
   total_stock: number;
-  category?: string;
+  unit_price: number; // Retail sale price
+  commission_per_unit: number; // Wholesale price
+  salesman_price: number;
+  extra_fields?: Record<string, any>;
 }
 
 export interface StockTransaction {
@@ -150,7 +165,7 @@ export interface StockTransaction {
   item_id: string;
   item_name: string;
   user_name: string;
-  action_type: 'add' | 'remove';
+  action_type: 'add' | 'remove' | 'reverse';
   quantity: number;
   note: string;
   created_at: string;
@@ -165,14 +180,14 @@ export interface EditHistoryRecord {
   edited_by: string;
   edited_at: string;
   is_read: boolean;
-  note: string;
-  transaction_date: string;
+  note?: string;
+  transaction_date?: string;
 }
 
 export interface DeletedHistoryRecord {
   id: string;
   original_id: string;
-  source: 'shop_cash' | 'back_cash' | 'customer_khata' | 'wholesaler_khata';
+  source: 'shop_cash' | 'back_cash' | 'wholesaler_khata' | 'customer_khata';
   type: string;
   amount: number;
   note: string;
@@ -180,17 +195,7 @@ export interface DeletedHistoryRecord {
   deleted_by: string;
   deleted_at: string;
   bill_id?: string;
-  party_type?: 'wholesaler' | 'customer';
-}
-
-export interface SystemSettings {
-  shopName: string;
-  ownerName: string;
-  phone: string;
-  address: string;
-  currency: string;
-  loadCommissionRate: number;
-  shopProfitRate: number;
+  party_type?: 'customer' | 'wholesaler' | 'none';
 }
 
 export interface CartItem {
@@ -198,4 +203,10 @@ export interface CartItem {
   name: string;
   price: number;
   qty: number;
+}
+
+export interface SystemSettings {
+  user_can_delete: boolean;
+  maintenance_mode: boolean;
+  maintenance_end_time?: string;
 }

@@ -3,33 +3,37 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export function formatTime12h(dateInput?: Date | string | null): string {
-  if (!dateInput) return 'Just now';
-  const d = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
-  if (isNaN(d.getTime())) return 'Just now';
+export function formatTime12h(dateInput: Date | string | number | null | undefined): string {
+  if (!dateInput) return 'Not yet synced';
+  const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (isNaN(d.getTime())) return 'Invalid date';
+
   return d.toLocaleTimeString('en-US', {
-    hour: 'numeric',
+    hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
     hour12: true
   });
 }
 
-export function formatRelativeTime(dateInput?: Date | string | null): string {
-  if (!dateInput) return 'ابھی ابھی (Just now)';
-  const d = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
-  if (isNaN(d.getTime())) return 'ابھی ابھی (Just now)';
+export function formatRelativeTime(dateInput: Date | string | number | null | undefined): string {
+  if (!dateInput) return 'Never';
+  const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (isNaN(d.getTime())) return '';
 
-  const diffSec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
-  if (diffSec < 15) return 'ابھی ابھی (Just now)';
-  if (diffSec < 60) return `${diffSec} سیکنڈ پہلے (${diffSec}s ago)`;
-
+  const now = Date.now();
+  const diffMs = Math.max(0, now - d.getTime());
+  const diffSec = Math.floor(diffMs / 1000);
   const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin} منٹ پہلے (${diffMin}m ago)`;
+  const diffHours = Math.floor(diffMin / 60);
+  const diffDays = Math.floor(diffHours / 24);
 
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr} گھنٹے پہلے (${diffHr}h ago)`;
-
-  const diffDays = Math.floor(diffHr / 24);
-  return `${diffDays} دن پہلے (${diffDays}d ago)`;
+  if (diffSec < 20) return 'Just now (ابھی ابھی)';
+  if (diffSec < 60) return `${diffSec}s ago (${diffSec} سیکنڈ پہلے)`;
+  if (diffMin === 1) return '1 min ago (1 منٹ پہلے)';
+  if (diffMin < 60) return `${diffMin} mins ago (${diffMin} منٹ پہلے)`;
+  if (diffHours === 1) return '1 hour ago (1 گھنٹہ پہلے)';
+  if (diffHours < 24) return `${diffHours} hours ago (${diffHours} گھنٹے پہلے)`;
+  if (diffDays === 1) return 'Yesterday (کل)';
+  return `${diffDays} days ago (${diffDays} دن پہلے)`;
 }

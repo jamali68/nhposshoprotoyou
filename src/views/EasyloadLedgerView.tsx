@@ -3,22 +3,25 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { Smartphone, ArrowLeft, Check } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { ArrowLeft, Save, CheckCircle2, Bolt, Circle, Leaf, Radio } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
+import { EasyloadRecord } from '../types/pos';
 
 export const EasyloadLedgerView: React.FC = () => {
   const {
     filterDate,
     setFilterDate,
+    yesterdayDate,
     easyloadRecords,
     saveEasyloadRecord,
-    saveEasyloadPurchase,
-    getEasyloadSaleSummary,
-    goBack
+    setActiveView
   } = usePOS();
 
-  const rec = easyloadRecords[filterDate] || {
+  const [activeState, setActiveState] = useState<'closing' | 'opening'>('closing');
+  const [successMsg, setSuccessMsg] = useState(false);
+
+  const currentData = easyloadRecords[filterDate] || {
     date_recorded: filterDate,
     jazz_opening: 0,
     jazz_purchase: 0,
@@ -35,127 +38,263 @@ export const EasyloadLedgerView: React.FC = () => {
     total_commission_earned: 0
   };
 
-  const summary = getEasyloadSaleSummary(filterDate);
-  const [purchNet, setPurchNet] = useState<'jazz' | 'telenor' | 'zong' | 'ufone'>('jazz');
-  const [purchAmount, setPurchAmount] = useState('');
-
-  const handleFieldChange = (field: string, val: string) => {
-    saveEasyloadRecord(filterDate, { [field]: Number(val) || 0 });
+  const yesterdayData = easyloadRecords[yesterdayDate] || {
+    date_recorded: yesterdayDate,
+    jazz_opening: 0,
+    jazz_purchase: 0,
+    jazz_closing: 0,
+    telenor_opening: 0,
+    telenor_purchase: 0,
+    telenor_closing: 0,
+    zong_opening: 0,
+    zong_purchase: 0,
+    zong_closing: 0,
+    ufone_opening: 0,
+    ufone_purchase: 0,
+    ufone_closing: 0,
+    total_commission_earned: 0
   };
 
-  const handlePurchase = (e: React.FormEvent) => {
+  // State values for form inputs
+  const [formData, setFormData] = useState<Partial<EasyloadRecord>>({
+    jazz_closing: currentData.jazz_closing,
+    telenor_closing: currentData.telenor_closing,
+    zong_closing: currentData.zong_closing,
+    ufone_closing: currentData.ufone_closing,
+    jazz_opening: currentData.jazz_opening || yesterdayData.jazz_closing,
+    telenor_opening: currentData.telenor_opening || yesterdayData.telenor_closing,
+    zong_opening: currentData.zong_opening || yesterdayData.zong_closing,
+    ufone_opening: currentData.ufone_opening || yesterdayData.ufone_closing
+  });
+
+  useEffect(() => {
+    setFormData({
+      jazz_closing: currentData.jazz_closing,
+      telenor_closing: currentData.telenor_closing,
+      zong_closing: currentData.zong_closing,
+      ufone_closing: currentData.ufone_closing,
+      jazz_opening: currentData.jazz_opening || yesterdayData.jazz_closing,
+      telenor_opening: currentData.telenor_opening || yesterdayData.telenor_closing,
+      zong_opening: currentData.zong_opening || yesterdayData.zong_closing,
+      ufone_opening: currentData.ufone_opening || yesterdayData.ufone_closing
+    });
+  }, [filterDate, easyloadRecords]);
+
+  const totalOpening =
+    (formData.jazz_opening || 0) +
+    (formData.telenor_opening || 0) +
+    (formData.zong_opening || 0) +
+    (formData.ufone_opening || 0);
+
+  const totalClosing =
+    (formData.jazz_closing || 0) +
+    (formData.telenor_closing || 0) +
+    (formData.zong_closing || 0) +
+    (formData.ufone_closing || 0);
+
+  const handleInputChange = (field: keyof EasyloadRecord, val: string) => {
+    setFormData(prev => ({
+      ...prev,
+      [field]: parseFloat(val) || 0
+    }));
+  };
+
+  const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
-    const num = Number(purchAmount);
-    if (!num || num <= 0) return;
-    saveEasyloadPurchase(purchNet, num);
-    setPurchAmount('');
+    saveEasyloadRecord(filterDate, formData);
+    setSuccessMsg(true);
+    setTimeout(() => setSuccessMsg(false), 2500);
   };
-
-  const networks = [
-    { key: 'jazz', label: 'Jazz / Warid', sale: summary.jazz },
-    { key: 'telenor', label: 'Telenor', sale: summary.telenor },
-    { key: 'zong', label: 'Zong', sale: summary.zong },
-    { key: 'ufone', label: 'Ufone', sale: summary.ufone }
-  ] as const;
 
   return (
-    <div className="space-y-4">
-      <div className="bg-white rounded-2xl p-4 shadow-xs border border-slate-200 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <button type="button" onClick={goBack} className="p-2 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer">
-            <ArrowLeft className="w-4 h-4" />
-          </button>
-          <div>
-            <h2 className="font-black text-base text-slate-900 flex items-center gap-1.5">
-              <Smartphone className="w-4 h-4 text-emerald-600" />
-              <span>Easy Load Ledger (ایزی لوڈ کھاتہ)</span>
-            </h2>
-            <p className="text-[11px] text-slate-500">Total Load Sale: Rs. {summary.total.toLocaleString()}</p>
-          </div>
+    <div className="space-y-4 pb-12">
+      {/* Header */}
+      <div className="flex items-center justify-between bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
+        <button
+          type="button"
+          onClick={() => setActiveView('dashboard')}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2c3e50] hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          <span>Back</span>
+        </button>
+
+        <h2 className="text-base sm:text-lg font-black text-slate-800 text-center tracking-tight">
+          Easy Load Balance Manager
+        </h2>
+
+        <div className="w-8" />
+      </div>
+
+      {successMsg && (
+        <div className="p-3 bg-emerald-50 text-emerald-800 rounded-xl text-xs font-bold text-center border border-emerald-200 flex items-center justify-center gap-1.5 animate-in fade-in">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+          <span>Record Saved Successfully!</span>
         </div>
+      )}
+
+      {/* Date Filter */}
+      <div className="bg-white p-3 rounded-2xl text-center shadow-xs border border-slate-200/80">
         <input
           type="date"
           value={filterDate}
           onChange={e => setFilterDate(e.target.value)}
-          className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold"
+          className="py-1.5 px-4 bg-slate-50 border border-slate-300 font-bold text-xs rounded-full shadow-xs cursor-pointer focus:outline-none"
         />
       </div>
 
-      {/* Purchase Load Form */}
-      <form onSubmit={handlePurchase} className="bg-white p-4 rounded-2xl border border-slate-200 space-y-3 text-xs">
-        <div className="font-black text-slate-800">Add New Load Purchase (+2.4% Auto Commission)</div>
-        <div className="flex flex-wrap gap-2">
-          <select
-            value={purchNet}
-            onChange={e => setPurchNet(e.target.value as any)}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold uppercase"
-          >
-            <option value="jazz">Jazz</option>
-            <option value="telenor">Telenor</option>
-            <option value="zong">Zong</option>
-            <option value="ufone">Ufone</option>
-          </select>
-          <input
-            type="number"
-            value={purchAmount}
-            onChange={e => setPurchAmount(e.target.value)}
-            placeholder="Cash Paid (Rs.)"
-            className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold font-mono"
-          />
+      {/* Toggle Slider (Matching PHP: Closing vs Opening) */}
+      <div className="bg-slate-200 p-1.5 rounded-full flex relative select-none cursor-pointer">
+        <div
+          className={`absolute top-1.5 bottom-1.5 w-[calc(50%-6px)] rounded-full transition-all duration-300 shadow-md ${
+            activeState === 'closing'
+              ? 'left-1.5 bg-gradient-to-r from-purple-600 to-purple-500'
+              : 'left-[calc(50%+1.5px)] bg-gradient-to-r from-blue-600 to-blue-500'
+          }`}
+        />
+        <button
+          type="button"
+          onClick={() => setActiveState('closing')}
+          className={`flex-1 py-2 text-xs font-bold z-10 text-center transition-colors ${
+            activeState === 'closing' ? 'text-white' : 'text-slate-600'
+          }`}
+        >
+          TOTAL CLOSING
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveState('opening')}
+          className={`flex-1 py-2 text-xs font-bold z-10 text-center transition-colors ${
+            activeState === 'opening' ? 'text-white' : 'text-slate-600'
+          }`}
+        >
+          TOTAL OPENING
+        </button>
+      </div>
+
+      {/* Live Total Display Banner */}
+      <div
+        className={`p-4 rounded-2xl text-white text-center shadow-md transition-all duration-300 ${
+          activeState === 'closing'
+            ? 'bg-gradient-to-r from-[#8e44ad] to-[#9b59b6]'
+            : 'bg-gradient-to-r from-[#2980b9] to-[#3498db]'
+        }`}
+      >
+        <div className="text-2xl font-black font-mono tracking-tight">
+          Rs. {(activeState === 'closing' ? totalClosing : totalOpening).toLocaleString()}
+        </div>
+        <p className="text-[10px] font-bold uppercase tracking-wider opacity-90 mt-0.5">
+          {activeState === 'closing' ? 'Total Closing Balance Loaded' : 'Total Opening Balance Loaded'}
+        </p>
+      </div>
+
+      {/* 4 Networks Form Card */}
+      <div className="bg-white rounded-2xl p-4 sm:p-5 shadow-xs border border-slate-200/80 space-y-4">
+        <form onSubmit={handleSave} className="space-y-4 text-xs">
+          {/* JAZZ */}
+          <div className="flex items-center justify-between pb-3 border-b border-dashed border-slate-200 gap-3">
+            <div>
+              <span className="font-bold text-amber-700 text-sm flex items-center gap-1">
+                <Bolt className="w-4 h-4 text-amber-500" /> JAZZ
+              </span>
+              <span className="text-[11px] text-slate-400 block mt-0.5 font-medium">
+                Yesterday: Rs. {yesterdayData.jazz_closing.toLocaleString()}
+              </span>
+            </div>
+            <div className="w-36">
+              <input
+                type="number"
+                step="any"
+                value={activeState === 'closing' ? formData.jazz_closing || '' : formData.jazz_opening || ''}
+                onChange={e =>
+                  handleInputChange(activeState === 'closing' ? 'jazz_closing' : 'jazz_opening', e.target.value)
+                }
+                placeholder="0.00"
+                className="w-full p-2 bg-slate-50 border-2 border-amber-300 rounded-xl font-bold text-right text-xs focus:outline-none"
+              />
+            </div>
+          </div>
+
+          {/* TELENOR */}
+          <div className="flex items-center justify-between pb-3 border-b border-dashed border-slate-200 gap-3">
+            <div>
+              <span className="font-bold text-blue-700 text-sm flex items-center gap-1">
+                <Circle className="w-4 h-4 text-blue-500" /> TELENOR
+              </span>
+              <span className="text-[11px] text-slate-400 block mt-0.5 font-medium">
+                Yesterday: Rs. {yesterdayData.telenor_closing.toLocaleString()}
+              </span>
+            </div>
+            <div className="w-36">
+              <input
+                type="number"
+                step="any"
+                value={activeState === 'closing' ? formData.telenor_closing || '' : formData.telenor_opening || ''}
+                onChange={e =>
+                  handleInputChange(activeState === 'closing' ? 'telenor_closing' : 'telenor_opening', e.target.value)
+                }
+                placeholder="0.00"
+                className="w-full p-2 bg-slate-50 border-2 border-blue-300 rounded-xl font-bold text-right text-xs focus:outline-none"
+              />
+            </div>
+          </div>
+
+          {/* ZONG */}
+          <div className="flex items-center justify-between pb-3 border-b border-dashed border-slate-200 gap-3">
+            <div>
+              <span className="font-bold text-emerald-700 text-sm flex items-center gap-1">
+                <Leaf className="w-4 h-4 text-emerald-500" /> ZONG
+              </span>
+              <span className="text-[11px] text-slate-400 block mt-0.5 font-medium">
+                Yesterday: Rs. {yesterdayData.zong_closing.toLocaleString()}
+              </span>
+            </div>
+            <div className="w-36">
+              <input
+                type="number"
+                step="any"
+                value={activeState === 'closing' ? formData.zong_closing || '' : formData.zong_opening || ''}
+                onChange={e =>
+                  handleInputChange(activeState === 'closing' ? 'zong_closing' : 'zong_opening', e.target.value)
+                }
+                placeholder="0.00"
+                className="w-full p-2 bg-slate-50 border-2 border-emerald-300 rounded-xl font-bold text-right text-xs focus:outline-none"
+              />
+            </div>
+          </div>
+
+          {/* UFONE */}
+          <div className="flex items-center justify-between pb-3 border-b border-dashed border-slate-200 gap-3">
+            <div>
+              <span className="font-bold text-orange-700 text-sm flex items-center gap-1">
+                <Radio className="w-4 h-4 text-orange-500" /> UFONE
+              </span>
+              <span className="text-[11px] text-slate-400 block mt-0.5 font-medium">
+                Yesterday: Rs. {yesterdayData.ufone_closing.toLocaleString()}
+              </span>
+            </div>
+            <div className="w-36">
+              <input
+                type="number"
+                step="any"
+                value={activeState === 'closing' ? formData.ufone_closing || '' : formData.ufone_opening || ''}
+                onChange={e =>
+                  handleInputChange(activeState === 'closing' ? 'ufone_closing' : 'ufone_opening', e.target.value)
+                }
+                placeholder="0.00"
+                className="w-full p-2 bg-slate-50 border-2 border-orange-300 rounded-xl font-bold text-right text-xs focus:outline-none"
+              />
+            </div>
+          </div>
+
           <button
             type="submit"
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl flex items-center gap-1 cursor-pointer"
+            className="w-full py-3 bg-[#27ae60] hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md flex items-center justify-center gap-2 transition-all active:scale-98"
           >
-            <Check className="w-4 h-4" />
-            <span>Add Load</span>
+            <Save className="w-4 h-4" />
+            <span>Save Balance Records</span>
           </button>
-        </div>
-      </form>
-
-      {/* Network Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {networks.map(n => {
-          const openVal = (rec as any)[`${n.key}_opening`] || 0;
-          const purchVal = (rec as any)[`${n.key}_purchase`] || 0;
-          const closeVal = (rec as any)[`${n.key}_closing`] || 0;
-          return (
-            <div key={n.key} className="bg-white p-4 rounded-2xl border border-slate-200 space-y-3 text-xs">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <span className="font-black text-sm text-slate-900">{n.label}</span>
-                <span className="font-mono font-black text-emerald-700">Sale: Rs. {Math.round(n.sale).toLocaleString()}</span>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 mb-1">Opening</label>
-                  <input
-                    type="number"
-                    value={openVal}
-                    onChange={e => handleFieldChange(`${n.key}_opening`, e.target.value)}
-                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-mono font-bold"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 mb-1">Purchase</label>
-                  <input
-                    type="number"
-                    value={purchVal}
-                    onChange={e => handleFieldChange(`${n.key}_purchase`, e.target.value)}
-                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-mono font-bold"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 mb-1">Closing</label>
-                  <input
-                    type="number"
-                    value={closeVal}
-                    onChange={e => handleFieldChange(`${n.key}_closing`, e.target.value)}
-                    className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-mono font-bold"
-                  />
-                </div>
-              </div>
-            </div>
-          );
-        })}
+        </form>
       </div>
     </div>
   );

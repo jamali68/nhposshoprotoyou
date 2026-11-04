@@ -4,8 +4,24 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Store, User, Phone, MapPin, Lock, X, Check } from 'lucide-react';
+import {
+  Store,
+  User as UserIcon,
+  Calendar,
+  Phone,
+  MapPin,
+  Mail,
+  ShieldCheck,
+  Sparkles,
+  Check,
+  X,
+  AlertCircle,
+  Lock,
+  Eye,
+  EyeOff
+} from 'lucide-react';
 import { usePOS } from '../context/POSContext';
+import { TajLogo } from './TajLogo';
 
 interface AdminProfileModalProps {
   isOpen: boolean;
@@ -14,162 +30,319 @@ interface AdminProfileModalProps {
 
 export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, onClose }) => {
   const { currentShop, currentUser, updateShopProfile } = usePOS();
-  const [shopName, setShopName] = useState('');
-  const [ownerName, setOwnerName] = useState('');
-  const [phone, setPhone] = useState('');
-  const [address, setAddress] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
 
+  const [shopName, setShopName] = useState<string>('');
+  const [ownerName, setOwnerName] = useState<string>('');
+  const [password, setPassword] = useState<string>('123456');
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [phone, setPhone] = useState<string>('');
+  const [address, setAddress] = useState<string>('');
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [successMessage, setSuccessMessage] = useState<string>('');
+  const [error, setError] = useState<string>('');
+
+  // Format permanent system registration date (uneditable)
+  const registrationDateFormatted = (() => {
+    const raw = currentShop?.created_at;
+    if (raw) {
+      try {
+        const d = new Date(raw);
+        if (!isNaN(d.getTime())) {
+          return d.toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric'
+          });
+        }
+        return String(raw).slice(0, 10);
+      } catch {
+        return String(raw).slice(0, 10);
+      }
+    }
+    return new Date().toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
+  })();
+
+  // Sync state whenever modal opens or currentShop changes
   useEffect(() => {
-    if (isOpen) {
-      setShopName(currentShop?.shop_name || currentUser?.shopName || '');
-      setOwnerName(currentShop?.owner_name || currentUser?.name || '');
-      setPhone(currentShop?.phone || '');
-      setAddress(currentShop?.address || '');
-      setNewPassword('');
+    if (isOpen && currentShop) {
+      setShopName(currentShop.shop_name || '');
+      setOwnerName(currentShop.owner_name || currentUser?.name || '');
+      setPassword(currentShop.password || '123456');
+      setPhone(currentShop.phone || '');
+      setAddress(currentShop.address || '');
+      setSuccessMessage('');
+      setError('');
     }
   }, [isOpen, currentShop, currentUser]);
 
   if (!isOpen) return null;
 
-  const isStoreAdmin = Boolean(
-    currentUser?.isGoogleUser || currentUser?.role === 'admin' || currentUser?.role === 'super_admin'
-  );
-
-  const handleSave = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isStoreAdmin) {
-      onClose();
+    setError('');
+    setSuccessMessage('');
+
+    if (!shopName.trim()) {
+      setError('دکان کا نام درج کرنا لازمی ہے۔ (Shop name is required)');
       return;
     }
+    if (!ownerName.trim()) {
+      setError('مالک کا نام درج کرنا لازمی ہے۔ (Owner name is required)');
+      return;
+    }
+    if (password.trim().length < 6) {
+      setError('پاس ورڈ کم از کم 6 ہندسوں کا ہونا ضروری ہے۔ (Password must be at least 6 characters)');
+      return;
+    }
+
     setIsSaving(true);
-    await updateShopProfile({
-      shop_name: shopName.trim() || currentShop?.shop_name || 'NH POS Shop',
-      owner_name: ownerName.trim() || currentShop?.owner_name || 'Shop Owner',
-      phone: phone.trim(),
-      address: address.trim(),
-      ...(newPassword.trim().length >= 6 ? { password: newPassword.trim() } : {})
-    });
-    setIsSaving(false);
-    onClose();
+    try {
+      await updateShopProfile({
+        shop_name: shopName.trim(),
+        owner_name: ownerName.trim(),
+        password: password.trim() || '123456',
+        phone: phone.trim(),
+        address: address.trim()
+      });
+
+      setSuccessMessage('✓ دکان کا نام، مالک کا نام اور پاس ورڈ کامیابی سے محفوظ ہو گیا!');
+      setTimeout(() => {
+        setIsSaving(false);
+        onClose();
+      }, 1200);
+    } catch (err: any) {
+      setIsSaving(false);
+      setError(err?.message || 'تفصیلات محفوظ کرنے میں مسئلہ پیش آیا۔ دوبارہ کوشش کریں۔');
+    }
   };
 
+  const isSuperAdmin = currentUser?.role === 'super_admin' || currentUser?.email === 'aliimtiaz1126@gmail.com';
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 backdrop-blur-xs">
-      <div className="bg-white rounded-3xl max-w-md w-full overflow-hidden shadow-2xl border border-slate-200">
-        <div className="bg-[#1b263b] text-white px-5 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Store className="w-5 h-5 text-amber-400" />
-            <div>
-              <h3 className="font-black text-sm">دکان اور ایڈمن پروفائل</h3>
-              <p className="text-[10px] text-slate-300">Shop & Owner Profile Settings</p>
+    <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto animate-in fade-in duration-200">
+      <div className="bg-white rounded-3xl p-5 sm:p-7 max-w-lg w-full shadow-2xl border border-slate-200 text-slate-800 relative my-auto">
+        {/* Close Button */}
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-full transition-colors cursor-pointer"
+          title="بند کریں (Close)"
+        >
+          <X className="w-5 h-5" />
+        </button>
+
+        {/* Top Header */}
+        <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
+          <TajLogo size="sm" showSubtitle={false} />
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
+                ایڈمن پروفائل اور دکان کی ترتیبات
+              </h3>
+              <span
+                className={`text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                  isSuperAdmin
+                    ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                    : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                }`}
+              >
+                {isSuperAdmin ? '👑 Super Admin' : '👤 Admin'}
+              </span>
             </div>
+            <p className="text-[11px] text-slate-500 font-medium">
+              دکان کا نام اور مالک کا نام تبدیل کریں (رجسٹریشن تاریخ مستقل ہے)
+            </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-slate-400 hover:text-white p-1 rounded-lg cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
         </div>
 
-        <form onSubmit={handleSave} className="p-5 space-y-3.5 text-xs">
+        {/* Success Alert */}
+        {successMessage && (
+          <div className="mt-4 p-3 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-bold text-left flex items-center gap-2 animate-in fade-in">
+            <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{successMessage}</span>
+          </div>
+        )}
+
+        {/* Error Alert */}
+        {error && (
+          <div className="mt-4 p-3 bg-rose-50 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold text-left flex items-center gap-2 animate-in fade-in">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="mt-4 space-y-3.5 text-xs text-left">
+          {/* Registered Email (Protected Google Account) */}
+          <div className="p-2.5 bg-blue-50/70 border border-blue-200/80 rounded-2xl flex items-center justify-between">
+            <div className="flex items-center gap-2 min-w-0">
+              <Mail className="w-4 h-4 text-blue-600 shrink-0" />
+              <div className="min-w-0">
+                <span className="text-[10px] text-blue-900 font-bold block">
+                  رجسٹرڈ گوگل اکاؤنٹ (Primary Email)
+                </span>
+                <span className="font-mono font-bold text-blue-950 text-xs truncate block">
+                  {currentUser?.email || currentShop?.owner_email || 'aliimtiaz1126@gmail.com'}
+                </span>
+              </div>
+            </div>
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-blue-600 text-white px-2 py-0.5 rounded-full shrink-0">
+              <ShieldCheck className="w-3 h-3" />
+              <span>تصدیق شدہ (Verified)</span>
+            </span>
+          </div>
+
+          {/* Shop Name Input */}
           <div>
-            <label className="block font-bold text-slate-700 mb-1">Shop Name (دکان کا نام)</label>
+            <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+              دکان کا نام (Shop Name) *
+            </label>
             <div className="relative">
               <Store className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
               <input
                 type="text"
-                disabled={!isStoreAdmin}
+                required
                 value={shopName}
                 onChange={e => setShopName(e.target.value)}
-                className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 disabled:opacity-60"
+                placeholder="مثلاً: Taj karnaya and Mobile Shop"
+                className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white text-sm transition-all"
               />
             </div>
+            <p className="text-[10px] text-slate-500 mt-1">
+              * رسیدوں، بلوں اور پی او ایس ہیڈر پر یہی نام پرنٹ اور ظاہر ہوگا۔
+            </p>
           </div>
 
+          {/* Owner Name Input */}
           <div>
-            <label className="block font-bold text-slate-700 mb-1">Owner Name (مالک کا نام)</label>
+            <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+              مالک کا نام (Owner / Admin Name) *
+            </label>
             <div className="relative">
-              <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+              <UserIcon className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
               <input
                 type="text"
-                disabled={!isStoreAdmin}
+                required
                 value={ownerName}
                 onChange={e => setOwnerName(e.target.value)}
-                className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 disabled:opacity-60"
+                placeholder="مثلاً: Ali Imtiaz"
+                className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white text-sm transition-all"
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2.5">
+          {/* Owner Login Password */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-[11px] font-bold text-slate-700 uppercase">
+                مالک کا لاگ ان پاس ورڈ (Login Password)
+              </label>
+              <span className="text-[10px] text-slate-400 font-medium">
+                کم از کم 6 ہندسے
+              </span>
+            </div>
+            <div className="relative">
+              <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder="نیا پاس ورڈ درج کریں"
+                className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white text-sm transition-all font-mono"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                title={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-500 mt-1">
+              * آپ اپنی مرضی کا نیا پاس ورڈ بھی رکھ سکتے ہیں۔ بیک اپ لاگ ان میں یہی پاس ورڈ استعمال ہوگا۔
+            </p>
+          </div>
+
+          {/* Account Registration Date (Permanent System Date - Uneditable, Dim, No Lock Icon) */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-[11px] font-bold text-slate-600 uppercase">
+                اکاؤنٹ رجسٹریشن تاریخ (Registration Date)
+              </label>
+              <span className="text-[10px] text-slate-400 font-medium bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
+                مستقل سسٹم تاریخ (Permanent)
+              </span>
+            </div>
+            <div className="relative">
+              <Calendar className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+              <div className="w-full pl-10 pr-3.5 py-2.5 bg-slate-100/80 border border-slate-200 text-slate-500 rounded-xl font-mono text-sm select-none cursor-default">
+                {registrationDateFormatted}
+              </div>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-1">
+              * یہ تاریخ اکاؤنٹ رجسٹریشن کے وقت سسٹم میں محفوظ ہوئی تھی اور ہمیشہ کے لیے غیر تبدیل شدہ (Permanent) رہے گی۔
+            </p>
+          </div>
+
+          {/* Phone Number */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block font-bold text-slate-700 mb-1">Phone</label>
+              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                رابطہ / واٹس ایپ نمبر
+              </label>
               <div className="relative">
-                <Phone className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                <Phone className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                 <input
                   type="text"
-                  disabled={!isStoreAdmin}
                   value={phone}
                   onChange={e => setPhone(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 disabled:opacity-60"
+                  placeholder="مثلاً: 03001234567"
+                  className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white text-xs transition-all font-mono"
                 />
               </div>
             </div>
+
             <div>
-              <label className="block font-bold text-slate-700 mb-1">Address</label>
+              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                دکان کا پتہ / شہر
+              </label>
               <div className="relative">
-                <MapPin className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                <MapPin className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                 <input
                   type="text"
-                  disabled={!isStoreAdmin}
                   value={address}
                   onChange={e => setAddress(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 disabled:opacity-60"
+                  placeholder="مثلاً: مین بازار، صادق آباد"
+                  className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white text-xs transition-all"
                 />
               </div>
             </div>
           </div>
 
-          {isStoreAdmin && (
-            <div>
-              <label className="block font-bold text-slate-700 mb-1">
-                Change Shop Password (نیا پاس ورڈ - اختیاری)
-              </label>
-              <div className="relative">
-                <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                <input
-                  type="password"
-                  minLength={6}
-                  value={newPassword}
-                  onChange={e => setNewPassword(e.target.value)}
-                  placeholder="Leave blank to keep current password"
-                  className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 font-mono"
-                />
-              </div>
-            </div>
-          )}
-
-          <div className="flex justify-end gap-2 pt-2">
+          {/* Action Buttons */}
+          <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl cursor-pointer"
+              disabled={isSaving}
+              className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-all cursor-pointer"
             >
-              Close
+              منسوخ کریں (Cancel)
             </button>
-            {isStoreAdmin && (
-              <button
-                type="submit"
-                disabled={isSaving}
-                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl flex items-center gap-1.5 cursor-pointer"
-              >
-                <Check className="w-4 h-4" />
-                <span>{isSaving ? 'Saving...' : 'Save Changes'}</span>
-              </button>
-            )}
+
+            <button
+              type="submit"
+              disabled={isSaving}
+              className="py-2.5 px-5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black rounded-xl text-xs shadow-md shadow-blue-600/30 flex items-center gap-2 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+            >
+              <Sparkles className="w-4 h-4 text-yellow-300" />
+              <span>{isSaving ? 'محفوظ ہو رہا ہے...' : 'تبدیلیاں محفوظ کریں (Save Changes)'}</span>
+            </button>
           </div>
         </form>
       </div>
