@@ -1,9 +1,9 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v17.3.3
+ * Version: v17.3.4
  * Comprehensive Offline & GitHub Pages Support
  */
-const SW_VERSION = 'v17.3.3';
+const SW_VERSION = 'v17.3.4';
 const CACHE_NAME = 'nh-pos-' + SW_VERSION;
 
 // Core static assets to precache immediately on install
@@ -17,11 +17,14 @@ const CORE_ASSETS = [
   'icon.png',
   'icon1.png',
   'apple-touch-icon.png',
-  'dist-bundle/app.js',
-  'dist-bundle/index.css'
+  'icon.svg'
 ];
 
-const PRECACHE_ASSETS = Array.from(new Set([...CORE_ASSETS]));
+const INJECTED_ASSETS = [
+  /* __BUILD_ASSETS__ */
+];
+
+const PRECACHE_ASSETS = Array.from(new Set([...CORE_ASSETS, ...INJECTED_ASSETS]));
 
 // 1. FAIL-SAFE INSTALL:
 self.addEventListener('install', (event) => {

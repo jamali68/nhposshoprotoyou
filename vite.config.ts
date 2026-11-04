@@ -119,13 +119,13 @@ function githubPagesBundleSyncPlugin(): Plugin {
 export default defineConfig(() => {
   return {
     base: './',
-    plugins: [react(), tailwindcss(), netlifyFunctionsDevPlugin(), githubPagesBundleSyncPlugin()],
+    plugins: [react(), tailwindcss(), netlifyFunctionsDevPlugin()],
     build: {
       rollupOptions: {
         output: {
-          inlineDynamicImports: true,
-          entryFileNames: 'assets/app.js',
-          assetFileNames: 'assets/[name].[ext]'
+          entryFileNames: 'assets/app-[hash].js',
+          chunkFileNames: 'assets/[name]-[hash].js',
+          assetFileNames: 'assets/[name]-[hash].[ext]'
         }
       }
     },

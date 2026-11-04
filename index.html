@@ -114,46 +114,40 @@
     <script type="module" src="/src/main.tsx"></script>
     <script>
       (function() {
+        var TARGET_VER = 'v17.3.4';
         var isDevEnv =
           window.location.hostname === 'localhost' ||
           window.location.hostname === '127.0.0.1' ||
           window.location.hostname.includes('run.app');
 
-        function loadStaticBundle() {
-          if (document.getElementById('nh-static-bundle-js')) return;
-          var css = document.createElement('link');
-          css.id = 'nh-static-bundle-css';
-          css.rel = 'stylesheet';
-          css.href = './dist-bundle/index.css?v=17.3.3';
-          document.head.appendChild(css);
-
-          var js = document.createElement('script');
-          js.id = 'nh-static-bundle-js';
-          js.type = 'module';
-          js.src = './dist-bundle/app.js?v=17.3.3';
-          document.body.appendChild(js);
-        }
-
-        // If served directly from raw GitHub Pages branch (where /src/main.tsx is not compiled by Vite build)
-        var uncompiledTsx = document.querySelector('script[src*="/src/main.tsx"]');
-        if (!isDevEnv && uncompiledTsx) {
-          loadStaticBundle();
-        }
-
-        // Self-healing fallback: if splash screen is still stuck after 3s on deployed site, load bundle & refresh stale SW
         if (!isDevEnv) {
+          try {
+            var lastVer = localStorage.getItem('nh_pos_bundle_ver');
+            if (lastVer !== TARGET_VER) {
+              localStorage.setItem('nh_pos_bundle_ver', TARGET_VER);
+              if ('caches' in window) {
+                caches.keys().then(function(keys) {
+                  return Promise.all(
+                    keys.map(function(k) {
+                      if (k !== 'nh-pos-' + TARGET_VER) {
+                        return caches.delete(k);
+                      }
+                    })
+                  );
+                }).then(function() {
+                  window.location.reload();
+                });
+              }
+            }
+          } catch (e) {}
+
           if ('serviceWorker' in navigator) {
             navigator.serviceWorker.addEventListener('message', function(event) {
-              if (event.data && event.data.type === 'SW_UPDATED' && document.getElementById('pwa-splash')) {
+              if (event.data && event.data.type === 'SW_UPDATED') {
                 window.location.reload();
               }
             });
           }
-          setTimeout(function() {
-            if (document.getElementById('pwa-splash')) {
-              loadStaticBundle();
-            }
-          }, 2500);
         }
       })();
     </script>
