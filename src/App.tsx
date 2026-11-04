@@ -352,8 +352,8 @@ const MainAppContent: React.FC = () => {
         )}
 
         {/* Top Sticky Navbar */}
-        <header className="bg-white px-2.5 sm:px-4 py-2.5 sm:py-3 border-b border-slate-200/80 sticky top-0 z-20 flex items-center justify-between gap-1.5 shadow-xs">
-          <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
+        <header className="bg-white px-3 sm:px-4 py-2.5 sm:py-3 border-b border-slate-200/80 sticky top-0 z-20 flex items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1 pr-1">
             <button
               type="button"
               onClick={() => setIsSidebarOpen(true)}
@@ -370,39 +370,37 @@ const MainAppContent: React.FC = () => {
               <Menu className="w-5 h-5" />
             </button>
 
-            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1">
               <TajLogo size="sm" showSubtitle={false} />
-              <div className="min-w-0">
-                <span className="font-black text-[11.5px] sm:text-sm text-[#2c3e50] block tracking-tight leading-tight whitespace-nowrap">
-                  {currentShop?.shop_name || currentUser.shopName || 'NH POS Shop'}
-                </span>
-                <span className="text-[10px] text-amber-600 font-medium block leading-tight whitespace-nowrap">
+              <div className="min-w-0 flex-1">
+                {(() => {
+                  const headerShopName = (currentShop?.shop_name || currentUser.shopName || 'NH POS Shop').trim();
+                  const len = headerShopName.length;
+                  const titleSizeClass =
+                    len <= 16
+                      ? 'text-base sm:text-lg'
+                      : len <= 24
+                      ? 'text-[14px] sm:text-base'
+                      : len <= 30
+                      ? 'text-[13px] sm:text-base'
+                      : 'text-xs sm:text-sm';
+                  return (
+                    <span
+                      className={`font-black ${titleSizeClass} text-[#2c3e50] block tracking-tight leading-tight whitespace-nowrap truncate`}
+                      title={headerShopName}
+                    >
+                      {headerShopName}
+                    </span>
+                  );
+                })()}
+                <span className="text-[10px] sm:text-[11px] text-amber-600 font-medium block leading-tight whitespace-nowrap truncate mt-0.5">
                   {currentShop?.owner_name ? `Owner: ${currentShop.owner_name}` : 'Point of Sale System'}
                 </span>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-            {/* Install App button visible whenever not running in standalone mode */}
-            {!isAppInstalled && (
-              <button
-                type="button"
-                onClick={async () => {
-                  const success = await installApp();
-                  if (!success) {
-                    setShowInstallGuide(true);
-                  }
-                }}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold shadow-xs active:scale-95 transition-all cursor-pointer"
-                title="NH POS Shop ایپ فون یا کمپیوٹر میں انسٹال کریں"
-              >
-                <Download className="w-3.5 h-3.5 animate-bounce" />
-                <span className="hidden sm:inline">Install App</span>
-                <span className="sm:hidden text-[11px]">Install</span>
-              </button>
-            )}
-
+          <div className="flex items-center shrink-0">
             <div className="relative flex flex-col items-center">
             {/* Online / Offline Status Dot with Outer Ring & Red Line Below ONLY if Unsynced Pending Entries */}
             <button
