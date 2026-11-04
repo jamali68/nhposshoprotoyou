@@ -138,11 +138,10 @@ export const DashboardView: React.FC = () => {
   return (
     <div className="space-y-4 pb-10">
       {/* Welcome Card with Date Picker */}
-      <div className="bg-white rounded-2xl p-3.5 sm:p-5 shadow-xs border border-slate-200/80 flex flex-wrap items-center justify-between gap-2.5 sm:gap-3">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-base sm:text-xl md:text-2xl font-black text-slate-800 tracking-tight flex items-center gap-1.5 whitespace-nowrap">
-            <span className="truncate">Assalam-o-Alaikum, {currentUser?.name || 'Owner'}!</span>
-            <span className="shrink-0">👋</span>
+      <div className="bg-white rounded-2xl p-4 sm:p-5 shadow-xs border border-slate-200/80 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 sm:gap-3">
+        <div className="w-full sm:w-auto">
+          <h2 className="text-[16px] sm:text-2xl font-black text-slate-800 tracking-tight whitespace-nowrap">
+            Assalam-o-Alaikum, {currentUser?.name || 'Owner'}! 👋
           </h2>
           <div className="flex items-center gap-2 mt-1.5 text-xs font-semibold text-slate-500 whitespace-nowrap">
             <span>Date:</span>
@@ -153,13 +152,13 @@ export const DashboardView: React.FC = () => {
         </div>
 
         {/* Dynamic Date Filter Picker */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2">
           <div className="relative">
             <input
               type="date"
               value={filterDate}
               onChange={e => setFilterDate(e.target.value)}
-              className="w-[145px] sm:w-[155px] py-1.5 px-2.5 sm:px-3 bg-slate-50 border-2 border-slate-200 text-slate-700 font-bold text-xs rounded-full shadow-xs cursor-pointer focus:outline-none focus:border-emerald-600 transition-colors text-center"
+              className="w-[155px] py-1.5 px-3 bg-slate-50 border-2 border-slate-200 text-slate-700 font-bold text-xs rounded-full shadow-xs cursor-pointer focus:outline-none focus:border-emerald-600 transition-colors text-center"
             />
           </div>
 
@@ -295,10 +294,10 @@ export const DashboardView: React.FC = () => {
 
       {/* Easyload Ledger Section (Matching load_index.php) */}
       <div className="bg-white rounded-2xl p-4 sm:p-5 shadow-xs border border-slate-200/80 space-y-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+        <div className="flex items-center justify-between gap-1.5">
+          <div className="flex items-center gap-1.5 sm:gap-2">
             <Radio className="w-4 h-4 text-[#e67e22] shrink-0" />
-            <h3 className="font-extrabold text-xs sm:text-base text-slate-800 whitespace-nowrap truncate">
+            <h3 className="font-extrabold text-[13px] sm:text-base text-slate-800 tracking-tight whitespace-nowrap">
               Easy Load Ledger ({formattedDate})
             </h3>
           </div>

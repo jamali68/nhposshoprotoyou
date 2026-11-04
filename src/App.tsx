@@ -352,38 +352,38 @@ const MainAppContent: React.FC = () => {
         )}
 
         {/* Top Sticky Navbar */}
-        <header className="bg-white px-4 py-3 border-b border-slate-200/80 sticky top-0 z-20 flex items-center justify-between shadow-xs">
-          <div className="flex items-center gap-3">
+        <header className="bg-white px-2.5 sm:px-4 py-2.5 sm:py-3 border-b border-slate-200/80 sticky top-0 z-20 flex items-center justify-between gap-1.5 shadow-xs">
+          <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
             <button
               type="button"
               onClick={() => setIsSidebarOpen(true)}
-              className="p-2 text-[#2c3e50] hover:bg-slate-100 rounded-xl transition-colors md:hidden"
+              className="p-1.5 sm:p-2 text-[#2c3e50] hover:bg-slate-100 rounded-xl transition-colors md:hidden shrink-0"
             >
-              <Menu className="w-6 h-6" />
+              <Menu className="w-5 h-5 sm:w-6 sm:h-6" />
             </button>
 
             <button
               type="button"
               onClick={() => setIsSidebarOpen(prev => !prev)}
-              className="hidden md:flex p-1.5 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              className="hidden md:flex p-1.5 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors shrink-0"
             >
               <Menu className="w-5 h-5" />
             </button>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
               <TajLogo size="sm" showSubtitle={false} />
-              <div>
-                <span className="font-black text-sm text-[#2c3e50] block tracking-tight leading-tight">
+              <div className="min-w-0">
+                <span className="font-black text-[11.5px] sm:text-sm text-[#2c3e50] block tracking-tight leading-tight whitespace-nowrap">
                   {currentShop?.shop_name || currentUser.shopName || 'NH POS Shop'}
                 </span>
-                <span className="text-[10px] text-amber-600 font-medium block leading-tight">
+                <span className="text-[10px] text-amber-600 font-medium block leading-tight whitespace-nowrap">
                   {currentShop?.owner_name ? `Owner: ${currentShop.owner_name}` : 'Point of Sale System'}
                 </span>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {/* Install App button visible whenever not running in standalone mode */}
             {!isAppInstalled && (
               <button
