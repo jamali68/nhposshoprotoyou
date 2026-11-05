@@ -94,7 +94,7 @@ export const LoginView: React.FC = () => {
   // Sign Up / New Shop Registration Form State
   const [signupShopName, setSignupShopName] = useState<string>('');
   const [signupOwnerName, setSignupOwnerName] = useState<string>('');
-  const [signupEmail, setSignupEmail] = useState<string>(() => getStoredAuthorizedEmail() || '');
+  const [signupEmail, setSignupEmail] = useState<string>('');
   const [signupPassword, setSignupPassword] = useState<string>('');
   const [showSignupPassword, setShowSignupPassword] = useState<boolean>(false);
   const [signupPhone, setSignupPhone] = useState<string>('');
@@ -201,6 +201,10 @@ export const LoginView: React.FC = () => {
 
     if (!result.success) {
       setError(result.error || (lang === 'en' ? 'Login failed. Please check your email and password.' : 'لاگ ان کرنے میں مسئلہ پیش آیا۔ ای میل اور پاس ورڈ چیک کریں۔'));
+    } else {
+      try {
+        localStorage.setItem('taj_pos_saved_login_email', cleanEmail);
+      } catch {}
     }
   };
 
@@ -243,6 +247,10 @@ export const LoginView: React.FC = () => {
 
     if (!result.success) {
       setError(result.error || (lang === 'en' ? 'Failed to register shop. Please try again.' : 'دکان رجسٹر کرنے میں مسئلہ پیش آیا۔ دوبارہ کوشش کریں۔'));
+    } else {
+      try {
+        localStorage.setItem('taj_pos_saved_login_email', cleanEmail);
+      } catch {}
     }
   };
 
@@ -493,12 +501,14 @@ export const LoginView: React.FC = () => {
                   <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                   <input
                     type="email"
+                    name="email"
+                    autoComplete="email"
                     value={gmailInput}
                     onChange={e => {
                       setGmailInput(e.target.value);
                       setError('');
                     }}
-                    placeholder={isUrdu ? 'مثلاً: your-email@gmail.com' : 'e.g. your-email@gmail.com'}
+                    placeholder={isUrdu ? 'مثلاً: nhposshop@gmail.com' : 'e.g. nhposshop@gmail.com'}
                     required
                     dir="ltr"
                     className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:outline-none focus:border-blue-600 focus:bg-white transition-all text-sm font-mono text-slate-900"
@@ -528,6 +538,8 @@ export const LoginView: React.FC = () => {
                   <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                   <input
                     type={showOwnerPassword ? 'text' : 'password'}
+                    name="password"
+                    autoComplete="current-password"
                     value={ownerPassword}
                     onChange={e => {
                       setOwnerPassword(e.target.value);
@@ -616,7 +628,7 @@ export const LoginView: React.FC = () => {
                       setSignupShopName(e.target.value);
                       setError('');
                     }}
-                    placeholder={isUrdu ? 'مثلاً: تاج کریانہ اینڈ موبائل شاپ' : 'e.g. Super Retail Store'}
+                    placeholder={isUrdu ? 'مثلاً: تاج موبائل شاپ' : 'e.g. Taj Mobile Shop'}
                     className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm"
                   />
                 </div>
@@ -636,7 +648,7 @@ export const LoginView: React.FC = () => {
                       setSignupOwnerName(e.target.value);
                       setError('');
                     }}
-                    placeholder={isUrdu ? 'مثلاً: محمد وصی' : 'e.g. Muhammad Wasi'}
+                    placeholder={isUrdu ? 'مثلاً: واصف علی' : 'e.g. Wasif Ali'}
                     className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm"
                   />
                 </div>
@@ -656,7 +668,7 @@ export const LoginView: React.FC = () => {
                       setSignupEmail(e.target.value);
                       setError('');
                     }}
-                    placeholder={isUrdu ? 'مثلاً: owner@gmail.com' : 'e.g. owner@gmail.com'}
+                    placeholder={isUrdu ? 'مثلاً: nhposshop@gmail.com' : 'e.g. nhposshop@gmail.com'}
                     dir="ltr"
                     className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm font-mono"
                   />
@@ -1041,7 +1053,7 @@ export const LoginView: React.FC = () => {
                           setForgotAccountInput(e.target.value);
                           setForgotModalError('');
                         }}
-                        placeholder={isUrdu ? 'مثلاً: your-shop@gmail.com' : 'e.g. your-shop@gmail.com'}
+                        placeholder={isUrdu ? 'مثلاً: nhposshop@gmail.com' : 'e.g. nhposshop@gmail.com'}
                         dir="ltr"
                         className="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl font-mono font-bold text-xs text-slate-900 focus:outline-none focus:border-blue-600"
                       />

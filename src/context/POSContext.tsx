@@ -2090,6 +2090,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         localStorage.setItem('taj_pos_user', JSON.stringify(userObj));
         localStorage.setItem('taj_pos_shop', JSON.stringify(existingShop));
         localStorage.setItem(`taj_pos_shop_${activeShopId}`, JSON.stringify(existingShop));
+        if (cleanEmail && cleanEmail !== 'demo@tajpos.com') {
+          try {
+            localStorage.setItem('taj_pos_saved_login_email', cleanEmail);
+          } catch {}
+        }
 
         if (isSuperAdminUser) {
           try {

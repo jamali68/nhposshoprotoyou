@@ -476,34 +476,12 @@ export async function syncOfflineAuthLogs(shopId?: string): Promise<void> {
  */
 export function getStoredAuthorizedEmail(): string | null {
   try {
-    const deviceId = getOrCreateDeviceId();
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith(TRUST_TOKEN_PREFIX)) {
-        const val = localStorage.getItem(k);
-        if (val) {
-          const jsonStr = unscrambleSecret(val);
-          if (jsonStr) {
-            try {
-              const rec = JSON.parse(jsonStr) as DeviceTrustRecord;
-              if (rec && rec.email && rec.deviceId === deviceId && rec.status !== 'revoked') {
-                return rec.email.toLowerCase();
-              }
-            } catch {}
-          }
-        }
+    const savedEmail = localStorage.getItem('taj_pos_saved_login_email');
+    if (savedEmail && savedEmail.includes('@')) {
+      const clean = savedEmail.trim().toLowerCase();
+      if (clean !== 'demo@tajpos.com') {
+        return clean;
       }
-    }
-    const storedShop = localStorage.getItem('taj_pos_shop');
-    if (storedShop) {
-      try {
-        const s = JSON.parse(storedShop);
-        if (s && s.owner_email) return s.owner_email.toLowerCase();
-      } catch {}
-    }
-    const saSession = localStorage.getItem('taj_super_admin_session');
-    if (saSession) {
-      return 'aliimtiaz1126@gmail.com';
     }
     return null;
   } catch {
