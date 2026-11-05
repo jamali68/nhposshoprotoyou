@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-export const DEFAULT_APP_VERSION = 'v17.4.2';
+export const DEFAULT_APP_VERSION = 'v17.4.5';
 
 let liveSwVersionCache: string | null = null;
 

@@ -20,7 +20,9 @@ import {
   History,
   Briefcase,
   TrendingUp,
-  Clock
+  Clock,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
 import { HistoryModal } from '../components/HistoryModal';
@@ -47,6 +49,9 @@ export const DailyCashView: React.FC = () => {
     goBack,
     registerBackHandler
   } = usePOS();
+
+  // Privacy state for Total Shop Cash box (Hidden by default)
+  const [isTotalHidden, setIsTotalHidden] = useState<boolean>(true);
 
   // New Transaction Form State
   const [entryType, setEntryType] = useState<'out' | 'in' | 'opening' | 'from_back_cash' | 'to_back_cash' | 'shift_closing'>('out');
@@ -634,9 +639,21 @@ export const DailyCashView: React.FC = () => {
       />
 
       {/* Main Green Shop Cash Banner */}
-      <div className="bg-[#27ae60] text-white p-5 rounded-2xl text-center shadow-lg shadow-emerald-600/20">
-        <h2 className="text-3xl font-black tracking-tight font-mono">
-          Rs. {stats.balance.toLocaleString()}
+      <div className="bg-[#27ae60] text-white p-5 rounded-2xl text-center shadow-lg shadow-emerald-600/20 relative">
+        <button
+          type="button"
+          onClick={() => setIsTotalHidden(prev => !prev)}
+          title={isTotalHidden ? 'Show Total Shop Cash' : 'Hide Total Shop Cash'}
+          className="absolute top-3.5 right-3.5 w-8 h-8 rounded-full bg-black/20 hover:bg-black/30 flex items-center justify-center text-white transition-colors cursor-pointer"
+        >
+          {isTotalHidden ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+        </button>
+
+        <h2
+          onClick={() => setIsTotalHidden(prev => !prev)}
+          className="text-3xl font-black tracking-tight font-mono cursor-pointer select-none"
+        >
+          {isTotalHidden ? 'Rs. ****' : `Rs. ${stats.balance.toLocaleString()}`}
         </h2>
         <p className="text-xs font-bold uppercase tracking-wider opacity-90 mt-1">
           TOTAL SHOP CASH ({new Date(filterDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })})
@@ -659,44 +676,46 @@ export const DailyCashView: React.FC = () => {
         </div>
 
         {/* Back Cash Transfer / Leen Deen Record (بیک کیش لین دین ریکارڈ) */}
-        <div className="mt-3 text-left bg-black/25 backdrop-blur-xs border border-white/20 rounded-xl p-2.5 text-xs text-white">
-          <div className="flex items-center justify-between gap-1.5 mb-1.5 pb-1 border-b border-white/15">
-            <span className="font-bold flex items-center gap-1.5 text-white/95 text-[11px]">
-              <span className="text-amber-300 text-sm">🔁</span>
-              <span>Back Cash لین دین (Transfer Record):</span>
-            </span>
-            <span
-              className={`font-mono font-black text-[11px] px-2 py-0.5 rounded-md border ${
-                backCashTransfers.net === 0
-                  ? 'bg-emerald-500/30 text-emerald-200 border-emerald-400/40'
+        {backCashTransfers.hasTransfers && (
+          <div className="mt-3 text-left bg-black/25 backdrop-blur-xs border border-white/20 rounded-xl p-2.5 text-xs text-white">
+            <div className="flex items-center justify-between gap-1.5 mb-1.5 pb-1 border-b border-white/15">
+              <span className="font-bold flex items-center gap-1.5 text-white/95 text-[11px]">
+                <span className="text-amber-300 text-sm">🔁</span>
+                <span>Back Cash لین دین (Transfer Record):</span>
+              </span>
+              <span
+                className={`font-mono font-black text-[11px] px-2 py-0.5 rounded-md border ${
+                  backCashTransfers.net === 0
+                    ? 'bg-emerald-500/30 text-emerald-200 border-emerald-400/40'
+                    : backCashTransfers.net > 0
+                    ? 'bg-blue-500/30 text-blue-200 border-blue-400/40'
+                    : 'bg-amber-500/30 text-amber-200 border-amber-400/40'
+                }`}
+              >
+                {backCashTransfers.net === 0
+                  ? 'Net: Rs. 0 (برابر / صاف)'
                   : backCashTransfers.net > 0
-                  ? 'bg-blue-500/30 text-blue-200 border-blue-400/40'
-                  : 'bg-amber-500/30 text-amber-200 border-amber-400/40'
-              }`}
-            >
-              {backCashTransfers.net === 0
-                ? 'Net: Rs. 0 (برابر / صاف)'
-                : backCashTransfers.net > 0
-                ? `Net: +Rs. ${backCashTransfers.net.toLocaleString()} (بیک کیش سے آیا)`
-                : `Net: -Rs. ${Math.abs(backCashTransfers.net).toLocaleString()} (بیک کیش کو دیا)`}
-            </span>
-          </div>
+                  ? `Net: +Rs. ${backCashTransfers.net.toLocaleString()} (بیک کیش سے آیا)`
+                  : `Net: -Rs. ${Math.abs(backCashTransfers.net).toLocaleString()} (بیک کیش کو دیا)`}
+              </span>
+            </div>
 
-          <div className="grid grid-cols-2 gap-2 text-center text-[10px]">
-            <div className="bg-white/10 rounded-lg py-1 px-1.5 border border-white/5">
-              <span className="text-blue-200 block font-semibold truncate">بیک کیش سے آیا (+)</span>
-              <span className="font-mono font-bold text-white text-[12px]">
-                Rs. {backCashTransfers.fromBack.toLocaleString()}
-              </span>
-            </div>
-            <div className="bg-white/10 rounded-lg py-1 px-1.5 border border-white/5">
-              <span className="text-amber-200 block font-semibold truncate">بیک کیش کو دیا (-)</span>
-              <span className="font-mono font-bold text-white text-[12px]">
-                Rs. {backCashTransfers.toBack.toLocaleString()}
-              </span>
+            <div className="grid grid-cols-2 gap-2 text-center text-[10px]">
+              <div className="bg-white/10 rounded-lg py-1 px-1.5 border border-white/5">
+                <span className="text-blue-200 block font-semibold truncate">بیک کیش سے آیا (+)</span>
+                <span className="font-mono font-bold text-white text-[12px]">
+                  Rs. {backCashTransfers.fromBack.toLocaleString()}
+                </span>
+              </div>
+              <div className="bg-white/10 rounded-lg py-1 px-1.5 border border-white/5">
+                <span className="text-amber-200 block font-semibold truncate">بیک کیش کو دیا (-)</span>
+                <span className="font-mono font-bold text-white text-[12px]">
+                  Rs. {backCashTransfers.toBack.toLocaleString()}
+                </span>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Shift Closing & Sale Summary Card (شفٹ کلوزنگ اور مجموعی سیل ریکارڈ) */}

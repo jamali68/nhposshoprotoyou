@@ -19,7 +19,9 @@ import {
   Sparkles,
   LockKeyhole,
   Users,
-  ChevronDown
+  ChevronDown,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
 import { BackCashType, BackCashTransaction } from '../types/pos';
@@ -52,6 +54,9 @@ export const BackCashView: React.FC = () => {
   } = usePOS();
 
   const commissionStats = getCommissionStats(filterDate);
+
+  // Privacy state for Total Back Cash box (Hidden by default)
+  const [isTotalHidden, setIsTotalHidden] = useState<boolean>(true);
 
   // New Entry Form State
   const [type, setType] = useState<BackCashType>('receiving');
@@ -429,7 +434,7 @@ export const BackCashView: React.FC = () => {
 
       {/* Main Blue Banner */}
       <div className="bg-[#2980b9] text-white p-5 rounded-2xl shadow-lg shadow-[#2980b9]/20 relative">
-        {/* Top bar with Commission Badge */}
+        {/* Top bar with Commission Badge & Hide/Show Eye Button */}
         <div className="flex items-center justify-between mb-2">
           <div
             className="inline-flex items-center px-3 py-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-mono font-black text-xs sm:text-sm rounded-xl shadow-md border border-emerald-300/50"
@@ -437,12 +442,22 @@ export const BackCashView: React.FC = () => {
           >
             <span className="tracking-wide">Commission: Rs. {commissionStats.daily.toLocaleString()}</span>
           </div>
-          <div />
+          <button
+            type="button"
+            onClick={() => setIsTotalHidden(prev => !prev)}
+            title={isTotalHidden ? 'Show Total Back Cash' : 'Hide Total Back Cash'}
+            className="w-8 h-8 rounded-full bg-black/20 hover:bg-black/30 flex items-center justify-center text-white transition-colors cursor-pointer"
+          >
+            {isTotalHidden ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+          </button>
         </div>
 
         <div className="text-center">
-          <h2 className="text-3xl font-black tracking-tight font-mono">
-            Rs. {bcTotal.toLocaleString()}
+          <h2
+            onClick={() => setIsTotalHidden(prev => !prev)}
+            className="text-3xl font-black tracking-tight font-mono cursor-pointer select-none"
+          >
+            {isTotalHidden ? 'Rs. ****' : `Rs. ${bcTotal.toLocaleString()}`}
           </h2>
           <p className="text-xs font-bold uppercase tracking-wider opacity-90 mt-0.5">
             TOTAL BACK CASH
@@ -461,44 +476,46 @@ export const BackCashView: React.FC = () => {
           )}
 
           {/* Shop Cash Transfer / Leen Deen Record (شاپ کیش لین دین ریکارڈ) */}
-          <div className="mt-3 text-left bg-black/25 backdrop-blur-xs border border-white/20 rounded-xl p-2.5 text-xs text-white">
-            <div className="flex items-center justify-between gap-1.5 mb-1.5 pb-1 border-b border-white/15">
-              <span className="font-bold flex items-center gap-1.5 text-white/95 text-[11px]">
-                <span className="text-amber-300 text-sm">🔁</span>
-                <span>Shop Cash لین دین (Transfer Record):</span>
-              </span>
-              <span
-                className={`font-mono font-black text-[11px] px-2 py-0.5 rounded-md border ${
-                  shopCashTransfers.net === 0
-                    ? 'bg-emerald-500/30 text-emerald-200 border-emerald-400/40'
+          {shopCashTransfers.hasTransfers && (
+            <div className="mt-3 text-left bg-black/25 backdrop-blur-xs border border-white/20 rounded-xl p-2.5 text-xs text-white">
+              <div className="flex items-center justify-between gap-1.5 mb-1.5 pb-1 border-b border-white/15">
+                <span className="font-bold flex items-center gap-1.5 text-white/95 text-[11px]">
+                  <span className="text-amber-300 text-sm">🔁</span>
+                  <span>Shop Cash لین دین (Transfer Record):</span>
+                </span>
+                <span
+                  className={`font-mono font-black text-[11px] px-2 py-0.5 rounded-md border ${
+                    shopCashTransfers.net === 0
+                      ? 'bg-emerald-500/30 text-emerald-200 border-emerald-400/40'
+                      : shopCashTransfers.net > 0
+                      ? 'bg-blue-500/30 text-blue-200 border-blue-400/40'
+                      : 'bg-amber-500/30 text-amber-200 border-amber-400/40'
+                  }`}
+                >
+                  {shopCashTransfers.net === 0
+                    ? 'Net: Rs. 0 (برابر / صاف)'
                     : shopCashTransfers.net > 0
-                    ? 'bg-blue-500/30 text-blue-200 border-blue-400/40'
-                    : 'bg-amber-500/30 text-amber-200 border-amber-400/40'
-                }`}
-              >
-                {shopCashTransfers.net === 0
-                  ? 'Net: Rs. 0 (برابر / صاف)'
-                  : shopCashTransfers.net > 0
-                  ? `Net: +Rs. ${shopCashTransfers.net.toLocaleString()} (شاپ سے لیا)`
-                  : `Net: -Rs. ${Math.abs(shopCashTransfers.net).toLocaleString()} (شاپ کو دیا)`}
-              </span>
-            </div>
+                    ? `Net: +Rs. ${shopCashTransfers.net.toLocaleString()} (شاپ سے لیا)`
+                    : `Net: -Rs. ${Math.abs(shopCashTransfers.net).toLocaleString()} (شاپ کو دیا)`}
+                </span>
+              </div>
 
-            <div className="grid grid-cols-2 gap-2 text-center text-[10px]">
-              <div className="bg-white/10 rounded-lg py-1 px-1.5 border border-white/5">
-                <span className="text-blue-200 block font-semibold truncate">شاپ کیش سے لیا (+)</span>
-                <span className="font-mono font-bold text-white text-[12px]">
-                  Rs. {shopCashTransfers.fromShop.toLocaleString()}
-                </span>
-              </div>
-              <div className="bg-white/10 rounded-lg py-1 px-1.5 border border-white/5">
-                <span className="text-amber-200 block font-semibold truncate">شاپ کیش کو دیا (-)</span>
-                <span className="font-mono font-bold text-white text-[12px]">
-                  Rs. {shopCashTransfers.toShop.toLocaleString()}
-                </span>
+              <div className="grid grid-cols-2 gap-2 text-center text-[10px]">
+                <div className="bg-white/10 rounded-lg py-1 px-1.5 border border-white/5">
+                  <span className="text-blue-200 block font-semibold truncate">شاپ کیش سے لیا (+)</span>
+                  <span className="font-mono font-bold text-white text-[12px]">
+                    Rs. {shopCashTransfers.fromShop.toLocaleString()}
+                  </span>
+                </div>
+                <div className="bg-white/10 rounded-lg py-1 px-1.5 border border-white/5">
+                  <span className="text-amber-200 block font-semibold truncate">شاپ کیش کو دیا (-)</span>
+                  <span className="font-mono font-bold text-white text-[12px]">
+                    Rs. {shopCashTransfers.toShop.toLocaleString()}
+                  </span>
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Bottom lines in Blue Box: Yesterday Closing details */}
