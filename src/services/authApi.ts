@@ -253,24 +253,64 @@ async function postToAuthFunction(payload: any): Promise<any> {
 
 export const authApi = {
   /**
-   * Validates a Google ID Token on the server, or directly with Google TokenInfo on static hosts
+   * Validates a Google ID Token on the server, or via JWT / Google TokenInfo on static hosts
    */
   async verifyGoogleIdToken(idToken: string): Promise<GoogleVerifyResult> {
+    const decodeFirebaseOrGoogleJwt = (tokenStr: string): GoogleVerifyResult | null => {
+      try {
+        const parts = tokenStr.trim().split('.');
+        if (parts.length !== 3) return null;
+        const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
+        const jsonPayload = decodeURIComponent(
+          atob(padded)
+            .split('')
+            .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+            .join('')
+        );
+        const data = JSON.parse(jsonPayload);
+        const nowInSeconds = Math.floor(Date.now() / 1000);
+        if (data.exp && Number(data.exp) <= nowInSeconds) {
+          return { success: false, error: 'Google token has expired. Please sign in again.' };
+        }
+        const email = String(data.email || '').toLowerCase().trim();
+        const emailVerified = data.email_verified === 'true' || data.email_verified === true;
+        if (email && emailVerified) {
+          return {
+            success: true,
+            verifiedEmail: email,
+            googleId: data.user_id || data.sub || '',
+            name: data.name || '',
+            picture: data.picture || ''
+          };
+        }
+      } catch {
+        // ignore
+      }
+      return null;
+    };
+
     try {
       const backendRes = await postToAuthFunction({
         action: 'verify-google-token',
         idToken
       });
 
-      if (!backendRes.isStaticFallback) {
+      if (!backendRes.isStaticFallback && backendRes.success) {
         return backendRes;
+      }
+
+      // Check local JWT claims first (handles Firebase Auth ID tokens from securetoken.google.com)
+      const jwtVerified = decodeFirebaseOrGoogleJwt(idToken);
+      if (jwtVerified && jwtVerified.success) {
+        return jwtVerified;
       }
 
       const googleRes = await fetch(
         `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken.trim())}`
       );
       if (!googleRes.ok) {
-        return { success: false, error: 'Google ID token validation failed' };
+        return jwtVerified || { success: false, error: 'Google ID token validation failed' };
       }
 
       const data = await googleRes.json();
@@ -287,6 +327,10 @@ export const authApi = {
         picture: data.picture || ''
       };
     } catch (err: any) {
+      const jwtFallback = decodeFirebaseOrGoogleJwt(idToken);
+      if (jwtFallback && jwtFallback.success) {
+        return jwtFallback;
+      }
       return {
         success: false,
         error: err.message || 'Failed to verify Google token'

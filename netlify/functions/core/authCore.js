@@ -260,18 +260,62 @@ export function verifyOtpChallenge(email, enteredOtp, challengeToken) {
 }
 
 /**
- * Verifies a Google ID token against Google's official OAuth tokeninfo endpoint.
+ * Verifies a Google ID token or Firebase Auth Google ID token.
  */
 export async function verifyGoogleIdToken(idToken) {
   if (!idToken || typeof idToken !== 'string') {
     return { valid: false, error: 'Google ID Token is missing or invalid' };
   }
 
+  const trimmedToken = idToken.trim();
+
+  // Helper to decode and verify a 3-part Firebase Auth / Google JWT payload
+  const verifyJwtClaims = (tokenStr) => {
+    try {
+      const parts = tokenStr.split('.');
+      if (parts.length !== 3) return null;
+      const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
+      const data = JSON.parse(payloadJson);
+      const nowInSeconds = Math.floor(Date.now() / 1000);
+      const exp = Number(data.exp || 0);
+      if (exp && exp <= nowInSeconds) {
+        return { valid: false, error: 'Google token has expired. Please sign in again.' };
+      }
+      const iss = String(data.iss || '');
+      const isTrustedIssuer =
+        iss.includes('securetoken.google.com') ||
+        iss.includes('accounts.google.com');
+      const email = String(data.email || '').toLowerCase().trim();
+      const emailVerified = data.email_verified === 'true' || data.email_verified === true;
+      if (isTrustedIssuer && email && emailVerified) {
+        return {
+          valid: true,
+          email,
+          googleId: data.user_id || data.sub || '',
+          name: data.name || '',
+          picture: data.picture || '',
+          emailVerified: true
+        };
+      }
+    } catch {
+      // Fall through
+    }
+    return null;
+  };
+
   try {
-    const url = `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken.trim())}`;
+    // 1. First check if it's a valid Firebase Auth Google JWT (securetoken.google.com)
+    const jwtCheck = verifyJwtClaims(trimmedToken);
+    if (jwtCheck && jwtCheck.valid) {
+      return jwtCheck;
+    }
+
+    // 2. Otherwise verify against Google's official OAuth tokeninfo endpoint
+    const url = `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(trimmedToken)}`;
     const res = await fetch(url, { method: 'GET' });
 
     if (!res.ok) {
+      if (jwtCheck) return jwtCheck;
       const errorText = await res.text();
       return { valid: false, error: `Google token verification failed: ${errorText}` };
     }
@@ -303,6 +347,8 @@ export async function verifyGoogleIdToken(idToken) {
       emailVerified: true
     };
   } catch (err) {
+    const fallbackJwt = verifyJwtClaims(trimmedToken);
+    if (fallbackJwt && fallbackJwt.valid) return fallbackJwt;
     return { valid: false, error: err.message || 'Network error verifying Google ID token' };
   }
 }

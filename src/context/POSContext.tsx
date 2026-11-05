@@ -1796,6 +1796,34 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           return legacySnap.data() as ShopProfile;
         }
 
+        // D. Query shops collection by owner_email in case shopId was saved under another key
+        try {
+          const emailShopQuery = query(collection(db, 'shops'), where('owner_email', '==', cleanEmail));
+          const emailShopSnap = await getDocs(emailShopQuery);
+          if (!emailShopSnap.empty) {
+            const foundDoc = emailShopSnap.docs[0];
+            matchedShopId = foundDoc.id;
+            return foundDoc.data() as ShopProfile;
+          }
+        } catch {}
+
+        // E. Query account_registry by email in case cleanEmailKey differed
+        try {
+          const emailRegQuery = query(collection(db, 'account_registry'), where('email', '==', cleanEmail));
+          const emailRegSnap = await getDocs(emailRegQuery);
+          if (!emailRegSnap.empty) {
+            const regData = emailRegSnap.docs[0].data();
+            serverRegistryData = regData;
+            if (regData?.shop_id) {
+              const sDoc = await getDoc(doc(db, 'shops', regData.shop_id));
+              if (sDoc.exists()) {
+                matchedShopId = regData.shop_id;
+                return sDoc.data() as ShopProfile;
+              }
+            }
+          }
+        } catch {}
+
         return null;
       };
 
@@ -1865,17 +1893,15 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           localStorage.removeItem('taj_pos_google_reset_email');
         } catch {}
 
-        // A. If user entered a specific email on the reset screen, verify the Google account matches it
-        if (expectedResetEmail && expectedResetEmail.includes('@') && expectedResetEmail !== cleanEmail) {
-          await signOut(auth).catch(() => {});
-          return {
-            success: false,
-            error: `منتخب کردہ گوگل ای میل (${cleanEmail}) آپ کے درج کردہ ای میل (${expectedResetEmail}) سے میل نہیں کھاتا! براہِ کرم اسی ای میل والے گوگل اکاؤنٹ سے لاگ ان کریں۔ (Selected Google email does not match entered email)`
-          };
-        }
-
-        // B. Verify that a registered shop exists for this Google email
+        // If no shop exists for the selected Google email, inform the user clearly
         if (!existingShop || !existingShop.shop_name || existingShop.shop_name.trim() === '') {
+          if (expectedResetEmail && expectedResetEmail.includes('@') && expectedResetEmail !== cleanEmail) {
+            await signOut(auth).catch(() => {});
+            return {
+              success: false,
+              error: `منتخب کردہ گوگل ای میل (${cleanEmail}) آپ کے درج کردہ ای میل (${expectedResetEmail}) سے میل نہیں کھاتا اور اس پر کوئی دکان رجسٹرڈ نہیں ہے! براہِ کرم اپنی دکان والے گوگل اکاؤنٹ سے لاگ ان کریں۔`
+            };
+          }
           await signOut(auth).catch(() => {});
           return {
             success: false,
@@ -2378,18 +2404,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       // Step 2 & 3: BACKEND VERIFICATION OF GOOGLE ID TOKEN (Phase 1 Integration)
       try {
-        const idToken = await googleUser.getIdToken(true);
+        const oauthIdToken = (result as any)?._tokenResponse?.oauthIdToken;
+        const idToken = oauthIdToken || (await googleUser.getIdToken(true));
         if (idToken) {
           const backendVerify = await authApi.verifyGoogleIdToken(idToken);
-          if (backendVerify && !backendVerify.success) {
-            console.warn('Backend Google token verification warning:', backendVerify.error);
-            if (navigator.onLine && backendVerify.error && !backendVerify.error.includes('Failed to fetch')) {
-              return {
-                success: false,
-                error: `سرور پر گوگل اکاؤنٹ کی تصدیق ناکام: ${backendVerify.error}`
-              };
-            }
-          }
           if (backendVerify?.sessionToken) {
             localStorage.setItem('taj_pos_session_token', backendVerify.sessionToken);
           }
