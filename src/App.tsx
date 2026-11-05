@@ -525,14 +525,19 @@ const MainAppContent: React.FC = () => {
                   {/* Update Now Button */}
                   <button
                     type="button"
-                    disabled={isSyncing}
+                    disabled={!isOnline || isSyncing}
                     onClick={async (e) => {
                       e.stopPropagation();
+                      if (!isOnline) return;
                       await syncNow(true);
                     }}
-                    className="w-full mt-1 py-2.5 px-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-600/25 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-60"
+                    className={`w-full mt-1 py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
+                      isOnline
+                        ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-600/25 cursor-pointer active:scale-95 disabled:opacity-60'
+                        : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed shadow-none'
+                    }`}
                   >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                    <RefreshCw className={`w-3.5 h-3.5 ${isOnline && isSyncing ? 'animate-spin' : ''}`} />
                     <span>{isSyncing ? 'کلاؤڈ اپڈیٹ ہو رہا ہے...' : '🔄 ابھی اپڈیٹ کریں (Sync Now)'}</span>
                   </button>
                 </div>
