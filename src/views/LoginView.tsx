@@ -517,23 +517,9 @@ export const LoginView: React.FC = () => {
               </div>
 
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-[11px] font-bold text-slate-700">
-                    {isUrdu ? 'دکان کا پاس ورڈ (Password)' : 'Admin / Shop Password'}
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setForgotAccountInput(gmailInput.trim());
-                      setForgotModalError('');
-                      setShowForgotModal(true);
-                    }}
-                    className="text-[11px] font-extrabold text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1 cursor-pointer transition-colors"
-                  >
-                    <KeyRound className="w-3 h-3" />
-                    <span>{isUrdu ? 'پاس ورڈ بھول گئے؟' : 'Forgot Password?'}</span>
-                  </button>
-                </div>
+                <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                  {isUrdu ? 'دکان کا پاس ورڈ (Password)' : 'Admin / Shop Password'}
+                </label>
                 <div className="relative">
                   <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                   <input
@@ -557,6 +543,20 @@ export const LoginView: React.FC = () => {
                     title={showOwnerPassword ? 'Hide password' : 'Show password'}
                   >
                     {showOwnerPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <div className={`flex ${isUrdu ? 'justify-start' : 'justify-end'} mt-1.5`}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForgotAccountInput(gmailInput.trim());
+                      setForgotModalError('');
+                      setShowForgotModal(true);
+                    }}
+                    className="text-[11px] font-extrabold text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <KeyRound className="w-3 h-3" />
+                    <span>{isUrdu ? 'پاس ورڈ بھول گئے؟' : 'Forgot Password?'}</span>
                   </button>
                 </div>
               </div>
@@ -828,23 +828,9 @@ export const LoginView: React.FC = () => {
             </div>
 
             <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-[11px] font-bold text-slate-700 uppercase">
-                  {isUrdu ? 'پاس ورڈ' : 'Password'}
-                </label>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setForgotAccountInput(staffUsername.trim());
-                    setForgotModalError('');
-                    setShowForgotModal(true);
-                  }}
-                  className="text-[10px] font-extrabold text-purple-600 hover:text-purple-800 hover:underline flex items-center gap-1 cursor-pointer"
-                >
-                  <KeyRound className="w-3 h-3" />
-                  <span>{isUrdu ? 'پاس ورڈ بھول گئے؟' : 'Forgot Password?'}</span>
-                </button>
-              </div>
+              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                {isUrdu ? 'پاس ورڈ' : 'Password'}
+              </label>
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                 <input
@@ -860,6 +846,20 @@ export const LoginView: React.FC = () => {
                   dir="ltr"
                   className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:outline-none focus:border-blue-600 focus:bg-white transition-all text-sm font-mono text-slate-900"
                 />
+              </div>
+              <div className={`flex ${isUrdu ? 'justify-start' : 'justify-end'} mt-1.5`}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForgotAccountInput(staffUsername.trim());
+                    setForgotModalError('');
+                    setShowForgotModal(true);
+                  }}
+                  className="text-[10px] font-extrabold text-purple-600 hover:text-purple-800 hover:underline flex items-center gap-1 cursor-pointer"
+                >
+                  <KeyRound className="w-3 h-3" />
+                  <span>{isUrdu ? 'پاس ورڈ بھول گئے؟' : 'Forgot Password?'}</span>
+                </button>
               </div>
             </div>
 
