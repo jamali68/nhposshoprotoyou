@@ -94,6 +94,16 @@ export const BackCashView: React.FC = () => {
   const [showReportModal, setShowReportModal] = useState<boolean>(false);
   const [showUserWiseCommission, setShowUserWiseCommission] = useState<boolean>(false);
   const [isCommissionSummaryExpanded, setIsCommissionSummaryExpanded] = useState<boolean>(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
+  // Hardware back closes delete confirm modal first
+  useEffect(() => {
+    if (!deleteConfirmId) return;
+    return registerBackHandler(() => {
+      setDeleteConfirmId(null);
+      return true;
+    });
+  }, [deleteConfirmId, registerBackHandler]);
 
   // Hardware back closes edit modal first
   useEffect(() => {
@@ -311,9 +321,13 @@ export const BackCashView: React.FC = () => {
   };
 
   const handleDelete = (id: string) => {
-    if (window.confirm('Are you sure you want to delete this back cash entry?')) {
-      deleteBackCash(id);
-    }
+    setDeleteConfirmId(id);
+  };
+
+  const confirmDeleteBackCash = () => {
+    if (!deleteConfirmId) return;
+    deleteBackCash(deleteConfirmId);
+    setDeleteConfirmId(null);
   };
 
   const toggleUserDeletePerm = () => {
@@ -1046,21 +1060,23 @@ export const BackCashView: React.FC = () => {
                       {t.note || 'No Note'}
                     </p>
 
-                    <div className="flex items-center gap-3 mt-1 text-[11px]">
+                    <div className="flex items-center gap-2 mt-1.5 text-[11px]">
                       <button
                         type="button"
                         onClick={() => openEditModal(t)}
-                        className="text-blue-600 font-bold hover:underline flex items-center gap-0.5"
+                        className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200/80 text-blue-600 font-bold flex items-center gap-1 transition-colors cursor-pointer"
                       >
-                        <Edit2 className="w-3 h-3" /> Edit
+                        <Edit2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>Edit</span>
                       </button>
 
                       <button
                         type="button"
                         onClick={() => setSelectedHisTxId(t.id)}
-                        className="text-slate-500 font-semibold hover:text-blue-600 flex items-center gap-0.5"
+                        className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-blue-50 border border-slate-200/80 text-slate-700 hover:text-blue-600 font-bold flex items-center gap-1 transition-colors cursor-pointer"
                       >
-                        <History className="w-3 h-3 text-blue-500" /> His
+                        <History className="w-4 h-4 text-blue-500 shrink-0" />
+                        <span className="text-[11px]">History</span>
                       </button>
                     </div>
                   </div>
@@ -1082,7 +1098,7 @@ export const BackCashView: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => handleDelete(t.id)}
-                        className="text-rose-500 hover:text-rose-700 p-1 mt-1 transition-colors"
+                        className="text-rose-500 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200/80 px-3 py-1 rounded-lg mt-1.5 transition-colors flex items-center justify-center ml-auto cursor-pointer"
                         title="Delete entry"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -1152,9 +1168,10 @@ export const BackCashView: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setSelectedHisTxId(editId)}
-                    className="px-3 py-2 bg-blue-600 text-white font-bold rounded-lg text-xs"
+                    className="px-3 py-2 bg-blue-600 text-white font-bold rounded-lg text-xs flex items-center gap-1 cursor-pointer"
                   >
-                    His
+                    <History className="w-3.5 h-3.5" />
+                    <span>History</span>
                   </button>
                 </div>
               </div>
@@ -1188,6 +1205,62 @@ export const BackCashView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* SweetAlert-Style Delete Confirmation Modal */}
+      {deleteConfirmId && (() => {
+        const targetTx = backCashTransactions.find(t => t.id === deleteConfirmId);
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-150">
+            <div className="bg-white text-slate-800 w-full max-w-xs sm:max-w-sm rounded-3xl p-6 shadow-2xl border border-slate-100 text-center space-y-4 animate-in zoom-in-95 duration-200">
+              <div className="w-16 h-16 mx-auto rounded-full bg-rose-50 border-4 border-rose-100 flex items-center justify-center text-rose-500 shadow-inner">
+                <Trash2 className="w-8 h-8 animate-bounce" />
+              </div>
+
+              <div className="space-y-1">
+                <h3 className="font-black text-base sm:text-lg text-slate-900">
+                  Delete Entry?
+                </h3>
+                <p className="text-xs font-bold text-rose-600">
+                  کیا آپ واقعی یہ انٹری ڈیلیٹ کرنا چاہتے ہیں؟
+                </p>
+              </div>
+
+              {targetTx && (
+                <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-3 text-xs space-y-1">
+                  <p className="font-bold text-slate-800 truncate">
+                    {targetTx.note || 'Back Cash Entry'}
+                  </p>
+                  <p className="font-mono font-black text-sm text-rose-600">
+                    Rs. {targetTx.amount.toLocaleString()}
+                  </p>
+                </div>
+              )}
+
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                یہ انٹری فہرست سے ہٹ جائے گی۔ ایڈمن کسی بھی وقت Deleted Logs سے اسے واپس ری سٹور کر سکتا ہے۔
+              </p>
+
+              <div className="flex gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setDeleteConfirmId(null)}
+                  className="flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-all cursor-pointer"
+                >
+                  Cancel (نہیں)
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmDeleteBackCash}
+                  className="flex-1 py-2.5 px-4 bg-gradient-to-r from-rose-500 to-red-600 hover:from-rose-600 hover:to-red-700 text-white font-black rounded-xl text-xs shadow-md shadow-rose-500/30 flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Yes, Delete!</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* History Sub-Modal */}
       {selectedHisTxId && (

@@ -22,7 +22,8 @@ import {
   TrendingUp,
   Clock,
   Eye,
-  EyeOff
+  EyeOff,
+  ChevronDown
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
 import { HistoryModal } from '../components/HistoryModal';
@@ -52,6 +53,8 @@ export const DailyCashView: React.FC = () => {
 
   // Privacy state for Total Shop Cash box (Hidden by default)
   const [isTotalHidden, setIsTotalHidden] = useState<boolean>(true);
+  // Collapsible state for Shift Closing & Sale Report (Collapsed by default)
+  const [isShiftClosingExpanded, setIsShiftClosingExpanded] = useState<boolean>(false);
 
   // New Transaction Form State
   const [entryType, setEntryType] = useState<'out' | 'in' | 'opening' | 'from_back_cash' | 'to_back_cash' | 'shift_closing'>('out');
@@ -94,12 +97,22 @@ export const DailyCashView: React.FC = () => {
   // Sub-Modals
   const [selectedHisTxId, setSelectedHisTxId] = useState<string | null>(null);
   const [showReportModal, setShowReportModal] = useState<boolean>(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   // Auto-Detect Missed Yesterday Closing Smart Prompt Modal State
   const [showYesterdayClosingPrompt, setShowYesterdayClosingPrompt] = useState<boolean>(false);
   const [pendingOpeningAmount, setPendingOpeningAmount] = useState<number>(0);
   const [pendingOpeningDesc, setPendingOpeningDesc] = useState<string>('');
   const [toastNotification, setToastNotification] = useState<string | null>(null);
+
+  // Hardware back closes delete confirm modal first
+  useEffect(() => {
+    if (!deleteConfirmId) return;
+    return registerBackHandler(() => {
+      setDeleteConfirmId(null);
+      return true;
+    });
+  }, [deleteConfirmId, registerBackHandler]);
 
   // Hardware back closes edit modal first
   useEffect(() => {
@@ -260,6 +273,7 @@ export const DailyCashView: React.FC = () => {
     if (newType === 'opening' && (!description || description === '')) {
       setDescription('Subha Ka Opening Cash ⭐');
     } else if (newType === 'shift_closing') {
+      setIsShiftClosingExpanded(true);
       setDescription(`${uName} Shift Closing Cash (گنتی)`);
     } else if (newType === 'from_back_cash' && (!description || description === '' || description === 'Subha Ka Opening Cash ⭐' || description === 'Back Cash ko Cash Diya (Counter Out)' || description.includes('Shift Closing'))) {
       setDescription('Back Cash se Cash Liya (Counter In)');
@@ -312,6 +326,7 @@ export const DailyCashView: React.FC = () => {
           calculated_sale: (val + totalOutPurchases) - effectiveOpening
         }
       });
+      setIsShiftClosingExpanded(true);
     } else if (entryType === 'opening') {
       if (yesterdayMissingClosingInfo.isMissing) {
         setPendingOpeningAmount(val);
@@ -454,9 +469,13 @@ export const DailyCashView: React.FC = () => {
   };
 
   const handleDelete = (id: string) => {
-    if (window.confirm('Are you sure you want to delete this transaction record?')) {
-      deleteDailyTransaction(id);
-    }
+    setDeleteConfirmId(id);
+  };
+
+  const confirmDeleteTransaction = () => {
+    if (!deleteConfirmId) return;
+    deleteDailyTransaction(deleteConfirmId);
+    setDeleteConfirmId(null);
   };
 
   const toggleUserDeletePerm = () => {
@@ -718,146 +737,177 @@ export const DailyCashView: React.FC = () => {
         )}
       </div>
 
-      {/* Shift Closing & Sale Summary Card (شفٹ کلوزنگ اور مجموعی سیل ریکارڈ) */}
-      {shiftClosingAnalysis.hasShiftClosing ? (
-        <div className="bg-gradient-to-r from-[#1e1b4b] to-[#312e81] text-white p-3.5 sm:p-4 rounded-2xl shadow-md border border-indigo-500/30 space-y-3">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-2">
-              <span className="p-1.5 bg-indigo-500/30 rounded-xl text-lg">💼</span>
-              <div>
-                <h4 className="font-black text-xs sm:text-sm text-white flex items-center gap-1.5">
-                  <span>Shift Closing &amp; Sale Report</span>
-                  <span className="text-[10px] font-bold text-indigo-300">({shiftClosingAnalysis.entries.length} بار کیش درج ہوا)</span>
-                </h4>
-                <p className="text-[10px] text-indigo-200">
-                  شفٹ کلوزنگ کیش گنتی اور خالص سیل کا خودکار حساب
-                </p>
-              </div>
-            </div>
-
-            <div className="text-right">
-              <span className="text-[10px] text-indigo-200 block font-bold">Total Shift Sale (مجموعی سیل)</span>
-              <span className="font-mono font-black text-sm sm:text-base text-emerald-400">
-                Rs. {shiftClosingAnalysis.netSale.toLocaleString()}
-              </span>
-            </div>
+      {/* Shift Closing & Sale Summary Card (شفٹ کلوزنگ اور مجموعی سیل ریکارڈ) - Touch to Expand */}
+      <div className="bg-gradient-to-r from-[#1e1b4b] via-indigo-950 to-[#312e81] text-white rounded-2xl border border-indigo-500/30 shadow-md overflow-hidden transition-all">
+        {/* Clickable Slim Header (Touch to Expand / Collapse) */}
+        <button
+          type="button"
+          onClick={() => setIsShiftClosingExpanded(prev => !prev)}
+          className="w-full text-left p-3 sm:p-3.5 flex items-center justify-between gap-2 hover:bg-white/5 active:bg-white/10 transition-colors cursor-pointer select-none"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse shrink-0" />
+            <span className="text-xs sm:text-sm font-bold text-indigo-100 truncate">
+              Shift Closing &amp; Sale Report {shiftClosingAnalysis.hasShiftClosing ? `(${shiftClosingAnalysis.entries.length} بار کیش درج ہوا)` : '(شفٹ کلوزنگ)'}
+            </span>
           </div>
-
-          <div className="grid grid-cols-3 gap-2 text-center text-[10px]">
-            <div className="bg-white/10 rounded-xl py-1.5 px-2 border border-white/5">
-              <span className="text-indigo-200 block font-semibold truncate">اوپننگ کیش</span>
-              <span className="font-mono font-bold text-white text-xs">
-                Rs. {effectiveOpening.toLocaleString()}
-              </span>
-            </div>
-            <div className="bg-white/10 rounded-xl py-1.5 px-2 border border-white/5">
-              <span className="text-rose-300 block font-semibold truncate">کل خرچ / پرچیز (-)</span>
-              <span className="font-mono font-bold text-rose-200 text-xs">
-                Rs. {totalOutPurchases.toLocaleString()}
-              </span>
-            </div>
-            <div className="bg-white/10 rounded-xl py-1.5 px-2 border border-white/5">
-              <span className="text-amber-300 block font-semibold truncate">کل کلوزنگ گنتی کیش</span>
-              <span className="font-mono font-bold text-white text-xs">
-                Rs. {shiftClosingAnalysis.totalClosingCash.toLocaleString()}
-              </span>
-            </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="font-mono font-black text-xs sm:text-sm text-emerald-400">
+              Rs. {shiftClosingAnalysis.netSale.toLocaleString()}
+            </span>
+            <ChevronDown
+              className={`w-4 h-4 text-indigo-300 transition-transform duration-200 ${
+                isShiftClosingExpanded ? 'rotate-180' : ''
+              }`}
+            />
           </div>
+        </button>
 
-          {/* User-wise Shift Breakdown - Dynamic Single-User vs Multi-User Support */}
-          {shiftClosingAnalysis.userGroups.length > 0 && (
-            <div className="bg-black/25 rounded-xl p-2.5 border border-white/10 space-y-2">
-              <div className="flex items-center justify-between text-[11px] font-bold text-indigo-200 border-b border-white/10 pb-1">
-                <span className="flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5 text-indigo-300" />
-                  <span>
-                    {shiftClosingAnalysis.userGroups.length === 1
-                      ? 'مکمل دن کا یوزر ریکارڈ (Single User Full Day Shop):'
-                      : 'یوزر وار شفٹ کلوزنگ اور سیل (Multi-User Shifts):'}
-                  </span>
-                </span>
-                <span className="text-[10px] text-indigo-300 font-mono">
-                  {shiftClosingAnalysis.userGroups.length === 1 ? '⭐ 1 User (Solo Operator)' : `${shiftClosingAnalysis.userGroups.length} Staff Shifts`}
-                </span>
-              </div>
-
-              <div className="space-y-1.5">
-                {shiftClosingAnalysis.userGroups.map((u, idx) => {
-                  const isSolo = shiftClosingAnalysis.userGroups.length === 1;
-                  const uSale = isSolo
-                    ? shiftClosingAnalysis.netSale
-                    : (u.totalCash + totalOutPurchases) - effectiveOpening;
-
-                  return (
-                    <div key={idx} className="bg-white/5 rounded-lg p-2.5 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 border border-white/5">
-                      <div className="flex items-center gap-2">
-                        <span className="w-5 h-5 rounded-full bg-indigo-500/40 text-indigo-200 font-black text-[10px] flex items-center justify-center shrink-0">
-                          {idx + 1}
-                        </span>
-                        <div>
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="font-bold text-white text-sm">{u.userName}</span>
-                            <span className="text-[9px] text-indigo-300 px-1.5 py-0.2 rounded bg-indigo-500/20 uppercase font-mono">
-                              {u.role}
-                            </span>
-                            {isSolo && (
-                              <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.2 rounded font-bold border border-emerald-500/30">
-                                100% Full Day Sale &amp; Profit (مکمل دن کا منافع و سیل)
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[10px] text-slate-300 mt-1 flex flex-wrap gap-1">
-                            {u.entries.map((e, eIdx) => (
-                              <span key={e.id} className="font-mono text-white/90 bg-white/10 px-1.5 py-0.5 rounded">
-                                Rs. {e.amount.toLocaleString()} {e.extra_fields?.shift_time ? `(${e.extra_fields.shift_time})` : ''}
-                                {eIdx < u.entries.length - 1 ? ' +' : ''}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-3 sm:text-right shrink-0 pt-1 sm:pt-0 border-t sm:border-t-0 border-white/10">
-                        <div>
-                          <span className="text-[9px] text-indigo-300 block">گنتی کیش</span>
-                          <span className="font-mono font-bold text-white text-xs">
-                            Rs. {u.totalCash.toLocaleString()}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-[9px] text-emerald-300 block">
-                            {isSolo ? 'کل سیل (100% یوزر سیل)' : 'حساب شدہ سیل'}
-                          </span>
-                          <span className={`font-mono font-black text-xs ${uSale >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            Rs. {uSale.toLocaleString()}
-                          </span>
-                        </div>
-                      </div>
+        {/* Expanded Content */}
+        {isShiftClosingExpanded && (
+          <div className="px-3.5 pb-3.5 pt-2 border-t border-white/10 animate-in fade-in duration-200 space-y-3">
+            {shiftClosingAnalysis.hasShiftClosing ? (
+              <>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 bg-indigo-500/30 rounded-xl text-lg">💼</span>
+                    <div>
+                      <h4 className="font-black text-xs sm:text-sm text-white flex items-center gap-1.5">
+                        <span>Shift Closing &amp; Sale Report</span>
+                        <span className="text-[10px] font-bold text-indigo-300">({shiftClosingAnalysis.entries.length} بار کیش درج ہوا)</span>
+                      </h4>
+                      <p className="text-[10px] text-indigo-200">
+                        شفٹ کلوزنگ کیش گنتی اور خالص سیل کا خودکار حساب
+                      </p>
                     </div>
-                  );
-                })}
+                  </div>
+
+                  <div className="text-right">
+                    <span className="text-[10px] text-indigo-200 block font-bold">Total Shift Sale (مجموعی سیل)</span>
+                    <span className="font-mono font-black text-sm sm:text-base text-emerald-400">
+                      Rs. {shiftClosingAnalysis.netSale.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2 text-center text-[10px]">
+                  <div className="bg-white/10 rounded-xl py-1.5 px-2 border border-white/5">
+                    <span className="text-indigo-200 block font-semibold truncate">اوپننگ کیش</span>
+                    <span className="font-mono font-bold text-white text-xs">
+                      Rs. {effectiveOpening.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="bg-white/10 rounded-xl py-1.5 px-2 border border-white/5">
+                    <span className="text-rose-300 block font-semibold truncate">کل خرچ / پرچیز (-)</span>
+                    <span className="font-mono font-bold text-rose-200 text-xs">
+                      Rs. {totalOutPurchases.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="bg-white/10 rounded-xl py-1.5 px-2 border border-white/5">
+                    <span className="text-amber-300 block font-semibold truncate">کل کلوزنگ گنتی کیش</span>
+                    <span className="font-mono font-bold text-white text-xs">
+                      Rs. {shiftClosingAnalysis.totalClosingCash.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                {/* User-wise Shift Breakdown - Dynamic Single-User vs Multi-User Support */}
+                {shiftClosingAnalysis.userGroups.length > 0 && (
+                  <div className="bg-black/25 rounded-xl p-2.5 border border-white/10 space-y-2">
+                    <div className="flex items-center justify-between text-[11px] font-bold text-indigo-200 border-b border-white/10 pb-1">
+                      <span className="flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-indigo-300" />
+                        <span>
+                          {shiftClosingAnalysis.userGroups.length === 1
+                            ? 'مکمل دن کا یوزر ریکارڈ (Single User Full Day Shop):'
+                            : 'یوزر وار شفٹ کلوزنگ اور سیل (Multi-User Shifts):'}
+                        </span>
+                      </span>
+                      <span className="text-[10px] text-indigo-300 font-mono">
+                        {shiftClosingAnalysis.userGroups.length === 1 ? '⭐ 1 User (Solo Operator)' : `${shiftClosingAnalysis.userGroups.length} Staff Shifts`}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      {shiftClosingAnalysis.userGroups.map((u, idx) => {
+                        const isSolo = shiftClosingAnalysis.userGroups.length === 1;
+                        const uSale = isSolo
+                          ? shiftClosingAnalysis.netSale
+                          : (u.totalCash + totalOutPurchases) - effectiveOpening;
+
+                        return (
+                          <div key={idx} className="bg-white/5 rounded-lg p-2.5 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 border border-white/5">
+                            <div className="flex items-center gap-2">
+                              <span className="w-5 h-5 rounded-full bg-indigo-500/40 text-indigo-200 font-black text-[10px] flex items-center justify-center shrink-0">
+                                {idx + 1}
+                              </span>
+                              <div>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="font-bold text-white text-sm">{u.userName}</span>
+                                  <span className="text-[9px] text-indigo-300 px-1.5 py-0.2 rounded bg-indigo-500/20 uppercase font-mono">
+                                    {u.role}
+                                  </span>
+                                  {isSolo && (
+                                    <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.2 rounded font-bold border border-emerald-500/30">
+                                      100% Full Day Sale &amp; Profit (مکمل دن کا منافع و سیل)
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-slate-300 mt-1 flex flex-wrap gap-1">
+                                  {u.entries.map((e, eIdx) => (
+                                    <span key={e.id} className="font-mono text-white/90 bg-white/10 px-1.5 py-0.5 rounded">
+                                      Rs. {e.amount.toLocaleString()} {e.extra_fields?.shift_time ? `(${e.extra_fields.shift_time})` : ''}
+                                      {eIdx < u.entries.length - 1 ? ' +' : ''}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-3 sm:text-right shrink-0 pt-1 sm:pt-0 border-t sm:border-t-0 border-white/10">
+                              <div>
+                                <span className="text-[9px] text-indigo-300 block">گنتی کیش</span>
+                                <span className="font-mono font-bold text-white text-xs">
+                                  Rs. {u.totalCash.toLocaleString()}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-[9px] text-emerald-300 block">
+                                  {isSolo ? 'کل سیل (100% یوزر سیل)' : 'حساب شدہ سیل'}
+                                </span>
+                                <span className={`font-mono font-black text-xs ${uSale >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                  Rs. {uSale.toLocaleString()}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="bg-white/10 border border-white/15 rounded-xl p-3 flex items-center justify-between gap-2 text-xs text-white">
+                <div className="flex items-center gap-2">
+                  <span className="p-1.5 bg-indigo-500/30 rounded-lg text-sm">💼</span>
+                  <div>
+                    <p className="font-bold text-[11px] text-white">Shift Closing Balance (شفٹ کلوزنگ کیش)</p>
+                    <p className="text-[10px] text-indigo-200">شفٹ تبدیل ہونے پر دراز کیش درج کریں تا کہ سسٹم کل سیل کا حساب نکال سکے</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleTypeChange('shift_closing')}
+                  className="px-2.5 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white rounded-xl text-[10px] font-bold shrink-0 transition-colors cursor-pointer"
+                >
+                  کیش درج کریں
+                </button>
               </div>
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="bg-indigo-50/70 border border-indigo-200/80 rounded-2xl p-3 flex items-center justify-between gap-2 text-xs text-indigo-900">
-          <div className="flex items-center gap-2">
-            <span className="p-1 bg-indigo-200/50 rounded-lg text-sm">💼</span>
-            <div>
-              <p className="font-bold text-[11px]">Shift Closing Balance (شفٹ کلوزنگ کیش)</p>
-              <p className="text-[10px] text-indigo-700">شفٹ تبدیل ہونے پر دراز کیش درج کریں تا کہ سسٹم کل سیل کا حساب نکال سکے</p>
-            </div>
+            )}
           </div>
-          <button
-            type="button"
-            onClick={() => handleTypeChange('shift_closing')}
-            className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[10px] font-bold shrink-0 transition-colors cursor-pointer"
-          >
-            کیش درج کریں
-          </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Add New Entry Card */}
       <div ref={formCardRef} className="bg-white rounded-2xl p-4 sm:p-5 shadow-xs border border-slate-200/80 space-y-3 scroll-mt-16">
@@ -1148,21 +1198,23 @@ export const DailyCashView: React.FC = () => {
                       {t.description || 'No Note'}
                     </p>
 
-                    <div className="flex items-center gap-3 mt-1 text-[11px]">
+                    <div className="flex items-center gap-2 mt-1.5 text-[11px]">
                       <button
                         type="button"
                         onClick={() => openEditModal(t)}
-                        className="text-blue-600 font-bold hover:underline flex items-center gap-0.5"
+                        className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200/80 text-blue-600 font-bold flex items-center gap-1 transition-colors cursor-pointer"
                       >
-                        <Edit2 className="w-3 h-3" /> Edit
+                        <Edit2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>Edit</span>
                       </button>
 
                       <button
                         type="button"
                         onClick={() => setSelectedHisTxId(t.id)}
-                        className="text-slate-500 font-semibold hover:text-blue-600 flex items-center gap-0.5"
+                        className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-blue-50 border border-slate-200/80 text-slate-700 hover:text-blue-600 font-bold flex items-center gap-1 transition-colors cursor-pointer"
                       >
-                        <History className="w-3 h-3 text-blue-500" /> His
+                        <History className="w-4 h-4 text-blue-500 shrink-0" />
+                        <span className="text-[11px]">History</span>
                       </button>
                     </div>
                   </div>
@@ -1192,7 +1244,7 @@ export const DailyCashView: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => handleDelete(t.id)}
-                        className="text-rose-500 hover:text-rose-700 p-1 mt-1 transition-colors block ml-auto"
+                        className="text-rose-500 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200/80 px-3 py-1 rounded-lg mt-1.5 transition-colors flex items-center justify-center ml-auto cursor-pointer"
                         title="Delete entry"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -1258,9 +1310,10 @@ export const DailyCashView: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setSelectedHisTxId(editId)}
-                    className="px-3 py-2 bg-blue-600 text-white font-bold rounded-lg text-xs"
+                    className="px-3 py-2 bg-blue-600 text-white font-bold rounded-lg text-xs flex items-center gap-1 cursor-pointer"
                   >
-                    His
+                    <History className="w-3.5 h-3.5" />
+                    <span>History</span>
                   </button>
                 </div>
               </div>
@@ -1294,6 +1347,62 @@ export const DailyCashView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* SweetAlert-Style Delete Confirmation Modal */}
+      {deleteConfirmId && (() => {
+        const targetTx = dailyTransactions.find(t => t.id === deleteConfirmId);
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-150">
+            <div className="bg-white text-slate-800 w-full max-w-xs sm:max-w-sm rounded-3xl p-6 shadow-2xl border border-slate-100 text-center space-y-4 animate-in zoom-in-95 duration-200">
+              <div className="w-16 h-16 mx-auto rounded-full bg-rose-50 border-4 border-rose-100 flex items-center justify-center text-rose-500 shadow-inner">
+                <Trash2 className="w-8 h-8 animate-bounce" />
+              </div>
+
+              <div className="space-y-1">
+                <h3 className="font-black text-base sm:text-lg text-slate-900">
+                  Delete Entry?
+                </h3>
+                <p className="text-xs font-bold text-rose-600">
+                  کیا آپ واقعی یہ انٹری ڈیلیٹ کرنا چاہتے ہیں؟
+                </p>
+              </div>
+
+              {targetTx && (
+                <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-3 text-xs space-y-1">
+                  <p className="font-bold text-slate-800 truncate">
+                    {targetTx.description || 'Shop Cash Entry'}
+                  </p>
+                  <p className="font-mono font-black text-sm text-rose-600">
+                    Rs. {targetTx.amount.toLocaleString()}
+                  </p>
+                </div>
+              )}
+
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                یہ انٹری فہرست سے ہٹ جائے گی۔ ایڈمن کسی بھی وقت Deleted Logs سے اسے واپس ری سٹور کر سکتا ہے۔
+              </p>
+
+              <div className="flex gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setDeleteConfirmId(null)}
+                  className="flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition-all cursor-pointer"
+                >
+                  Cancel (نہیں)
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmDeleteTransaction}
+                  className="flex-1 py-2.5 px-4 bg-gradient-to-r from-rose-500 to-red-600 hover:from-rose-600 hover:to-red-700 text-white font-black rounded-xl text-xs shadow-md shadow-rose-500/30 flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Yes, Delete!</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* History Sub-Modal */}
       {selectedHisTxId && (
