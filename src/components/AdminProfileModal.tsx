@@ -40,10 +40,33 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [successMessage, setSuccessMessage] = useState<string>('');
   const [error, setError] = useState<string>('');
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const [offlinePasswordAlert, setOfflinePasswordAlert] = useState<boolean>(false);
 
   const wasOpenRef = useRef<boolean>(false);
   const hasEditedPasswordRef = useRef<boolean>(false);
   const initialPasswordRef = useRef<string>('');
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      setOfflinePasswordAlert(false);
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      if (initialPasswordRef.current) {
+        setPassword(initialPasswordRef.current);
+      }
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   // Format permanent system registration date (uneditable)
   const registrationDateFormatted = (() => {
@@ -84,9 +107,12 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
       setAddress(currentShop.address || '');
       setSuccessMessage('');
       setError('');
+      setOfflinePasswordAlert(false);
+      setIsOnline(typeof navigator !== 'undefined' ? navigator.onLine : true);
     } else if (!isOpen) {
       wasOpenRef.current = false;
       hasEditedPasswordRef.current = false;
+      setOfflinePasswordAlert(false);
     }
   }, [isOpen, currentShop, currentUser]);
 
@@ -97,6 +123,8 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
     setError('');
     setSuccessMessage('');
 
+    const currentlyOnline = typeof navigator !== 'undefined' ? navigator.onLine : isOnline;
+
     if (!shopName.trim()) {
       setError('دکان کا نام درج کرنا لازمی ہے۔ (Shop name is required)');
       return;
@@ -105,7 +133,7 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
       setError('مالک کا نام درج کرنا لازمی ہے۔ (Owner name is required)');
       return;
     }
-    if (password.trim().length < 6) {
+    if (currentlyOnline && password.trim().length < 6) {
       setError('پاس ورڈ کم از کم 6 ہندسوں کا ہونا ضروری ہے۔ (Password must be at least 6 characters)');
       return;
     }
@@ -115,12 +143,16 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
       await updateShopProfile({
         shop_name: shopName.trim(),
         owner_name: ownerName.trim(),
-        password: password.trim() || '123456',
+        ...(currentlyOnline ? { password: password.trim() || '123456' } : {}),
         phone: phone.trim(),
         address: address.trim()
       });
 
-      setSuccessMessage('✓ دکان کا نام، مالک کا نام اور پاس ورڈ کامیابی سے محفوظ ہو گیا!');
+      setSuccessMessage(
+        currentlyOnline
+          ? '✓ دکان کا نام، مالک کا نام اور پاس ورڈ کامیابی سے محفوظ ہو گیا!'
+          : '✓ تفصیلات لوکل ڈیٹا بیس میں محفوظ ہو گئیں! انٹرنیٹ ملتے ہی خودکار لائیو اپڈیٹ ہو جائیں گی۔'
+      );
       setTimeout(() => {
         setIsSaving(false);
         onClose();
@@ -249,24 +281,46 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
           {/* Owner Login Password */}
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="text-[11px] font-bold text-slate-700 uppercase">
+              <label className={`text-[11px] font-bold uppercase ${isOnline ? 'text-slate-700' : 'text-slate-600'}`}>
                 مالک کا لاگ ان پاس ورڈ (Login Password)
               </label>
               <span className="text-[10px] text-slate-400 font-medium">
                 کم از کم 6 ہندسے
               </span>
             </div>
-            <div className="relative">
+            <div
+              className="relative"
+              onClick={() => {
+                if (!isOnline) {
+                  setOfflinePasswordAlert(true);
+                }
+              }}
+            >
               <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
               <input
                 type={showPassword ? 'text' : 'password'}
                 value={password}
+                readOnly={!isOnline}
+                onClick={() => {
+                  if (!isOnline) {
+                    setOfflinePasswordAlert(true);
+                  }
+                }}
                 onFocus={e => {
+                  if (!isOnline) {
+                    setOfflinePasswordAlert(true);
+                    e.currentTarget.blur();
+                    return;
+                  }
                   if (!hasEditedPasswordRef.current) {
                     e.currentTarget.select();
                   }
                 }}
                 onChange={e => {
+                  if (!isOnline) {
+                    setOfflinePasswordAlert(true);
+                    return;
+                  }
                   const val = e.target.value;
                   const initPass = initialPasswordRef.current;
                   if (
@@ -284,9 +338,13 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
                   setPassword(val);
                 }}
                 placeholder="نیا پاس ورڈ درج کریں"
-                className="w-full pl-10 pr-20 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white text-sm transition-all font-mono"
+                className={
+                  isOnline
+                    ? 'w-full pl-10 pr-20 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white text-sm transition-all font-mono'
+                    : 'w-full pl-10 pr-12 py-2.5 bg-slate-100/80 border border-slate-200 text-slate-500 rounded-xl font-mono text-sm select-none cursor-default focus:outline-none'
+                }
               />
-              {password.length > 0 && (
+              {isOnline && password.length > 0 && (
                 <button
                   type="button"
                   onClick={() => {
@@ -301,13 +359,26 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
               )}
               <button
                 type="button"
-                onClick={() => setShowPassword(!showPassword)}
+                onClick={e => {
+                  e.stopPropagation();
+                  if (!isOnline) {
+                    setOfflinePasswordAlert(true);
+                    return;
+                  }
+                  setShowPassword(!showPassword);
+                }}
                 className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
                 title={showPassword ? 'Hide password' : 'Show password'}
               >
                 {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
+            {!isOnline && offlinePasswordAlert && (
+              <p className="text-xs font-black text-rose-600 mt-1.5 flex items-center gap-1 animate-in fade-in">
+                <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                <span>You are offline</span>
+              </p>
+            )}
             <p className="text-[10px] text-slate-500 mt-1">
               * آپ اپنی مرضی کا نیا پاس ورڈ بھی رکھ سکتے ہیں۔ بیک اپ لاگ ان میں یہی پاس ورڈ استعمال ہوگا۔
             </p>

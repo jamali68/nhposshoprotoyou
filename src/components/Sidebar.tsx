@@ -719,9 +719,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
             <div className="w-12 h-12 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto mb-3 shadow-inner">
               <Power className="w-6 h-6" />
             </div>
-            <h3 className="text-base font-black text-slate-800">لاگ آؤٹ کی تصدیق</h3>
+            <h3 className="text-base font-black text-slate-800">Confirm Logout</h3>
             <p className="text-xs text-slate-500 mt-1 mb-4 leading-relaxed">
-              کیا آپ واقعی سسٹم سے لاگ آؤٹ کرنا چاہتے ہیں؟
+              Are you sure you want to logout from the system?
             </p>
             <div className="flex gap-2">
               <button
@@ -729,14 +729,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                 onClick={handleConfirmLogout}
                 className="flex-1 py-2.5 bg-gradient-to-r from-rose-500 to-rose-700 hover:from-rose-600 hover:to-rose-800 text-white text-xs font-bold rounded-xl shadow-md shadow-rose-600/30 transition-all cursor-pointer active:scale-95"
               >
-                جی ہاں، لاگ آؤٹ
+                Yes, Logout
               </button>
               <button
                 type="button"
                 onClick={() => setShowLogoutModal(false)}
                 className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-all cursor-pointer active:scale-95"
               >
-                منسوخ کریں
+                Cancel
               </button>
             </div>
           </div>

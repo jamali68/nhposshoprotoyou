@@ -965,6 +965,43 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return nextQueue;
       });
 
+      // 1b. Flush any pending offline Admin Profile changes (Shop Name, Owner Name, Phone, Address)
+      try {
+        const rawPendingProfile = localStorage.getItem(`taj_pos_pending_profile_${currentShopId}`);
+        if (rawPendingProfile) {
+          const pendingProfile = JSON.parse(rawPendingProfile);
+          if (pendingProfile && typeof pendingProfile === 'object') {
+            await setDoc(doc(db, 'shops', currentShopId), sanitizeForFirestore({
+              shop_name: pendingProfile.shop_name,
+              owner_name: pendingProfile.owner_name,
+              phone: pendingProfile.phone,
+              address: pendingProfile.address,
+              last_login: new Date().toISOString()
+            }), { merge: true });
+
+            const cleanEmail = (pendingProfile.owner_email || currentShop?.owner_email || currentUser?.email || '').toLowerCase().trim();
+            const cleanEmailKey = cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
+            if (cleanEmailKey) {
+              await setDoc(doc(db, 'account_registry', cleanEmailKey), sanitizeForFirestore({
+                shop_name: pendingProfile.shop_name,
+                owner_name: pendingProfile.owner_name
+              }), { merge: true });
+            }
+
+            await setDoc(doc(db, 'users', currentShopId), sanitizeForFirestore({
+              displayName: pendingProfile.owner_name,
+              shopName: pendingProfile.shop_name,
+              updatedAt: new Date().toISOString()
+            }), { merge: true });
+
+            localStorage.removeItem(`taj_pos_pending_profile_${currentShopId}`);
+            flushedCount++;
+          }
+        }
+      } catch (profErr) {
+        console.warn('Pending profile sync error:', profErr);
+      }
+
       // 2. Refresh fresh records from Firestore for current shop
       try {
         const [
@@ -1346,7 +1383,23 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         (docSnap) => {
           if (docSnap.exists()) {
             const sData = docSnap.data() as ShopProfile;
-            setCurrentShop(sData);
+            let mergedShop = sData;
+            try {
+              const rawPending = localStorage.getItem(`taj_pos_pending_profile_${currentShopId}`);
+              if (rawPending) {
+                const pending = JSON.parse(rawPending);
+                if (pending && typeof pending === 'object') {
+                  mergedShop = {
+                    ...sData,
+                    shop_name: pending.shop_name ?? sData.shop_name,
+                    owner_name: pending.owner_name ?? sData.owner_name,
+                    phone: pending.phone ?? sData.phone,
+                    address: pending.address ?? sData.address
+                  };
+                }
+              }
+            } catch {}
+            setCurrentShop(mergedShop);
             markRealtimeConnected();
           }
         },
@@ -3084,11 +3137,23 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const updateShopProfile = async (profile: Partial<ShopProfile>): Promise<void> => {
     if (!currentShopId || !currentShop) return;
-    const finalPassword = profile.password !== undefined ? profile.password.trim() : (currentShop.password || '123456');
+    const isCurrentlyOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+
+    // Password can ONLY be changed when online; when offline, strictly preserve existing password
+    const finalPassword =
+      isCurrentlyOnline && profile.password !== undefined
+        ? profile.password.trim()
+        : (currentShop.password || '123456');
 
     let passwordHash: string | undefined = currentShop.passwordHash;
     let passwordSalt: string | undefined = currentShop.passwordSalt;
-    if (profile.password && profile.password.trim() !== '' && profile.password.trim() !== '123456') {
+    if (
+      isCurrentlyOnline &&
+      profile.password &&
+      profile.password.trim() !== '' &&
+      profile.password.trim() !== '123456' &&
+      profile.password.trim() !== currentShop.password
+    ) {
       try {
         const hashRes = await authApi.hashPassword(profile.password.trim());
         if (hashRes.success && hashRes.hash && hashRes.salt) {
@@ -3127,24 +3192,49 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const cleanEmail = (updated.owner_email || currentUser?.email || '').toLowerCase().trim();
     const cleanEmailKey = cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
 
+    // Store in pending profile queue first so if offline (or connection drops), it auto-syncs when online
     try {
-      await setDoc(doc(db, 'shops', currentShopId), sanitizeForFirestore(updated), { merge: true });
-      if (cleanEmailKey) {
-        await setDoc(doc(db, 'account_registry', cleanEmailKey), sanitizeForFirestore({
+      localStorage.setItem(
+        `taj_pos_pending_profile_${currentShopId}`,
+        JSON.stringify({
           shop_name: updated.shop_name,
           owner_name: updated.owner_name,
-          password: finalPassword,
-          password_configured: updated.password_configured,
-          password_hash: updated.passwordHash || null,
-          password_salt: updated.passwordSalt || null,
-          last_password_updated_at: new Date().toISOString()
-        }), { merge: true });
-      }
-      await setDoc(doc(db, 'users', currentShopId), sanitizeForFirestore({
-        displayName: updated.owner_name,
-        shopName: updated.shop_name,
-        updatedAt: new Date().toISOString()
-      }), { merge: true });
+          phone: updated.phone || '',
+          address: updated.address || '',
+          owner_email: cleanEmail,
+          updated_at: new Date().toISOString()
+        })
+      );
+    } catch {}
+
+    if (!isCurrentlyOnline) {
+      return;
+    }
+
+    try {
+      await Promise.race([
+        (async () => {
+          await setDoc(doc(db, 'shops', currentShopId), sanitizeForFirestore(updated), { merge: true });
+          if (cleanEmailKey) {
+            await setDoc(doc(db, 'account_registry', cleanEmailKey), sanitizeForFirestore({
+              shop_name: updated.shop_name,
+              owner_name: updated.owner_name,
+              password: finalPassword,
+              password_configured: updated.password_configured,
+              password_hash: updated.passwordHash || null,
+              password_salt: updated.passwordSalt || null,
+              last_password_updated_at: new Date().toISOString()
+            }), { merge: true });
+          }
+          await setDoc(doc(db, 'users', currentShopId), sanitizeForFirestore({
+            displayName: updated.owner_name,
+            shopName: updated.shop_name,
+            updatedAt: new Date().toISOString()
+          }), { merge: true });
+          localStorage.removeItem(`taj_pos_pending_profile_${currentShopId}`);
+        })(),
+        new Promise<void>((resolve) => setTimeout(resolve, 4000))
+      ]);
     } catch (e) {
       console.warn('updateShopProfile sync note:', e);
     }

@@ -658,7 +658,7 @@ export const DailyCashView: React.FC = () => {
       />
 
       {/* Main Green Shop Cash Banner */}
-      <div className="bg-[#27ae60] text-white p-5 rounded-2xl text-center shadow-lg shadow-emerald-600/20 relative">
+      <div className="bg-[#27ae60] text-white p-5 rounded-2xl text-center shadow-md relative isolate transform-gpu">
         <button
           type="button"
           onClick={() => setIsTotalHidden(prev => !prev)}
@@ -696,7 +696,7 @@ export const DailyCashView: React.FC = () => {
 
         {/* Back Cash Transfer / Leen Deen Record (بیک کیش لین دین ریکارڈ) */}
         {backCashTransfers.hasTransfers && (
-          <div className="mt-3 text-left bg-black/25 backdrop-blur-xs border border-white/20 rounded-xl p-2.5 text-xs text-white">
+          <div className="mt-3 text-left bg-black/25 border border-white/20 rounded-xl p-2.5 text-xs text-white">
             <div className="flex items-center justify-between gap-1.5 mb-1.5 pb-1 border-b border-white/15">
               <span className="font-bold flex items-center gap-1.5 text-white/95 text-[11px]">
                 <span className="text-amber-300 text-sm">🔁</span>

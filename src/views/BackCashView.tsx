@@ -447,7 +447,7 @@ export const BackCashView: React.FC = () => {
       />
 
       {/* Main Blue Banner */}
-      <div className="bg-[#2980b9] text-white p-5 rounded-2xl shadow-lg shadow-[#2980b9]/20 relative">
+      <div className="bg-[#2980b9] text-white p-5 rounded-2xl shadow-md relative isolate transform-gpu">
         {/* Top bar with Commission Badge & Hide/Show Eye Button */}
         <div className="flex items-center justify-between mb-2">
           <div
@@ -491,7 +491,7 @@ export const BackCashView: React.FC = () => {
 
           {/* Shop Cash Transfer / Leen Deen Record (شاپ کیش لین دین ریکارڈ) */}
           {shopCashTransfers.hasTransfers && (
-            <div className="mt-3 text-left bg-black/25 backdrop-blur-xs border border-white/20 rounded-xl p-2.5 text-xs text-white">
+            <div className="mt-3 text-left bg-black/25 border border-white/20 rounded-xl p-2.5 text-xs text-white">
               <div className="flex items-center justify-between gap-1.5 mb-1.5 pb-1 border-b border-white/15">
                 <span className="font-bold flex items-center gap-1.5 text-white/95 text-[11px]">
                   <span className="text-amber-300 text-sm">🔁</span>

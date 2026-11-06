@@ -60,10 +60,10 @@ export const ItemsPriceView: React.FC = () => {
 
     const updatedItem: BottleItem = {
       ...item,
-      item_name: editValues.item_name || item.item_name,
-      unit_price: Number(editValues.unit_price) || item.unit_price,
-      commission_per_unit: Number(editValues.commission_per_unit) || item.commission_per_unit,
-      salesman_price: Number(editValues.salesman_price) || 0,
+      item_name: (editValues.item_name ?? item.item_name).trim() || item.item_name,
+      unit_price: editValues.unit_price !== undefined ? (Number(editValues.unit_price) || 0) : (item.unit_price || 0),
+      commission_per_unit: editValues.commission_per_unit !== undefined ? (Number(editValues.commission_per_unit) || 0) : (item.commission_per_unit || 0),
+      salesman_price: editValues.salesman_price !== undefined ? (Number(editValues.salesman_price) || 0) : (item.salesman_price || 0),
       category: editValues.category || item.category
     };
 
@@ -309,11 +309,11 @@ export const ItemsPriceView: React.FC = () => {
               <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Retail Price (Rs)</label>
               <input
                 type="number"
+                min="0"
                 step="0.01"
                 value={newRetail}
                 onChange={e => setNewRetail(e.target.value)}
                 placeholder="0.00"
-                required
                 className="w-full p-2 bg-slate-50 border border-slate-300 rounded-xl font-bold text-center focus:outline-none"
               />
             </div>
@@ -322,11 +322,11 @@ export const ItemsPriceView: React.FC = () => {
               <label className="block text-[10px] font-bold text-emerald-700 uppercase mb-1">Whole Price (Rs)</label>
               <input
                 type="number"
+                min="0"
                 step="0.01"
                 value={newWhole}
                 onChange={e => setNewWhole(e.target.value)}
                 placeholder="0.00"
-                required
                 className="w-full p-2 bg-emerald-50 border border-emerald-300 rounded-xl font-bold text-center text-emerald-900 focus:outline-none"
               />
             </div>
@@ -335,6 +335,7 @@ export const ItemsPriceView: React.FC = () => {
               <label className="block text-[10px] font-bold text-amber-700 uppercase mb-1">Salesman (Rs)</label>
               <input
                 type="number"
+                min="0"
                 step="0.01"
                 value={newSalesman}
                 onChange={e => setNewSalesman(e.target.value)}
