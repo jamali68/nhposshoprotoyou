@@ -11,7 +11,7 @@ export const EditHistoryLogsView: React.FC = () => {
   const {
     editHistory,
     markAllEditsAsRead,
-    setActiveView
+    goBack
   } = usePOS();
 
   return (
@@ -20,7 +20,7 @@ export const EditHistoryLogsView: React.FC = () => {
       <div className="flex items-center justify-between bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
         <button
           type="button"
-          onClick={() => setActiveView('back_cash')}
+          onClick={goBack}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2c3e50] hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />

@@ -371,14 +371,34 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, []);
 
   const stepBackView = useCallback(() => {
-    const prev = viewHistoryRef.current.pop() || 'dashboard';
-    setActiveViewState(prev);
+    setActiveViewState(current => {
+      if (current === 'edit_logs' || current === 'deleted_history') {
+        while (viewHistoryRef.current.length > 0) {
+          const candidate = viewHistoryRef.current.pop()!;
+          if (candidate !== current && candidate !== 'edit_logs' && candidate !== 'deleted_history') {
+            return candidate;
+          }
+        }
+        return current === 'edit_logs' ? 'back_cash' : 'dashboard';
+      }
+      viewHistoryRef.current = [];
+      return 'dashboard';
+    });
   }, []);
 
   const setActiveView = useCallback((newView: ActiveView) => {
     setActiveViewState(prev => {
       if (prev === newView) return prev;
-      viewHistoryRef.current.push(prev);
+      if (newView === 'dashboard') {
+        viewHistoryRef.current = [];
+      } else if (
+        viewHistoryRef.current.length > 0 &&
+        viewHistoryRef.current[viewHistoryRef.current.length - 1] === newView
+      ) {
+        viewHistoryRef.current.pop();
+      } else if (prev !== 'edit_logs' && prev !== 'deleted_history') {
+        viewHistoryRef.current.push(prev);
+      }
       if (typeof window !== 'undefined' && window.history) {
         window.history.pushState({ appView: newView }, '', window.location.href);
       }
@@ -390,12 +410,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (executeTopBackHandler()) {
       return;
     }
-    if (typeof window !== 'undefined' && window.history && viewHistoryRef.current.length > 0) {
-      window.history.back();
-    } else {
-      setActiveViewState('dashboard');
-    }
-  }, [executeTopBackHandler]);
+    stepBackView();
+  }, [executeTopBackHandler, stepBackView]);
   const [filterDate, setFilterDate] = useState<string>(getTodayDateString());
   const [isPrivacyOn, setIsPrivacyOn] = useState<boolean>(true);
   const [isMaintenanceMode, setIsMaintenanceMode] = useState<boolean>(() => {
