@@ -532,40 +532,40 @@ export const BackCashView: React.FC = () => {
           )}
         </div>
 
-        {/* Bottom lines in Blue Box: Yesterday Closing details */}
+        {/* Bottom lines in Blue Box: Yesterday Closing & Active User Closing details */}
         <div className="mt-3.5 pt-2.5 border-t border-white/25 text-xs text-white/95 font-medium space-y-1">
-          {/* Line 1: Yesterday Closing Counter Cash (jo 450 bachay thay) */}
+          {/* Line 1: Yesterday Closing Counter Cash */}
           <div className="flex justify-between items-center">
             <span>
               {bcLastClosingDate === yesterdayDate
-                ? (yesterdayBreakdown.activeClosing > 0 ? 'Yesterday Closing (Counter Cash):' : 'Yesterday Closing Cash:')
-                : (yesterdayBreakdown.activeClosing > 0 ? `Last Closing Counter (${bcLastClosingDate}):` : `Last Closing Cash (${bcLastClosingDate}):`)}
+                ? (todayBreakdown.activeClosing !== 0 || yesterdayBreakdown.activeClosing !== 0 ? 'Yesterday Closing (Counter Cash):' : 'Yesterday Closing Cash:')
+                : (todayBreakdown.activeClosing !== 0 || yesterdayBreakdown.activeClosing !== 0 ? `Last Closing Counter (${bcLastClosingDate}):` : `Last Closing Cash (${bcLastClosingDate}):`)}
             </span>
             <span className="font-bold font-mono text-white">
-              Rs. {(yesterdayBreakdown.activeClosing > 0 ? yesterdayBreakdown.remainingCounter : bcLastClosingAmount).toLocaleString()}
+              Rs. {bcLastClosingAmount.toLocaleString()}
             </span>
           </div>
 
-          {/* Line 2 (thori chuti c blue box k end per bilkull nechay): Admin / User Closing Line */}
-          {yesterdayBreakdown.userClosings.length > 0 ? (
-            yesterdayBreakdown.userClosings.map((uc, idx) => (
+          {/* Line 2: Admin / User Closing Line */}
+          {todayBreakdown.userClosings.length > 0 ? (
+            todayBreakdown.userClosings.map((uc, idx) => (
               <div key={idx} className="flex justify-between items-center text-[11px] text-amber-200 font-semibold pt-0.5 border-t border-white/10">
-                <span>Yesterday Closing ({uc.userRole ? uc.userRole.toUpperCase() : 'ADMIN'}: {uc.userName}):</span>
+                <span>Closing Balance ({uc.userRole ? uc.userRole.toUpperCase() : 'ADMIN'}: {uc.userName}):</span>
                 <span className="font-bold font-mono text-amber-300">
                   Rs. {uc.amount.toLocaleString()}
                 </span>
               </div>
             ))
-          ) : yesterdayBreakdown.activeClosing > 0 ? (
+          ) : todayBreakdown.activeClosing !== 0 ? (
             <div className="flex justify-between items-center text-[11px] text-amber-200 font-semibold pt-0.5 border-t border-white/10">
-              <span>Yesterday Closing (Admin/User Closing):</span>
+              <span>Closing Balance (Admin/User Closing):</span>
               <span className="font-bold font-mono text-amber-300">
-                Rs. {yesterdayBreakdown.activeClosing.toLocaleString()}
+                Rs. {todayBreakdown.activeClosing.toLocaleString()}
               </span>
             </div>
           ) : (
             <div className="flex justify-between items-center text-[10px] text-white/70 pt-0.5">
-              <span>Yesterday Closing Staff:</span>
+              <span>Closing Balance Staff:</span>
               <span className="font-bold font-mono">Rs. 0</span>
             </div>
           )}
@@ -609,8 +609,8 @@ export const BackCashView: React.FC = () => {
           </div>
         </div>
 
-        {/* Detailed Breakdown for Yesterday: Counter Cash + Staff Closing lines */}
-        {yesterdayBreakdown.activeClosing > 0 && (
+        {/* Detailed Breakdown: Counter Cash + Active User Account Closing Balance */}
+        {(todayBreakdown.activeClosing !== 0 || todayBreakdown.userClosings.length > 0 || yesterdayBreakdown.activeClosing !== 0) && (
           <div className="mt-2.5 pt-2 border-t border-blue-200/70 grid grid-cols-2 gap-2 text-xs">
             <div className="bg-white/80 p-2 rounded-xl border border-blue-100">
               <span className="text-[10px] font-bold text-slate-500 block uppercase">Counter Cash Left</span>
@@ -620,10 +620,10 @@ export const BackCashView: React.FC = () => {
             </div>
             <div className="bg-amber-50 p-2 rounded-xl border border-amber-200">
               <span className="text-[10px] font-bold text-amber-800 block uppercase">
-                {yesterdayBreakdown.userClosings[0]?.userName || 'Admin'} Closing
+                {todayBreakdown.userClosings[0]?.userName || yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Closing
               </span>
               <span className="font-mono font-black text-amber-700 text-xs sm:text-sm">
-                Rs. {yesterdayBreakdown.activeClosing.toLocaleString()}
+                Rs. {todayBreakdown.activeClosing.toLocaleString()}
               </span>
             </div>
           </div>
@@ -1000,14 +1000,14 @@ export const BackCashView: React.FC = () => {
             </div>
           </div>
 
-          {/* Detailed breakdown if yesterday had staff closing */}
-          {yesterdayBreakdown.activeClosing > 0 && (
+          {/* Detailed breakdown if active user closing exists */}
+          {(todayBreakdown.activeClosing !== 0 || todayBreakdown.userClosings.length > 0 || yesterdayBreakdown.activeClosing !== 0) && (
             <div className="pt-1.5 border-t border-blue-100/90 flex items-center justify-between text-[11px] text-slate-600 flex-wrap gap-2">
               <span>
                 Counter Cash Left: <b className="font-mono text-slate-800">Rs. {yesterdayBreakdown.remainingCounter.toLocaleString()}</b>
               </span>
               <span className="text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200/60">
-                {yesterdayBreakdown.userClosings[0]?.userName || 'Admin'} Closing: <b className="font-mono text-amber-700">Rs. {yesterdayBreakdown.activeClosing.toLocaleString()}</b>
+                {todayBreakdown.userClosings[0]?.userName || yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Closing: <b className="font-mono text-amber-700">Rs. {todayBreakdown.activeClosing.toLocaleString()}</b>
               </span>
             </div>
           )}

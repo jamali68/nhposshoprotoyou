@@ -3976,10 +3976,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     let yTotal = 0;
     priorTxs.forEach(t => {
-      if (t.type === 'out' || t.type === 'closing_minus' || t.type === 'transfer_to_shop') {
+      if (t.type === 'out' || t.type === 'transfer_to_shop') {
         yTotal -= t.amount;
-      } else if (t.type === 'closing' || t.type === 'commission') {
-        // closing allocates part of existing balance; commission is separate profit, not Back Cash capital
+      } else if (t.type === 'closing' || t.type === 'closing_minus' || t.type === 'commission') {
+        // closing & closing_minus belong to the User Account Closing Balance bucket;
+        // commission is separate profit, not Back Cash capital
       } else {
         yTotal += t.amount;
       }
@@ -3998,30 +3999,42 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const getBackCashTotal = (date: string) => {
     const yClosing = getYesterdayBackCashClosing(date);
-    const txs = backCashTransactions.filter(t => t.transaction_date === date);
-    let todayDelta = 0;
-    txs.forEach(t => {
-      if (t.type === 'out' || t.type === 'closing_minus' || t.type === 'transfer_to_shop') {
-        todayDelta -= t.amount;
-      } else if (t.type === 'closing' || t.type === 'commission') {
-        // closing is an internal allocation; commission is separate profit, not Back Cash capital
+    const todayTxs = backCashTransactions.filter(t => t.transaction_date === date);
+    let todayCounterDelta = 0;
+    todayTxs.forEach(t => {
+      if (t.type === 'out' || t.type === 'transfer_to_shop') {
+        todayCounterDelta -= t.amount;
+      } else if (t.type === 'closing' || t.type === 'closing_minus' || t.type === 'commission') {
+        // closing & closing_minus are calculated in the cumulative activeClosing bucket below;
+        // commission is separate profit
       } else {
-        todayDelta += t.amount;
+        todayCounterDelta += t.amount;
       }
     });
-    return yClosing + todayDelta;
+
+    // Cumulative User Account Closing Balance (Closing Bal (+) minus Closing Balance (- / Minis)) up to 'date'
+    const upToDateTxs = backCashTransactions.filter(t => t.transaction_date <= date);
+    const totalClosingAdded = upToDateTxs
+      .filter(t => t.type === 'closing')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    const totalClosingMinus = upToDateTxs
+      .filter(t => t.type === 'closing_minus')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    const activeClosing = totalClosingAdded - totalClosingMinus;
+
+    return yClosing + todayCounterDelta + activeClosing;
   };
 
   const getBackCashClosingDetails = (date: string): BackCashClosingBreakdown => {
     const totalBalance = getBackCashTotal(date);
-    const txs = backCashTransactions.filter(t => t.transaction_date === date);
-    const closingTxs = txs.filter(t => t.type === 'closing');
-    const closingMinusTxs = txs.filter(t => t.type === 'closing_minus');
+    const upToDateTxs = backCashTransactions.filter(t => t.transaction_date <= date);
+    const closingTxs = upToDateTxs.filter(t => t.type === 'closing');
+    const closingMinusTxs = upToDateTxs.filter(t => t.type === 'closing_minus');
 
-    const totalClosingAdded = closingTxs.reduce((sum, t) => sum + t.amount, 0);
-    const totalClosingMinus = closingMinusTxs.reduce((sum, t) => sum + t.amount, 0);
-    const activeClosing = Math.max(0, totalClosingAdded - totalClosingMinus);
-    const remainingCounter = Math.max(0, totalBalance - activeClosing);
+    const totalClosingAdded = closingTxs.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    const totalClosingMinus = closingMinusTxs.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    const activeClosing = totalClosingAdded - totalClosingMinus;
+    const remainingCounter = totalBalance - activeClosing;
 
     const userMap: { [key: string]: { userId: string; userName: string; userRole: string; amount: number } } = {};
     closingTxs.forEach(t => {
@@ -4031,10 +4044,23 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (!userMap[key]) {
         userMap[key] = { userId: t.created_by, userName: name, userRole: role, amount: 0 };
       }
-      userMap[key].amount += t.amount;
+      userMap[key].amount += Number(t.amount) || 0;
     });
 
+    // Deduct closing_minus first from matching user, then from remaining user buckets
     let remainingMinus = totalClosingMinus;
+    closingMinusTxs.forEach(t => {
+      const amt = Number(t.amount) || 0;
+      const role = t.created_by_role || t.created_by || 'admin';
+      const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
+      const key = `${role}_${name}`;
+      if (userMap[key] && userMap[key].amount > 0) {
+        const deduct = Math.min(userMap[key].amount, amt);
+        userMap[key].amount -= deduct;
+        remainingMinus -= deduct;
+      }
+    });
+
     if (remainingMinus > 0) {
       for (const key of Object.keys(userMap)) {
         if (remainingMinus <= 0) break;
@@ -4044,7 +4070,25 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     }
 
-    const userClosings = Object.values(userMap).filter(u => u.amount > 0);
+    // If still remainingMinus > 0 (e.g. minus exceeds added or only minus was entered), apply to primary user entry
+    if (remainingMinus > 0) {
+      const firstKey = Object.keys(userMap)[0];
+      if (firstKey) {
+        userMap[firstKey].amount -= remainingMinus;
+      } else if (closingMinusTxs.length > 0) {
+        const t = closingMinusTxs[closingMinusTxs.length - 1];
+        const role = t.created_by_role || t.created_by || 'admin';
+        const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
+        userMap[`${role}_${name}`] = {
+          userId: t.created_by,
+          userName: name,
+          userRole: role,
+          amount: -remainingMinus
+        };
+      }
+    }
+
+    const userClosings = Object.values(userMap).filter(u => u.amount !== 0);
 
     return {
       totalBalance,
