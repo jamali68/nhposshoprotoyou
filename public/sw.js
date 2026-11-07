@@ -1,9 +1,9 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v17.5.8
+ * Version: v17.5.9
  * Comprehensive Offline & GitHub Pages Support
  */
-const SW_VERSION = 'v17.5.8';
+const SW_VERSION = 'v17.5.9';
 const CACHE_NAME = 'nh-pos-' + SW_VERSION;
 
 // Core static assets to precache immediately on install

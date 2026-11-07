@@ -664,25 +664,23 @@ export const BackCashView: React.FC = () => {
           </div>
         </div>
 
-        {/* Detailed Breakdown: Counter Cash + Active User Account Closing Balance */}
-        {(todayBreakdown.activeClosing !== 0 || todayBreakdown.userClosings.length > 0 || yesterdayBreakdown.activeClosing !== 0) && (
-          <div className="mt-2.5 pt-2 border-t border-blue-200/70 grid grid-cols-2 gap-2 text-xs">
-            <div className="bg-white/80 p-2 rounded-xl border border-blue-100">
-              <span className="text-[10px] font-bold text-slate-500 block uppercase">Counter Cash Left</span>
-              <span className="font-mono font-black text-slate-800 text-xs sm:text-sm">
-                Rs. {yesterdayBreakdown.remainingCounter.toLocaleString()}
-              </span>
-            </div>
-            <div className="bg-amber-50 p-2 rounded-xl border border-amber-200">
-              <span className="text-[10px] font-bold text-amber-800 block uppercase">
-                {todayBreakdown.userClosings[0]?.userName || yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Closing
-              </span>
-              <span className="font-mono font-black text-amber-700 text-xs sm:text-sm">
-                Rs. {todayBreakdown.activeClosing.toLocaleString()}
-              </span>
-            </div>
+        {/* Detailed Breakdown: Counter Cash + Active User Account Closing Balance (Always visible even when 0) */}
+        <div className="mt-2.5 pt-2 border-t border-blue-200/70 grid grid-cols-2 gap-2 text-xs">
+          <div className="bg-white/80 p-2 rounded-xl border border-blue-100">
+            <span className="text-[10px] font-bold text-slate-500 block uppercase">Counter Cash Left</span>
+            <span className="font-mono font-black text-slate-800 text-xs sm:text-sm">
+              Rs. {yesterdayBreakdown.remainingCounter.toLocaleString()}
+            </span>
           </div>
-        )}
+          <div className="bg-amber-50 p-2 rounded-xl border border-amber-200">
+            <span className="text-[10px] font-bold text-amber-800 block uppercase">
+              {todayBreakdown.userClosings[0]?.userName || yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Closing
+            </span>
+            <span className="font-mono font-black text-amber-700 text-xs sm:text-sm">
+              Rs. {todayBreakdown.activeClosing.toLocaleString()}
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* Sending & Receiving Commission Stats Card (Daily / Weekly / Monthly & User-wise) - Touch to Expand */}
@@ -1055,17 +1053,15 @@ export const BackCashView: React.FC = () => {
             </div>
           </div>
 
-          {/* Detailed breakdown if active user closing exists */}
-          {(todayBreakdown.activeClosing !== 0 || todayBreakdown.userClosings.length > 0 || yesterdayBreakdown.activeClosing !== 0) && (
-            <div className="pt-1.5 border-t border-blue-100/90 flex items-center justify-between text-[11px] text-slate-600 flex-wrap gap-2">
-              <span>
-                Counter Cash Left: <b className="font-mono text-slate-800">Rs. {yesterdayBreakdown.remainingCounter.toLocaleString()}</b>
-              </span>
-              <span className="text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200/60">
-                {todayBreakdown.userClosings[0]?.userName || yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Closing: <b className="font-mono text-amber-700">Rs. {todayBreakdown.activeClosing.toLocaleString()}</b>
-              </span>
-            </div>
-          )}
+          {/* Detailed breakdown: Counter Cash Left + Active User Closing (Always visible even when 0) */}
+          <div className="pt-1.5 border-t border-blue-100/90 flex items-center justify-between text-[11px] text-slate-600 flex-wrap gap-2">
+            <span>
+              Counter Cash Left: <b className="font-mono text-slate-800">Rs. {yesterdayBreakdown.remainingCounter.toLocaleString()}</b>
+            </span>
+            <span className="text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200/60">
+              {todayBreakdown.userClosings[0]?.userName || yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Closing: <b className="font-mono text-amber-700">Rs. {todayBreakdown.activeClosing.toLocaleString()}</b>
+            </span>
+          </div>
         </div>
 
         <div className="divide-y divide-slate-100">
