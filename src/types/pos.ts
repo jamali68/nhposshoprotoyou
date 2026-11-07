@@ -81,6 +81,7 @@ export interface BackCashTransaction {
   created_by_role?: string;
   created_by_name?: string;
   created_by_designation?: string;
+  created_at?: string;
   edited_by?: string;
   edited_by_role?: string;
   edited_by_name?: string;

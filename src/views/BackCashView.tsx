@@ -219,6 +219,61 @@ export const BackCashView: React.FC = () => {
   const yesterdayBreakdown = getBackCashClosingDetails(closingInfo.lastDate);
   const filteredList = backCashTransactions.filter(t => t.transaction_date === filterDate);
 
+  const getTxTimestamp = (tx: { id?: string; created_at?: string }) => {
+    if (tx.created_at) {
+      const t = Date.parse(tx.created_at);
+      if (!isNaN(t) && t > 0) return t;
+    }
+    if (tx.id) {
+      const parts = tx.id.split('-');
+      if (parts.length >= 2) {
+        const ts = parseInt(parts[1], 10);
+        if (!isNaN(ts) && ts > 1500000000000) {
+          return ts;
+        }
+      }
+    }
+    return 0;
+  };
+
+  const getTransactionTime = (tx: { created_at?: string; id?: string; extra_fields?: any }) => {
+    if (tx.extra_fields?.shift_time) {
+      return tx.extra_fields.shift_time;
+    }
+    if (tx.created_at) {
+      try {
+        const d = new Date(tx.created_at);
+        if (!isNaN(d.getTime())) {
+          return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+        }
+      } catch {}
+    }
+    if (tx.id) {
+      const parts = tx.id.split('-');
+      if (parts.length >= 2) {
+        const ts = parseInt(parts[1], 10);
+        if (!isNaN(ts) && ts > 1500000000000) {
+          const d = new Date(ts);
+          if (!isNaN(d.getTime())) {
+            return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+          }
+        }
+      }
+    }
+    return '';
+  };
+
+  const sortedFilteredList = useMemo(() => {
+    return [...filteredList].sort((a, b) => {
+      const timeA = getTxTimestamp(a);
+      const timeB = getTxTimestamp(b);
+      if (timeA !== 0 && timeB !== 0 && timeA !== timeB) {
+        return timeB - timeA; // Newest entry on top, 1st entry at very bottom
+      }
+      return (b.id || '').localeCompare(a.id || '');
+    });
+  }, [filteredList]);
+
   // Transfers between Back Cash and Shop Cash for current filterDate
   const shopCashTransfers = useMemo(() => {
     const txs = backCashTransactions.filter(t => t.transaction_date === filterDate);
@@ -1014,12 +1069,13 @@ export const BackCashView: React.FC = () => {
         </div>
 
         <div className="divide-y divide-slate-100">
-          {filteredList.length > 0 ? (
-            filteredList.map(t => {
+          {sortedFilteredList.length > 0 ? (
+            sortedFilteredList.map(t => {
               const typeInfo = getTypeBadge(t.type);
               const isClosing = t.type === 'closing' || t.type === 'closing_minus';
               const creatorBadge = getRoleBadge(t.created_by_role || t.created_by, t.created_by_name);
               const editorBadge = t.edited_by ? getRoleBadge(t.edited_by_role || t.edited_by, t.edited_by_name) : null;
+              const txTime = getTransactionTime(t);
 
               return (
                 <div
@@ -1082,6 +1138,18 @@ export const BackCashView: React.FC = () => {
                   </div>
 
                   <div className="text-right">
+                    {txTime ? (
+                      <div
+                        className={`text-[11px] font-bold font-mono tracking-tight ${
+                          isClosing ? 'text-orange-800' : 'text-slate-500'
+                        }`}
+                      >
+                        {txTime}
+                      </div>
+                    ) : (
+                      <div className="h-4" />
+                    )}
+
                     <div
                       className={`text-sm sm:text-base font-black font-mono ${
                         isClosing
@@ -1290,7 +1358,7 @@ export const BackCashView: React.FC = () => {
                   }
                 ]
               : []),
-            ...filteredList.map(t => ({
+            ...sortedFilteredList.map(t => ({
               id: t.id,
               note: `${t.note || 'Back Cash Entry'} [${t.created_by_designation || t.created_by || 'Staff'}]${
                 t.edited_by ? ` (Edit: ${t.edited_by_role || t.edited_by})` : ''

@@ -4472,7 +4472,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       created_by: currentUser?.username || role,
       created_by_role: role,
       created_by_name: name,
-      created_by_designation: designation
+      created_by_designation: designation,
+      created_at: tx.created_at || new Date().toISOString()
     };
     scheduleDataMutation(
       'add',

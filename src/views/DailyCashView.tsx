@@ -153,6 +153,62 @@ export const DailyCashView: React.FC = () => {
   const stats = getShopCashStats(filterDate);
   const yesterdayBal = getYesterdayClosingCash(filterDate);
   const filteredList = dailyTransactions.filter(t => t.transaction_date === filterDate);
+
+  const getTxTimestamp = (tx: { id?: string; created_at?: string }) => {
+    if (tx.created_at) {
+      const t = Date.parse(tx.created_at);
+      if (!isNaN(t) && t > 0) return t;
+    }
+    if (tx.id) {
+      const parts = tx.id.split('-');
+      if (parts.length >= 2) {
+        const ts = parseInt(parts[1], 10);
+        if (!isNaN(ts) && ts > 1500000000000) {
+          return ts;
+        }
+      }
+    }
+    return 0;
+  };
+
+  const getTransactionTime = (tx: { created_at?: string; id?: string; extra_fields?: any }) => {
+    if (tx.extra_fields?.shift_time) {
+      return tx.extra_fields.shift_time;
+    }
+    if (tx.created_at) {
+      try {
+        const d = new Date(tx.created_at);
+        if (!isNaN(d.getTime())) {
+          return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+        }
+      } catch {}
+    }
+    if (tx.id) {
+      const parts = tx.id.split('-');
+      if (parts.length >= 2) {
+        const ts = parseInt(parts[1], 10);
+        if (!isNaN(ts) && ts > 1500000000000) {
+          const d = new Date(ts);
+          if (!isNaN(d.getTime())) {
+            return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+          }
+        }
+      }
+    }
+    return '';
+  };
+
+  const sortedFilteredList = useMemo(() => {
+    return [...filteredList].sort((a, b) => {
+      const timeA = getTxTimestamp(a);
+      const timeB = getTxTimestamp(b);
+      if (timeA !== 0 && timeB !== 0 && timeA !== timeB) {
+        return timeB - timeA; // Newest entry on top, 1st entry at very bottom
+      }
+      return (b.id || '').localeCompare(a.id || '');
+    });
+  }, [filteredList]);
+
   const effectiveOpening = stats.opening > 0 ? stats.opening : yesterdayBal;
   const totalOutPurchases = stats.cashOut;
 
@@ -1144,13 +1200,15 @@ export const DailyCashView: React.FC = () => {
         </div>
 
         <div className="divide-y divide-slate-100">
-          {filteredList.length > 0 ? (
-            filteredList.map(t => {
+          {sortedFilteredList.length > 0 ? (
+            sortedFilteredList.map(t => {
               const isOut = t.type.toLowerCase() === 'out';
               const isOpening = t.type.toLowerCase() === 'opening';
               const isShiftClosing = t.type.toLowerCase() === 'shift_closing';
               const isFromBack = t.transfer_direction === 'from_back_cash' || t.description?.includes('[Back Cash se Liya]') || t.description?.includes('[From Back Cash]');
               const isToBack = t.transfer_direction === 'to_back_cash' || t.description?.includes('[Back Cash ko Diya]') || t.description?.includes('[To Back Cash]');
+              const txTime = getTransactionTime(t);
+
               return (
                 <div key={t.id} className="py-3 flex items-center justify-between text-xs gap-3">
                   <div className="flex-1 min-w-0">
@@ -1187,11 +1245,6 @@ export const DailyCashView: React.FC = () => {
                       >
                         {(t.created_by_name || t.created_by).toUpperCase()}
                       </span>
-                      {t.extra_fields?.shift_time && (
-                        <span className="text-[9px] font-mono font-semibold text-slate-400">
-                          {t.extra_fields.shift_time}
-                        </span>
-                      )}
                     </div>
 
                     <p className="font-bold text-slate-800 text-[13px] truncate mt-1">
@@ -1220,6 +1273,18 @@ export const DailyCashView: React.FC = () => {
                   </div>
 
                   <div className="text-right">
+                    {txTime ? (
+                      <div
+                        className={`text-[11px] font-bold font-mono tracking-tight ${
+                          isShiftClosing ? 'text-indigo-800' : 'text-slate-500'
+                        }`}
+                      >
+                        {txTime}
+                      </div>
+                    ) : (
+                      <div className="h-4" />
+                    )}
+
                     <div
                       className={`text-sm font-black font-mono ${
                         isShiftClosing
@@ -1421,7 +1486,7 @@ export const DailyCashView: React.FC = () => {
           title="Daily Shop Cash Account Statement"
           dateStr={filterDate}
           closingBalance={stats.balance}
-          items={filteredList.map(t => ({
+          items={sortedFilteredList.map(t => ({
             id: t.id,
             note: t.description,
             type: t.type,
