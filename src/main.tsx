@@ -25,7 +25,7 @@ if ('serviceWorker' in navigator) {
     });
   } else {
     const registerSW = () => {
-      navigator.serviceWorker.register('./sw.js', { scope: './' })
+      navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' })
         .then((reg) => {
           reg.update().catch(() => {});
         })

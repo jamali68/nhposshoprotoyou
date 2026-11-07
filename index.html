@@ -30,7 +30,7 @@
     <meta name="twitter:card" content="summary_large_image" />
 
     <script>
-      // Early Service Worker registration so Chrome installability criteria is immediately satisfied (production only)
+      // Early Service Worker registration so Chrome installability criteria & updates run immediately (production only)
       if ('serviceWorker' in navigator) {
         var isDevEnv =
           window.location.hostname === 'localhost' ||
@@ -38,11 +38,20 @@
           window.location.hostname.includes('run.app');
 
         if (!isDevEnv) {
-          window.addEventListener('load', function() {
-            navigator.serviceWorker.register('sw.js', { scope: './' }).catch(function(e) {
-              console.warn('SW register notice:', e);
-            });
-          });
+          var initSw = function() {
+            navigator.serviceWorker.register('sw.js', { scope: './', updateViaCache: 'none' })
+              .then(function(reg) {
+                reg.update().catch(function() {});
+              })
+              .catch(function(e) {
+                console.warn('SW register notice:', e);
+              });
+          };
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initSw);
+          } else {
+            initSw();
+          }
         }
       }
 
@@ -104,6 +113,20 @@
         <div style="font-size: 24px; font-weight: 900; color: #1e5631; letter-spacing: -0.5px; margin-bottom: 6px;">NH POS Shop</div>
         <div style="font-size: 13px; color: #64748b; font-weight: 600; margin-bottom: 28px;">Cloud POS &amp; Cash Manager</div>
         <div style="width: 34px; height: 34px; border: 3.5px solid #e2e8f0; border-top-color: #1e5631; border-radius: 50%; animation: nhPosSpin 0.75s linear infinite;"></div>
+        <div id="pwa-splash-fallback" style="display: none; margin-top: 24px; max-width: 300px;">
+          <p style="font-size: 13px; color: #64748b; margin-bottom: 12px; line-height: 1.5;">
+            انٹرنیٹ سست ہے یا ایپ لوڈ ہو رہی ہے...<br/>
+            Loading taking longer than usual?
+          </p>
+          <div style="display: flex; gap: 8px; justify-content: center;">
+            <button onclick="window.location.reload()" style="background: #1e5631; color: white; border: none; border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer;">
+              Reload / دوبارہ لوڈ
+            </button>
+            <button onclick="(async function(){try{if('serviceWorker' in navigator){var r=await navigator.serviceWorker.getRegistrations();for(var i=0;i<r.length;i++){await r[i].unregister();}}if('caches' in window){var k=await caches.keys();for(var j=0;j<k.length;j++){await caches.delete(k[j]);}}}catch(e){}window.location.reload();})()" style="background: #e2e8f0; color: #334155; border: none; border-radius: 8px; padding: 8px 14px; font-size: 12px; font-weight: 600; cursor: pointer;">
+              Reset Cache
+            </button>
+          </div>
+        </div>
         <style>
           @keyframes nhPosSpin {
             to { transform: rotate(360deg); }
@@ -114,40 +137,34 @@
     <script type="module" src="/src/main.tsx"></script>
     <script>
       (function() {
-        var TARGET_VER = 'v17.5.2';
-        var isDevEnv =
-          window.location.hostname === 'localhost' ||
-          window.location.hostname === '127.0.0.1' ||
-          window.location.hostname.includes('run.app');
+        // Fail-safe watchdog: If splash screen is still visible after 4 seconds, reveal reload/reset buttons
+        setTimeout(function() {
+          var fallback = document.getElementById('pwa-splash-fallback');
+          if (fallback && document.getElementById('pwa-splash')) {
+            fallback.style.display = 'block';
+          }
+        }, 4000);
 
-        if (!isDevEnv) {
-          try {
-            var lastVer = localStorage.getItem('nh_pos_bundle_ver');
-            if (lastVer !== TARGET_VER) {
-              localStorage.setItem('nh_pos_bundle_ver', TARGET_VER);
-              if ('caches' in window) {
-                caches.keys().then(function(keys) {
-                  return Promise.all(
-                    keys.map(function(k) {
-                      if (k !== 'nh-pos-' + TARGET_VER) {
-                        return caches.delete(k);
-                      }
-                    })
-                  );
-                }).then(function() {
-                  window.location.reload();
-                });
-              }
-            }
-          } catch (e) {}
+        // In case of an unhandled script failure, display fallback immediately
+        window.addEventListener('error', function() {
+          var fallback = document.getElementById('pwa-splash-fallback');
+          if (fallback && document.getElementById('pwa-splash')) {
+            fallback.style.display = 'block';
+          }
+        });
 
-          if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.addEventListener('message', function(event) {
-              if (event.data && event.data.type === 'SW_UPDATED') {
+        // Safe Service Worker update listener (reloads at most once per version)
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.addEventListener('message', function(event) {
+            if (event.data && event.data.type === 'SW_UPDATED') {
+              var newVer = event.data.version || 'latest';
+              var sessionKey = 'nh_sw_reloaded_' + newVer;
+              if (!sessionStorage.getItem(sessionKey)) {
+                sessionStorage.setItem(sessionKey, '1');
                 window.location.reload();
               }
-            });
-          }
+            }
+          });
         }
       })();
     </script>

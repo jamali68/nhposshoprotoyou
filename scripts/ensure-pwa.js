@@ -78,7 +78,7 @@ targets.forEach((dir) => {
     }
   });
 
-  // 3. Inject compiled build bundles (JS & CSS) into sw.js for complete offline capability
+  // 3. Inject compiled build bundles (JS & CSS) and unique BUILD_ID into sw.js for complete offline capability
   if (fs.existsSync('public/sw.js')) {
     let swContent = fs.readFileSync('public/sw.js', 'utf8');
 
@@ -87,10 +87,14 @@ targets.forEach((dir) => {
     const bundleUrls = assetFiles.map(f => `./assets/${f}`);
     const bundleListStr = bundleUrls.map(u => `  '${u}'`).join(',\n');
 
-    swContent = swContent.replace(
-      /\/\* __BUILD_ASSETS__ \*\//,
-      bundleListStr
-    );
+    // Extract hash from main JS bundle (e.g. app-C7vCqfTp.js -> C7vCqfTp)
+    const jsFile = assetFiles.find(f => f.endsWith('.js')) || '';
+    const hashMatch = jsFile.match(/-([a-zA-Z0-9_-]+)\.js$/);
+    const buildId = hashMatch && hashMatch[1] ? hashMatch[1] : String(Date.now());
+
+    swContent = swContent
+      .replace(/\/\* __BUILD_ID__ \*\//g, buildId)
+      .replace(/\/\* __BUILD_ASSETS__ \*\//, bundleListStr);
 
     fs.writeFileSync(path.join(dir, 'sw.js'), swContent, 'utf8');
     if (dir === 'dist') {

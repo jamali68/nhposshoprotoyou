@@ -69,6 +69,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     hasPendingChanges,
     pendingSyncCount,
     isSyncing,
+    nextSyncRemainingSec,
+    isWaitingForOnlineSync,
     syncNow,
     isAppInstalled,
     installApp
@@ -405,11 +407,21 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
 
               {/* Auto 30m indication */}
               <div className="text-[9.5px] text-slate-400 flex items-center justify-between mb-2 px-1">
-                <span className="flex items-center gap-1 text-slate-400">
-                  <span>⏱️ آٹو سنک:</span>
-                  <span className="text-amber-400 font-medium">ہر 30 منٹ بعد</span>
-                </span>
-                <span className="text-[9px] text-slate-500">یا بٹن دبائیں</span>
+                {(!navigator.onLine || isWaitingForOnlineSync) ? (
+                  <span className="text-rose-400 font-bold flex items-center gap-1">
+                    <span>📡 آف لائن: آن لائن ہوتے ہی فوری اپڈیٹ ہوگا</span>
+                  </span>
+                ) : (
+                  <>
+                    <span className="flex items-center gap-1 text-slate-300">
+                      <span>⏱️ آٹو سنک:</span>
+                      <span className="text-amber-400 font-medium">ہر 30 منٹ</span>
+                    </span>
+                    <span className="font-mono font-bold text-cyan-300 bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-500/30">
+                      {Math.floor(nextSyncRemainingSec / 60)}m {String(nextSyncRemainingSec % 60).padStart(2, '0')}s
+                    </span>
+                  </>
+                )}
               </div>
 
               {/* Update Now / Sync Now Button for Shift Handover */}

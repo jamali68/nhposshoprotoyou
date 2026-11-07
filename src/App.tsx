@@ -52,6 +52,8 @@ const MainAppContent: React.FC = () => {
     hasPendingChanges,
     pendingSyncCount,
     isSyncing,
+    nextSyncRemainingSec,
+    isWaitingForOnlineSync,
     syncNow,
     isDemoMode,
     demoTimeLeft,
@@ -517,9 +519,19 @@ const MainAppContent: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="text-[10px] text-slate-400 flex items-center justify-between px-1">
-                    <span>⏱️ خودکار اپڈیٹ: ہر 30 منٹ</span>
-                    <span>شفٹ منتقلی کیلئے محفوظ</span>
+                  <div className="text-[10px] text-slate-500 flex items-center justify-between px-1">
+                    {!isOnline || isWaitingForOnlineSync ? (
+                      <span className="text-rose-600 font-bold flex items-center gap-1">
+                        <span>📡 آف لائن: آن لائن ہونے کا انتظار (فوری اپڈیٹ ہوگا)</span>
+                      </span>
+                    ) : (
+                      <>
+                        <span>⏱️ خودکار اپڈیٹ: ہر 30 منٹ</span>
+                        <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/70">
+                          {Math.floor(nextSyncRemainingSec / 60)}m {String(nextSyncRemainingSec % 60).padStart(2, '0')}s
+                        </span>
+                      </>
+                    )}
                   </div>
 
                   {/* Update Now Button */}

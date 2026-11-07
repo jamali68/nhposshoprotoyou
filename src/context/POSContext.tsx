@@ -168,6 +168,8 @@ interface POSContextType {
   hasPendingChanges: boolean;
   pendingSyncCount: number;
   isSyncing: boolean;
+  nextSyncRemainingSec: number;
+  isWaitingForOnlineSync: boolean;
   syncNow: (manual?: boolean) => Promise<{ success: boolean; count?: number; error?: string }>;
 
   // Data Update Delayed Loading Wheel (Configurable by Super Admin, default 1000ms)
@@ -661,7 +663,51 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   });
 
+  const AUTO_SYNC_DURATION_MS = 30 * 60 * 1000; // 30 minutes
+
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const isSyncingRef = useRef<boolean>(false);
+
+  const nextSyncAtRef = useRef<number>((() => {
+    try {
+      const stored = localStorage.getItem(`taj_pos_next_sync_${currentShopId || 'default'}`);
+      const parsed = stored ? parseInt(stored, 10) : 0;
+      if (parsed && parsed > Date.now() && parsed <= Date.now() + AUTO_SYNC_DURATION_MS) {
+        return parsed;
+      }
+    } catch {}
+    return Date.now() + AUTO_SYNC_DURATION_MS;
+  })());
+
+  const waitingForOnlineSyncRef = useRef<boolean>((() => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return true;
+    try {
+      return localStorage.getItem(`taj_pos_waiting_online_${currentShopId || 'default'}`) === 'true';
+    } catch {
+      return false;
+    }
+  })());
+
+  const [nextSyncRemainingSec, setNextSyncRemainingSec] = useState<number>(() =>
+    Math.max(0, Math.ceil((nextSyncAtRef.current - Date.now()) / 1000))
+  );
+  const [isWaitingForOnlineSync, setIsWaitingForOnlineSync] = useState<boolean>(() =>
+    waitingForOnlineSyncRef.current
+  );
+
+  const resetSyncTimer30m = useCallback(() => {
+    const nextTarget = Date.now() + AUTO_SYNC_DURATION_MS;
+    nextSyncAtRef.current = nextTarget;
+    waitingForOnlineSyncRef.current = false;
+    setIsWaitingForOnlineSync(false);
+    setNextSyncRemainingSec(30 * 60);
+    if (currentShopId) {
+      try {
+        localStorage.setItem(`taj_pos_next_sync_${currentShopId}`, String(nextTarget));
+        localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'false');
+      } catch {}
+    }
+  }, [currentShopId, AUTO_SYNC_DURATION_MS]);
 
   // Global Data Update Delayed Loading Wheel State (Super Admin Controlled, Default 1000ms = 1 sec)
   const [mutationLoader, setMutationLoader] = useState<{
@@ -820,7 +866,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const hasPendingChanges = pendingSyncQueue.length > 0;
   const pendingSyncCount = pendingSyncQueue.length;
 
-  // Helper to persist to Firestore scoped by shop with offline queueing
+  // Helper to persist to local queue scoped by shop (batched for 30m auto-sync, manual Sync Now, or online reconnect)
   const saveDocToShop = async (collectionName: string, docId: string, data: any) => {
     if (!currentShopId || isDemoMode) return;
 
@@ -834,36 +880,25 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       timestamp: Date.now()
     };
 
-    if (navigator.onLine) {
-      try {
-        const cleanPayload = sanitizeForFirestore({
-          ...data,
-          shop_id: currentShopId
-        });
-        await setDoc(doc(db, 'shops', currentShopId, collectionName, docId), cleanPayload, { merge: true });
-
-        // Successfully written to cloud; remove from pending queue if present
-        setPendingSyncQueue(prev => prev.filter(p => p.id !== opId));
-        const now = new Date();
-        setLastSyncTime(now);
-        setFirebaseSyncStatus('connected');
-        setIsFirebaseConnected(true);
-        try {
-          localStorage.setItem(`taj_pos_last_sync_${currentShopId}`, now.toISOString());
-        } catch {}
-        return;
-      } catch (err) {
-        console.warn(`Firestore save failed, queueing offline for ${collectionName}:`, err);
-        setFirebaseSyncStatus('offline');
-      }
-    } else {
+    if (!navigator.onLine) {
       setFirebaseSyncStatus('offline');
+      waitingForOnlineSyncRef.current = true;
+      setIsWaitingForOnlineSync(true);
+      try {
+        localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
+      } catch {}
     }
 
-    // Queue operation if offline or if cloud write failed
+    // Queue operation locally so cloud sync runs on 30-minute timer, manual Sync Now click, or instant reconnect from offline
     setPendingSyncQueue(prev => {
-      const filtered = prev.filter(p => p.id !== opId);
-      return [...filtered, pendingItem];
+      const filtered = prev.filter(
+        p => !(p.collection === collectionName && p.docId === docId) && p.id !== opId
+      );
+      const nextQueue = [...filtered, pendingItem];
+      try {
+        localStorage.setItem(`taj_pos_pending_queue_${currentShopId}`, JSON.stringify(nextQueue));
+      } catch {}
+      return nextQueue;
     });
   };
 
@@ -879,43 +914,82 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       timestamp: Date.now()
     };
 
-    if (navigator.onLine) {
-      try {
-        await deleteDoc(doc(db, 'shops', currentShopId, collectionName, docId));
-        setPendingSyncQueue(prev => prev.filter(p => p.id !== opId));
-        const now = new Date();
-        setLastSyncTime(now);
-        setFirebaseSyncStatus('connected');
-        setIsFirebaseConnected(true);
-        try {
-          localStorage.setItem(`taj_pos_last_sync_${currentShopId}`, now.toISOString());
-        } catch {}
-        return;
-      } catch (err) {
-        console.warn(`Firestore delete failed, queueing offline for ${collectionName}:`, err);
-        setFirebaseSyncStatus('offline');
-      }
-    } else {
+    if (!navigator.onLine) {
       setFirebaseSyncStatus('offline');
+      waitingForOnlineSyncRef.current = true;
+      setIsWaitingForOnlineSync(true);
+      try {
+        localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
+      } catch {}
     }
 
-    // Queue operation if offline or if cloud delete failed
+    // Queue delete operation locally so cloud sync runs on 30-minute timer, manual Sync Now click, or instant reconnect from offline
     setPendingSyncQueue(prev => {
-      const filtered = prev.filter(p => p.id !== opId);
-      return [...filtered, pendingItem];
+      const filtered = prev.filter(
+        p => !(p.collection === collectionName && p.docId === docId) && p.id !== opId
+      );
+      const nextQueue = [...filtered, pendingItem];
+      try {
+        localStorage.setItem(`taj_pos_pending_queue_${currentShopId}`, JSON.stringify(nextQueue));
+      } catch {}
+      return nextQueue;
     });
   };
 
-  // Immediate Sync Now trigger (for shift change, user handover, or auto 30m refresh)
+  // Helper to preserve any local pending items that haven't flushed yet
+  const mergeCollectionWithPending = <T extends { id: string }>(
+    remoteList: T[],
+    collectionName: string
+  ): T[] => {
+    try {
+      const rawQ = localStorage.getItem(`taj_pos_pending_queue_${currentShopId}`);
+      if (!rawQ) return remoteList;
+      const queue: PendingSyncItem[] = JSON.parse(rawQ);
+      if (!Array.isArray(queue) || queue.length === 0) return remoteList;
+
+      const deletedIds = new Set(
+        queue.filter(q => q.collection === collectionName && q.type === 'delete').map(q => q.docId)
+      );
+      const pendingSaves = queue.filter(
+        q => q.collection === collectionName && q.type === 'save' && q.data
+      );
+
+      const map = new Map<string, T>();
+      for (const item of remoteList) {
+        if (item && item.id && !deletedIds.has(item.id)) {
+          map.set(item.id, item);
+        }
+      }
+      for (const p of pendingSaves) {
+        map.set(p.docId, p.data as T);
+      }
+      return Array.from(map.values());
+    } catch {
+      return remoteList;
+    }
+  };
+
+  // Immediate Sync Now trigger (for manual click, auto 30m refresh when online, or instant sync upon reconnecting from offline)
   const syncNow = async (manual: boolean = false): Promise<{ success: boolean; count?: number; error?: string }> => {
     if (!currentShopId || isDemoMode) {
+      resetSyncTimer30m();
       return { success: true, count: 0 };
     }
     if (!navigator.onLine) {
       setFirebaseSyncStatus('offline');
-      return { success: false, error: 'انٹرنیٹ کنکشن موجود نہیں ہے (Device is offline)' };
+      waitingForOnlineSyncRef.current = true;
+      setIsWaitingForOnlineSync(true);
+      try {
+        localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
+      } catch {}
+      return { success: false, error: 'انٹرنیٹ کنکشن موجود نہیں ہے — آن لائن ہوتے ہی خودکار اپڈیٹ ہو جائے گا' };
     }
 
+    if (isSyncingRef.current && !manual) {
+      return { success: true, count: 0 };
+    }
+
+    isSyncingRef.current = true;
     setIsSyncing(true);
     setFirebaseSyncStatus('syncing');
 
@@ -1005,6 +1079,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // 2. Refresh fresh records from Firestore for current shop
       try {
         const [
+          shopSnap,
           dailySnap,
           backCashSnap,
           wholesalersSnap,
@@ -1016,6 +1091,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           editSnap,
           delSnap
         ] = await Promise.all([
+          getDoc(doc(db, 'shops', currentShopId)).catch(() => null),
           getDocs(collection(db, 'shops', currentShopId, 'daily_transactions')).catch(() => null),
           getDocs(collection(db, 'shops', currentShopId, 'back_cash_transactions')).catch(() => null),
           getDocs(collection(db, 'shops', currentShopId, 'wholesaler_bills')).catch(() => null),
@@ -1028,29 +1104,37 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           getDocs(collection(db, 'shops', currentShopId, 'deleted_history')).catch(() => null)
         ]);
 
+        if (shopSnap && shopSnap.exists()) {
+          const sData = shopSnap.data() as ShopProfile;
+          setCurrentShop(sData);
+        }
         if (dailySnap && !dailySnap.empty) {
           const list: DailyTransaction[] = [];
           dailySnap.forEach(d => list.push(d.data() as DailyTransaction));
-          setDailyTransactions(list);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_daily_tx`, JSON.stringify(list)); } catch {}
+          const merged = mergeCollectionWithPending(list, 'daily_transactions');
+          setDailyTransactions(merged);
+          try { localStorage.setItem(`taj_pos_${currentShopId}_daily_tx`, JSON.stringify(merged)); } catch {}
         }
         if (backCashSnap && !backCashSnap.empty) {
           const list: BackCashTransaction[] = [];
           backCashSnap.forEach(d => list.push(d.data() as BackCashTransaction));
-          setBackCashTransactions(list);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_back_tx`, JSON.stringify(list)); } catch {}
+          const merged = mergeCollectionWithPending(list, 'back_cash_transactions');
+          setBackCashTransactions(merged);
+          try { localStorage.setItem(`taj_pos_${currentShopId}_back_tx`, JSON.stringify(merged)); } catch {}
         }
         if (wholesalersSnap && !wholesalersSnap.empty) {
           const list: WholesalerBill[] = [];
           wholesalersSnap.forEach(d => list.push(d.data() as WholesalerBill));
-          setWholesalers(list);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_wholesalers`, JSON.stringify(list)); } catch {}
+          const merged = mergeCollectionWithPending(list, 'wholesaler_bills');
+          setWholesalers(merged);
+          try { localStorage.setItem(`taj_pos_${currentShopId}_wholesalers`, JSON.stringify(merged)); } catch {}
         }
         if (customersSnap && !customersSnap.empty) {
           const list: CustomerBill[] = [];
           customersSnap.forEach(d => list.push(d.data() as CustomerBill));
-          setCustomers(list);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_customers`, JSON.stringify(list)); } catch {}
+          const merged = mergeCollectionWithPending(list, 'customer_bills');
+          setCustomers(merged);
+          try { localStorage.setItem(`taj_pos_${currentShopId}_customers`, JSON.stringify(merged)); } catch {}
         }
         if (easyloadSnap && !easyloadSnap.empty) {
           const map: Record<string, EasyloadRecord> = {};
@@ -1064,39 +1148,44 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (bottlesSnap && !bottlesSnap.empty) {
           const list: BottleItem[] = [];
           bottlesSnap.forEach(d => list.push(d.data() as BottleItem));
-          setBottleItems(list);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_bottles`, JSON.stringify(list)); } catch {}
+          const merged = mergeCollectionWithPending(list, 'bottle_items');
+          setBottleItems(merged);
+          try { localStorage.setItem(`taj_pos_${currentShopId}_bottles`, JSON.stringify(merged)); } catch {}
         }
         if (stockSnap && !stockSnap.empty) {
           const list: StockTransaction[] = [];
           stockSnap.forEach(d => list.push(d.data() as StockTransaction));
-          setStockTransactions(list);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_stock_tx`, JSON.stringify(list)); } catch {}
+          const merged = mergeCollectionWithPending(list, 'stock_transactions');
+          setStockTransactions(merged);
+          try { localStorage.setItem(`taj_pos_${currentShopId}_stock_tx`, JSON.stringify(merged)); } catch {}
         }
         if (staffSnap && !staffSnap.empty) {
           const list: StaffAccount[] = [];
           staffSnap.forEach(d => list.push(d.data() as StaffAccount));
-          setStaffAccounts(list);
+          const merged = mergeCollectionWithPending(list, 'staff_accounts');
+          setStaffAccounts(merged);
           try {
-            localStorage.setItem(`taj_pos_${currentShopId}_staff_accounts`, JSON.stringify(list));
+            localStorage.setItem(`taj_pos_${currentShopId}_staff_accounts`, JSON.stringify(merged));
             const existingGlobal = JSON.parse(localStorage.getItem('taj_pos_staff_accounts') || '[]');
             const globalList: StaffAccount[] = Array.isArray(existingGlobal)
-              ? existingGlobal.filter((e: any) => e && e.shop_id !== currentShopId && !list.some(s => s.id === e.id))
+              ? existingGlobal.filter((e: any) => e && e.shop_id !== currentShopId && !merged.some(s => s.id === e.id))
               : [];
-            localStorage.setItem('taj_pos_staff_accounts', JSON.stringify([...globalList, ...list]));
+            localStorage.setItem('taj_pos_staff_accounts', JSON.stringify([...globalList, ...merged]));
           } catch {}
         }
         if (editSnap && !editSnap.empty) {
           const list: EditHistoryRecord[] = [];
           editSnap.forEach(d => list.push(d.data() as EditHistoryRecord));
-          setEditHistory(list);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_edit_history`, JSON.stringify(list)); } catch {}
+          const merged = mergeCollectionWithPending(list, 'edit_history');
+          setEditHistory(merged);
+          try { localStorage.setItem(`taj_pos_${currentShopId}_edit_history`, JSON.stringify(merged)); } catch {}
         }
         if (delSnap && !delSnap.empty) {
           const list: DeletedHistoryRecord[] = [];
           delSnap.forEach(d => list.push(d.data() as DeletedHistoryRecord));
-          setDeletedHistory(list);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_deleted_history`, JSON.stringify(list)); } catch {}
+          const merged = mergeCollectionWithPending(list, 'deleted_history');
+          setDeletedHistory(merged);
+          try { localStorage.setItem(`taj_pos_${currentShopId}_deleted_history`, JSON.stringify(merged)); } catch {}
         }
       } catch (fetchErr) {
         console.warn('Fresh fetch note during syncNow:', fetchErr);
@@ -1110,38 +1199,112 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         localStorage.setItem(`taj_pos_last_sync_${currentShopId}`, now.toISOString());
       } catch {}
 
+      // Reset 30-minute countdown duration after every successful sync (manual, 30m auto, or reconnect)
+      resetSyncTimer30m();
+
+      isSyncingRef.current = false;
       setIsSyncing(false);
       return { success: true, count: flushedCount };
     } catch (err: any) {
       console.error('syncNow error:', err);
+      isSyncingRef.current = false;
       setIsSyncing(false);
       setFirebaseSyncStatus('offline');
+      waitingForOnlineSyncRef.current = true;
+      setIsWaitingForOnlineSync(true);
       return { success: false, error: err?.message || 'Sync failed' };
     }
   };
 
-  // 30-Minute Auto-Sync & Reconnect Listener (plus immediate sync on login!)
+  // Smart 30-Minute Online Auto-Sync & Offline-Wait-for-Online Instant Sync Watcher
   useEffect(() => {
     if (!currentShopId || isDemoMode) return;
 
-    // Immediately load & flush shop data with cloud Firestore on login
-    syncNow(false);
-
-    // Automatic cloud sync every 30 minutes (30 * 60 * 1000 ms)
-    const interval30m = setInterval(() => {
-      console.info('[NH POS Shop] 30-minute auto-update triggered...');
+    // 1. On initial login/boot: if online, sync immediately and start 30m timer; if offline, wait for online
+    if (navigator.onLine) {
       syncNow(false);
-    }, 30 * 60 * 1000);
+    } else {
+      waitingForOnlineSyncRef.current = true;
+      setIsWaitingForOnlineSync(true);
+      setFirebaseSyncStatus('offline');
+      try {
+        localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
+      } catch {}
+    }
 
-    // Auto-sync as soon as the user reconnects to the internet
+    // 2. When device goes offline: enter "waiting for online" mode so it syncs instantly upon reconnect
+    const handleOfflineEvent = () => {
+      waitingForOnlineSyncRef.current = true;
+      setIsWaitingForOnlineSync(true);
+      setFirebaseSyncStatus('offline');
+      try {
+        localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
+      } catch {}
+    };
+
+    // 3. When device comes back online: immediately run instant sync and restart 30m countdown
     const handleOnlineEvent = () => {
-      console.info('[NH POS Shop] Reconnected to internet, syncing pending data...');
+      console.info('[NH POS Shop] Reconnected to internet — running instant cloud sync...');
+      waitingForOnlineSyncRef.current = false;
+      setIsWaitingForOnlineSync(false);
       syncNow(false);
     };
+
+    window.addEventListener('offline', handleOfflineEvent);
     window.addEventListener('online', handleOnlineEvent);
 
+    // 4. 1-Second Heartbeat Watcher:
+    //    - If offline: keeps checking when device comes online
+    //    - If online & was waiting for online: triggers instant sync
+    //    - If online & 30m duration completed: triggers auto-sync and resets 30m duration
+    const watcherInterval = setInterval(() => {
+      const online = typeof navigator !== 'undefined' ? navigator.onLine : true;
+
+      if (!online) {
+        if (!waitingForOnlineSyncRef.current) {
+          waitingForOnlineSyncRef.current = true;
+          setIsWaitingForOnlineSync(true);
+          setFirebaseSyncStatus('offline');
+          try {
+            localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
+          } catch {}
+        }
+        const rem = Math.max(0, Math.ceil((nextSyncAtRef.current - Date.now()) / 1000));
+        setNextSyncRemainingSec(rem);
+        return;
+      }
+
+      // Device is online!
+      // Case A: Was offline earlier -> run instant sync as soon as online is detected
+      if (waitingForOnlineSyncRef.current) {
+        if (!isSyncingRef.current) {
+          console.info('[NH POS Shop] Online detected after offline wait — syncing immediately...');
+          waitingForOnlineSyncRef.current = false;
+          setIsWaitingForOnlineSync(false);
+          syncNow(false);
+        }
+        return;
+      }
+
+      // Case B: Online and 30 minutes duration has completed -> run 30m auto-sync
+      const nowMs = Date.now();
+      if (nowMs >= nextSyncAtRef.current) {
+        if (!isSyncingRef.current) {
+          console.info('[NH POS Shop] 30-minute duration completed while online — auto-syncing...');
+          nextSyncAtRef.current = nowMs + AUTO_SYNC_DURATION_MS;
+          syncNow(false);
+        }
+        return;
+      }
+
+      // Update live countdown seconds
+      const remSec = Math.max(0, Math.ceil((nextSyncAtRef.current - nowMs) / 1000));
+      setNextSyncRemainingSec(remSec);
+    }, 1000);
+
     return () => {
-      clearInterval(interval30m);
+      clearInterval(watcherInterval);
+      window.removeEventListener('offline', handleOfflineEvent);
       window.removeEventListener('online', handleOnlineEvent);
     };
   }, [currentShopId, currentUser?.username, isDemoMode]);
@@ -1329,390 +1492,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   }, [staffAccounts, currentShopId]);
 
-  // Real-time Firestore Listeners for currentShopId (Active for ALL logged-in users: Admin, Google, Email/Pass & Staff NH- accounts)
-  useEffect(() => {
-    if (!currentShopId || isDemoMode || !currentUser) return;
-
-    const unsubs: (() => void)[] = [];
-
-    // Helper to preserve any local offline pending items that haven't flushed yet
-    const mergeWithPending = <T extends { id: string }>(remoteList: T[], collectionName: string): T[] => {
-      try {
-        const rawQ = localStorage.getItem(`taj_pos_pending_queue_${currentShopId}`);
-        if (!rawQ) return remoteList;
-        const queue: PendingSyncItem[] = JSON.parse(rawQ);
-        if (!Array.isArray(queue) || queue.length === 0) return remoteList;
-
-        const deletedIds = new Set(
-          queue.filter(q => q.collection === collectionName && q.type === 'delete').map(q => q.docId)
-        );
-        const pendingSaves = queue.filter(q => q.collection === collectionName && q.type === 'save' && q.data);
-
-        const map = new Map<string, T>();
-        for (const item of remoteList) {
-          if (item && item.id && !deletedIds.has(item.id)) {
-            map.set(item.id, item);
-          }
-        }
-        for (const p of pendingSaves) {
-          map.set(p.docId, p.data as T);
-        }
-        return Array.from(map.values());
-      } catch {
-        return remoteList;
-      }
-    };
-
-    const markRealtimeConnected = () => {
-      if (typeof navigator !== 'undefined' && navigator.onLine) {
-        const now = new Date();
-        setLastSyncTime(now);
-        setFirebaseSyncStatus('connected');
-        setIsFirebaseConnected(true);
-        try {
-          localStorage.setItem(`taj_pos_last_sync_${currentShopId}`, now.toISOString());
-        } catch {}
-      }
-    };
-
-    // 1. Shop document listener
-    try {
-      const shopDocPath = `shops/${currentShopId}`;
-      const unsubShop = onSnapshot(
-        doc(db, 'shops', currentShopId),
-        (docSnap) => {
-          if (docSnap.exists()) {
-            const sData = docSnap.data() as ShopProfile;
-            let mergedShop = sData;
-            try {
-              const rawPending = localStorage.getItem(`taj_pos_pending_profile_${currentShopId}`);
-              if (rawPending) {
-                const pending = JSON.parse(rawPending);
-                if (pending && typeof pending === 'object') {
-                  mergedShop = {
-                    ...sData,
-                    shop_name: pending.shop_name ?? sData.shop_name,
-                    owner_name: pending.owner_name ?? sData.owner_name,
-                    phone: pending.phone ?? sData.phone,
-                    address: pending.address ?? sData.address
-                  };
-                }
-              }
-            } catch {}
-            setCurrentShop(mergedShop);
-            markRealtimeConnected();
-          }
-        },
-        (error) => {
-          try {
-            handleFirestoreError(error, OperationType.GET, shopDocPath);
-          } catch {
-            setFirebaseSyncStatus('offline');
-          }
-        }
-      );
-      unsubs.push(unsubShop);
-    } catch (err) {
-      console.warn('Shop listener error:', err);
-    }
-
-    // 2. Daily Transactions
-    try {
-      const txPath = `shops/${currentShopId}/daily_transactions`;
-      const unsubTx = onSnapshot(
-        collection(db, 'shops', currentShopId, 'daily_transactions'),
-        (snapshot) => {
-          const list: DailyTransaction[] = [];
-          snapshot.forEach((d) => list.push(d.data() as DailyTransaction));
-          const merged = mergeWithPending(list, 'daily_transactions');
-          if (!snapshot.empty || merged.length > 0 || snapshot.docChanges().some(c => c.type === 'removed')) {
-            setDailyTransactions(merged);
-            markRealtimeConnected();
-          }
-        },
-        (error) => {
-          try {
-            handleFirestoreError(error, OperationType.GET, txPath);
-          } catch {
-            setFirebaseSyncStatus('offline');
-          }
-        }
-      );
-      unsubs.push(unsubTx);
-    } catch (err) {
-      console.warn('Tx listener error:', err);
-    }
-
-    // 3. Back Cash
-    try {
-      const backPath = `shops/${currentShopId}/back_cash_transactions`;
-      const unsubBack = onSnapshot(
-        collection(db, 'shops', currentShopId, 'back_cash_transactions'),
-        (snapshot) => {
-          const list: BackCashTransaction[] = [];
-          snapshot.forEach((d) => list.push(d.data() as BackCashTransaction));
-          const merged = mergeWithPending(list, 'back_cash_transactions');
-          if (!snapshot.empty || merged.length > 0 || snapshot.docChanges().some(c => c.type === 'removed')) {
-            setBackCashTransactions(merged);
-            markRealtimeConnected();
-          }
-        },
-        (error) => {
-          try {
-            handleFirestoreError(error, OperationType.GET, backPath);
-          } catch {
-            setFirebaseSyncStatus('offline');
-          }
-        }
-      );
-      unsubs.push(unsubBack);
-    } catch (err) {
-      console.warn('Back cash listener error:', err);
-    }
-
-    // 4. Wholesalers
-    try {
-      const wPath = `shops/${currentShopId}/wholesaler_bills`;
-      const unsubW = onSnapshot(
-        collection(db, 'shops', currentShopId, 'wholesaler_bills'),
-        (snapshot) => {
-          const list: WholesalerBill[] = [];
-          snapshot.forEach((d) => list.push(d.data() as WholesalerBill));
-          const merged = mergeWithPending(list, 'wholesaler_bills');
-          if (!snapshot.empty || merged.length > 0 || snapshot.docChanges().some(c => c.type === 'removed')) {
-            setWholesalers(merged);
-            markRealtimeConnected();
-          }
-        },
-        (error) => {
-          try {
-            handleFirestoreError(error, OperationType.GET, wPath);
-          } catch {
-            setFirebaseSyncStatus('offline');
-          }
-        }
-      );
-      unsubs.push(unsubW);
-    } catch (err) {
-      console.warn('Wholesalers listener error:', err);
-    }
-
-    // 5. Customers
-    try {
-      const cPath = `shops/${currentShopId}/customer_bills`;
-      const unsubC = onSnapshot(
-        collection(db, 'shops', currentShopId, 'customer_bills'),
-        (snapshot) => {
-          const list: CustomerBill[] = [];
-          snapshot.forEach((d) => list.push(d.data() as CustomerBill));
-          const merged = mergeWithPending(list, 'customer_bills');
-          if (!snapshot.empty || merged.length > 0 || snapshot.docChanges().some(c => c.type === 'removed')) {
-            setCustomers(merged);
-            markRealtimeConnected();
-          }
-        },
-        (error) => {
-          try {
-            handleFirestoreError(error, OperationType.GET, cPath);
-          } catch {
-            setFirebaseSyncStatus('offline');
-          }
-        }
-      );
-      unsubs.push(unsubC);
-    } catch (err) {
-      console.warn('Customers listener error:', err);
-    }
-
-    // 6. Easyload Records
-    try {
-      const loadPath = `shops/${currentShopId}/easyload_records`;
-      const unsubLoad = onSnapshot(
-        collection(db, 'shops', currentShopId, 'easyload_records'),
-        (snapshot) => {
-          const map: Record<string, EasyloadRecord> = {};
-          snapshot.forEach((d) => {
-            const item = d.data() as EasyloadRecord;
-            if (item.date_recorded) {
-              map[item.date_recorded] = item;
-            }
-          });
-          try {
-            const rawQ = localStorage.getItem(`taj_pos_pending_queue_${currentShopId}`);
-            if (rawQ) {
-              const queue: PendingSyncItem[] = JSON.parse(rawQ);
-              for (const q of queue) {
-                if (q.collection === 'easyload_records' && q.type === 'save' && q.data?.date_recorded) {
-                  map[q.data.date_recorded] = q.data;
-                }
-              }
-            }
-          } catch {}
-          if (!snapshot.empty || Object.keys(map).length > 0) {
-            setEasyloadRecords(map);
-            markRealtimeConnected();
-          }
-        },
-        (error) => {
-          try {
-            handleFirestoreError(error, OperationType.GET, loadPath);
-          } catch {
-            setFirebaseSyncStatus('offline');
-          }
-        }
-      );
-      unsubs.push(unsubLoad);
-    } catch (err) {
-      console.warn('Easyload listener error:', err);
-    }
-
-    // 7. Bottle Items
-    try {
-      const bottlesPath = `shops/${currentShopId}/bottle_items`;
-      const unsubBottles = onSnapshot(
-        collection(db, 'shops', currentShopId, 'bottle_items'),
-        (snapshot) => {
-          const list: BottleItem[] = [];
-          snapshot.forEach((d) => list.push(d.data() as BottleItem));
-          const merged = mergeWithPending(list, 'bottle_items');
-          if (!snapshot.empty || merged.length > 0 || snapshot.docChanges().some(c => c.type === 'removed')) {
-            setBottleItems(merged);
-            markRealtimeConnected();
-          }
-        },
-        (error) => {
-          try {
-            handleFirestoreError(error, OperationType.GET, bottlesPath);
-          } catch {
-            setFirebaseSyncStatus('offline');
-          }
-        }
-      );
-      unsubs.push(unsubBottles);
-    } catch (err) {
-      console.warn('Bottle listener error:', err);
-    }
-
-    // 8. Stock Transactions
-    try {
-      const stockPath = `shops/${currentShopId}/stock_transactions`;
-      const unsubStock = onSnapshot(
-        collection(db, 'shops', currentShopId, 'stock_transactions'),
-        (snapshot) => {
-          const list: StockTransaction[] = [];
-          snapshot.forEach((d) => list.push(d.data() as StockTransaction));
-          const merged = mergeWithPending(list, 'stock_transactions');
-          if (!snapshot.empty || merged.length > 0 || snapshot.docChanges().some(c => c.type === 'removed')) {
-            setStockTransactions(merged);
-            markRealtimeConnected();
-          }
-        },
-        (error) => {
-          try {
-            handleFirestoreError(error, OperationType.GET, stockPath);
-          } catch {
-            setFirebaseSyncStatus('offline');
-          }
-        }
-      );
-      unsubs.push(unsubStock);
-    } catch (err) {
-      console.warn('Stock listener error:', err);
-    }
-
-    // 9. Staff Accounts
-    try {
-      const staffPath = `shops/${currentShopId}/staff_accounts`;
-      const unsubStaff = onSnapshot(
-        collection(db, 'shops', currentShopId, 'staff_accounts'),
-        (snapshot) => {
-          const list: StaffAccount[] = [];
-          snapshot.forEach((d) => list.push(d.data() as StaffAccount));
-          const merged = mergeWithPending(list, 'staff_accounts');
-          if (!snapshot.empty || merged.length > 0 || snapshot.docChanges().some(c => c.type === 'removed')) {
-            setStaffAccounts(merged);
-            // Also cache in global staff accounts list so any staff member of this shop can log in offline on this device
-            try {
-              const existingGlobal = JSON.parse(localStorage.getItem('taj_pos_staff_accounts') || '[]');
-              const globalList: StaffAccount[] = Array.isArray(existingGlobal)
-                ? existingGlobal.filter((e: any) => e && e.shop_id !== currentShopId && !merged.some(s => s.id === e.id))
-                : [];
-              localStorage.setItem('taj_pos_staff_accounts', JSON.stringify([...globalList, ...merged]));
-            } catch {}
-            markRealtimeConnected();
-          }
-        },
-        (error) => {
-          try {
-            handleFirestoreError(error, OperationType.GET, staffPath);
-          } catch {
-            setFirebaseSyncStatus('offline');
-          }
-        }
-      );
-      unsubs.push(unsubStaff);
-    } catch (err) {
-      console.warn('Staff listener error:', err);
-    }
-
-    // 10. Edit History
-    try {
-      const editPath = `shops/${currentShopId}/edit_history`;
-      const unsubEdit = onSnapshot(
-        collection(db, 'shops', currentShopId, 'edit_history'),
-        (snapshot) => {
-          const list: EditHistoryRecord[] = [];
-          snapshot.forEach((d) => list.push(d.data() as EditHistoryRecord));
-          const merged = mergeWithPending(list, 'edit_history');
-          if (!snapshot.empty || merged.length > 0) {
-            setEditHistory(merged);
-            markRealtimeConnected();
-          }
-        },
-        (error) => {
-          try {
-            handleFirestoreError(error, OperationType.GET, editPath);
-          } catch {
-            setFirebaseSyncStatus('offline');
-          }
-        }
-      );
-      unsubs.push(unsubEdit);
-    } catch (err) {
-      console.warn('Edit history listener error:', err);
-    }
-
-    // 11. Deleted History
-    try {
-      const delPath = `shops/${currentShopId}/deleted_history`;
-      const unsubDel = onSnapshot(
-        collection(db, 'shops', currentShopId, 'deleted_history'),
-        (snapshot) => {
-          const list: DeletedHistoryRecord[] = [];
-          snapshot.forEach((d) => list.push(d.data() as DeletedHistoryRecord));
-          const merged = mergeWithPending(list, 'deleted_history');
-          if (!snapshot.empty || merged.length > 0) {
-            setDeletedHistory(merged);
-            markRealtimeConnected();
-          }
-        },
-        (error) => {
-          try {
-            handleFirestoreError(error, OperationType.GET, delPath);
-          } catch {
-            setFirebaseSyncStatus('offline');
-          }
-        }
-      );
-      unsubs.push(unsubDel);
-    } catch (err) {
-      console.warn('Del history listener error:', err);
-    }
-
-    return () => {
-      unsubs.forEach((fn) => fn());
-    };
-  }, [currentShopId, isDemoMode, currentUser]);
+  // Note: Continuous collection onSnapshot streams removed to minimize network requests;
+  // all data syncs on 30-minute online cycle, manual Sync Now click, or instant reconnect from offline.
 
   // Auth Functions (Multi-Tenant SaaS with Real Google Accounts)
   const login = (username: string, role: UserRole = 'user') => {
@@ -5405,6 +5186,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         hasPendingChanges,
         pendingSyncCount,
         isSyncing,
+        nextSyncRemainingSec,
+        isWaitingForOnlineSync,
         syncNow,
         mutationLoader,
         triggerMutationLoader,
