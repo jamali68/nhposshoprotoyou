@@ -1,9 +1,9 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v17.6.1
+ * Version: v17.6.2
  * Comprehensive Offline & GitHub Pages Support
  */
-const SW_VERSION = 'v17.6.1';
+const SW_VERSION = 'v17.6.2';
 const BUILD_ID = '/* __BUILD_ID__ */';
 const CACHE_NAME =
   'nh-pos-' +

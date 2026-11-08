@@ -3847,141 +3847,158 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return { opening, cashIn, cashOut, balance };
   };
 
-  const getLastBackCashClosingInfo = (date: string) => {
-    const priorTxs = backCashTransactions.filter(t => t.transaction_date < date);
-    if (priorTxs.length === 0) {
-      return {
-        amount: 0,
-        lastDate: getYesterdayDateString(date),
-        hasPrior: false
-      };
+  const computeBackCashStateForDate = (targetDate: string) => {
+    const upToTxs = backCashTransactions.filter(t => t.transaction_date <= targetDate);
+    const allDates = Array.from(new Set(upToTxs.map(t => t.transaction_date))).sort((a, b) => a.localeCompare(b));
+    if (!allDates.includes(targetDate)) {
+      allDates.push(targetDate);
+      allDates.sort((a, b) => a.localeCompare(b));
     }
 
-    // Find the latest transaction_date strictly before 'date'
-    const dates = Array.from(new Set(priorTxs.map(t => t.transaction_date))).sort((a, b) => b.localeCompare(a));
-    const lastActiveDate = dates[0];
+    let runningTotal = 0;
+    let runningActiveClosing = 0;
+    let runningUserMap: { [key: string]: { userId: string; userName: string; userRole: string; amount: number } } = {};
 
-    let yTotal = 0;
-    priorTxs.forEach(t => {
-      if (t.type === 'out' || t.type === 'transfer_to_shop') {
-        yTotal -= t.amount;
-      } else if (t.type === 'closing' || t.type === 'closing_minus' || t.type === 'commission') {
-        // closing & closing_minus belong to the User Account Closing Balance bucket;
-        // commission is separate profit, not Back Cash capital
-      } else {
-        yTotal += t.amount;
+    let priorTotalBeforeTarget = 0;
+    let lastActiveDateBeforeTarget = getYesterdayDateString(targetDate);
+    let hasPriorBeforeTarget = false;
+
+    for (const d of allDates) {
+      if (d === targetDate) {
+        priorTotalBeforeTarget = runningTotal;
       }
-    });
+
+      const dayTxs = upToTxs.filter(t => t.transaction_date === d);
+      if (d < targetDate && dayTxs.length > 0) {
+        lastActiveDateBeforeTarget = d;
+        hasPriorBeforeTarget = true;
+      }
+
+      // 1. Apply normal inflows & outflows for day 'd'
+      dayTxs.forEach(t => {
+        const amt = Number(t.amount) || 0;
+        if (t.type === 'out' || t.type === 'transfer_to_shop') {
+          runningTotal -= amt;
+        } else if (t.type === 'closing' || t.type === 'closing_minus' || t.type === 'commission') {
+          // closing & closing_minus handled below; commission is separate profit
+        } else {
+          // opening, receiving, transfer_from_shop
+          runningTotal += amt;
+        }
+      });
+
+      // 2. Apply closing (+) and closing_minus (-) for day 'd'
+      const dayClosingTxs = dayTxs.filter(t => t.type === 'closing');
+      const dayClosingMinusTxs = dayTxs.filter(t => t.type === 'closing_minus');
+
+      if (dayClosingTxs.length > 0) {
+        // Yesterday's closing balance was already carried into runningTotal in the morning.
+        // Once a fresh Closing Balance (+) is added on day 'd', yesterday's closing entry is finalized (0 in closing box)
+        // and day 'd' allocates the new Closing Balance out of runningTotal without increasing runningTotal.
+        runningActiveClosing = 0;
+        runningUserMap = {};
+
+        dayClosingTxs.forEach(t => {
+          const amt = Number(t.amount) || 0;
+          runningActiveClosing += amt;
+          const role = t.created_by_role || t.created_by || 'admin';
+          const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
+          const key = `${role}_${name}`;
+          if (!runningUserMap[key]) {
+            runningUserMap[key] = { userId: t.created_by, userName: name, userRole: role, amount: 0 };
+          }
+          runningUserMap[key].amount += amt;
+        });
+      }
+
+      if (dayClosingMinusTxs.length > 0) {
+        // Closing Minis (-) reduces BOTH the active Closing Balance AND Total Back Cash
+        let remainingMinus = 0;
+        dayClosingMinusTxs.forEach(t => {
+          const amt = Number(t.amount) || 0;
+          runningActiveClosing -= amt;
+          runningTotal -= amt;
+
+          const role = t.created_by_role || t.created_by || 'admin';
+          const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
+          const key = `${role}_${name}`;
+          if (runningUserMap[key] && runningUserMap[key].amount > 0) {
+            const deduct = Math.min(runningUserMap[key].amount, amt);
+            runningUserMap[key].amount -= deduct;
+            remainingMinus += (amt - deduct);
+          } else {
+            remainingMinus += amt;
+          }
+        });
+
+        if (remainingMinus > 0) {
+          for (const key of Object.keys(runningUserMap)) {
+            if (remainingMinus <= 0) break;
+            if (runningUserMap[key].amount > 0) {
+              const deduct = Math.min(runningUserMap[key].amount, remainingMinus);
+              runningUserMap[key].amount -= deduct;
+              remainingMinus -= deduct;
+            }
+          }
+        }
+
+        if (remainingMinus > 0) {
+          const firstKey = Object.keys(runningUserMap)[0];
+          if (firstKey) {
+            runningUserMap[firstKey].amount -= remainingMinus;
+          } else {
+            const t = dayClosingMinusTxs[dayClosingMinusTxs.length - 1];
+            const role = t.created_by_role || t.created_by || 'admin';
+            const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
+            runningUserMap[`${role}_${name}`] = {
+              userId: t.created_by,
+              userName: name,
+              userRole: role,
+              amount: -remainingMinus
+            };
+          }
+        }
+      }
+    }
+
+    const remainingCounter = runningTotal - runningActiveClosing;
+    const userClosings = Object.values(runningUserMap).filter(u => u.amount !== 0);
 
     return {
-      amount: yTotal,
-      lastDate: lastActiveDate,
-      hasPrior: true
+      totalBalance: runningTotal,
+      activeClosing: runningActiveClosing,
+      remainingCounter,
+      userClosings,
+      priorTotal: priorTotalBeforeTarget,
+      lastActiveDate: lastActiveDateBeforeTarget,
+      hasPrior: hasPriorBeforeTarget
+    };
+  };
+
+  const getLastBackCashClosingInfo = (date: string) => {
+    const state = computeBackCashStateForDate(date);
+    return {
+      amount: state.priorTotal,
+      lastDate: state.lastActiveDate,
+      hasPrior: state.hasPrior
     };
   };
 
   const getYesterdayBackCashClosing = (date: string) => {
-    return getLastBackCashClosingInfo(date).amount;
+    return computeBackCashStateForDate(date).priorTotal;
   };
 
   const getBackCashTotal = (date: string) => {
-    const yClosing = getYesterdayBackCashClosing(date);
-    const todayTxs = backCashTransactions.filter(t => t.transaction_date === date);
-    let todayCounterDelta = 0;
-    todayTxs.forEach(t => {
-      if (t.type === 'out' || t.type === 'transfer_to_shop') {
-        todayCounterDelta -= t.amount;
-      } else if (t.type === 'closing' || t.type === 'closing_minus' || t.type === 'commission') {
-        // closing & closing_minus are calculated in the cumulative activeClosing bucket below;
-        // commission is separate profit
-      } else {
-        todayCounterDelta += t.amount;
-      }
-    });
-
-    // Cumulative User Account Closing Balance (Closing Bal (+) minus Closing Balance (- / Minis)) up to 'date'
-    const upToDateTxs = backCashTransactions.filter(t => t.transaction_date <= date);
-    const totalClosingAdded = upToDateTxs
-      .filter(t => t.type === 'closing')
-      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-    const totalClosingMinus = upToDateTxs
-      .filter(t => t.type === 'closing_minus')
-      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-    const activeClosing = totalClosingAdded - totalClosingMinus;
-
-    return yClosing + todayCounterDelta + activeClosing;
+    return computeBackCashStateForDate(date).totalBalance;
   };
 
   const getBackCashClosingDetails = (date: string): BackCashClosingBreakdown => {
-    const totalBalance = getBackCashTotal(date);
-    const upToDateTxs = backCashTransactions.filter(t => t.transaction_date <= date);
-    const closingTxs = upToDateTxs.filter(t => t.type === 'closing');
-    const closingMinusTxs = upToDateTxs.filter(t => t.type === 'closing_minus');
-
-    const totalClosingAdded = closingTxs.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-    const totalClosingMinus = closingMinusTxs.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-    const activeClosing = totalClosingAdded - totalClosingMinus;
-    const remainingCounter = totalBalance - activeClosing;
-
-    const userMap: { [key: string]: { userId: string; userName: string; userRole: string; amount: number } } = {};
-    closingTxs.forEach(t => {
-      const role = t.created_by_role || t.created_by || 'admin';
-      const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
-      const key = `${role}_${name}`;
-      if (!userMap[key]) {
-        userMap[key] = { userId: t.created_by, userName: name, userRole: role, amount: 0 };
-      }
-      userMap[key].amount += Number(t.amount) || 0;
-    });
-
-    // Deduct closing_minus first from matching user, then from remaining user buckets
-    let remainingMinus = totalClosingMinus;
-    closingMinusTxs.forEach(t => {
-      const amt = Number(t.amount) || 0;
-      const role = t.created_by_role || t.created_by || 'admin';
-      const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
-      const key = `${role}_${name}`;
-      if (userMap[key] && userMap[key].amount > 0) {
-        const deduct = Math.min(userMap[key].amount, amt);
-        userMap[key].amount -= deduct;
-        remainingMinus -= deduct;
-      }
-    });
-
-    if (remainingMinus > 0) {
-      for (const key of Object.keys(userMap)) {
-        if (remainingMinus <= 0) break;
-        const deduct = Math.min(userMap[key].amount, remainingMinus);
-        userMap[key].amount -= deduct;
-        remainingMinus -= deduct;
-      }
-    }
-
-    // If still remainingMinus > 0 (e.g. minus exceeds added or only minus was entered), apply to primary user entry
-    if (remainingMinus > 0) {
-      const firstKey = Object.keys(userMap)[0];
-      if (firstKey) {
-        userMap[firstKey].amount -= remainingMinus;
-      } else if (closingMinusTxs.length > 0) {
-        const t = closingMinusTxs[closingMinusTxs.length - 1];
-        const role = t.created_by_role || t.created_by || 'admin';
-        const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
-        userMap[`${role}_${name}`] = {
-          userId: t.created_by,
-          userName: name,
-          userRole: role,
-          amount: -remainingMinus
-        };
-      }
-    }
-
-    const userClosings = Object.values(userMap).filter(u => u.amount !== 0);
-
+    const state = computeBackCashStateForDate(date);
     return {
-      totalBalance,
-      activeClosing,
-      remainingCounter,
-      userClosings
+      totalBalance: state.totalBalance,
+      activeClosing: state.activeClosing,
+      remainingCounter: state.remainingCounter,
+      userClosings: state.userClosings
     };
   };
 

@@ -669,7 +669,7 @@ export const BackCashView: React.FC = () => {
           <div className="bg-white/80 p-2 rounded-xl border border-blue-100">
             <span className="text-[10px] font-bold text-slate-500 block uppercase">Counter Cash Left</span>
             <span className="font-mono font-black text-slate-800 text-xs sm:text-sm">
-              Rs. {yesterdayBreakdown.remainingCounter.toLocaleString()}
+              Rs. {todayBreakdown.remainingCounter.toLocaleString()}
             </span>
           </div>
           <div className="bg-amber-50 p-2 rounded-xl border border-amber-200">
@@ -1056,7 +1056,7 @@ export const BackCashView: React.FC = () => {
           {/* Detailed breakdown: Counter Cash Left + Active User Closing (Always visible even when 0) */}
           <div className="pt-1.5 border-t border-blue-100/90 flex items-center justify-between text-[11px] text-slate-600 flex-wrap gap-2">
             <span>
-              Counter Cash Left: <b className="font-mono text-slate-800">Rs. {yesterdayBreakdown.remainingCounter.toLocaleString()}</b>
+              Counter Cash Left: <b className="font-mono text-slate-800">Rs. {todayBreakdown.remainingCounter.toLocaleString()}</b>
             </span>
             <span className="text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200/60">
               {todayBreakdown.userClosings[0]?.userName || yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Closing: <b className="font-mono text-amber-700">Rs. {todayBreakdown.activeClosing.toLocaleString()}</b>
