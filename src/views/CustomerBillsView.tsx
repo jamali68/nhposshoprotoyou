@@ -651,7 +651,7 @@ export const CustomerBillsView: React.FC = () => {
                   <div key={tx.id} className="pt-2 flex justify-between items-center">
                     <div>
                       <div className="font-bold text-slate-800">{tx.description}</div>
-                      <div className="text-[10px] text-slate-400">{tx.transaction_date} | By: {tx.created_by}</div>
+                      <div className="text-[10px] text-slate-400">{tx.transaction_date} | By: {tx.created_by_name || tx.created_by}</div>
                     </div>
                     <div>
                       {tx.amount === 0 ? (

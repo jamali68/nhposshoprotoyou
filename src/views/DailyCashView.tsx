@@ -1488,7 +1488,7 @@ export const DailyCashView: React.FC = () => {
           closingBalance={stats.balance}
           items={sortedFilteredList.map(t => ({
             id: t.id,
-            note: t.description,
+            note: `${t.description}${t.created_by_name ? ` [${t.created_by_name}]` : ''}`,
             type: t.type,
             amount: t.amount
           }))}

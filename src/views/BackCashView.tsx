@@ -590,52 +590,78 @@ export const BackCashView: React.FC = () => {
         {/* Bottom lines in Blue Box: Yesterday Pending Cash & Active User Closing details */}
         <div className="mt-3.5 pt-2.5 border-t border-white/25 text-xs text-white/95 font-medium space-y-1">
           {/* Line 1: Yesterday Pending Cash (Blue Box carry) */}
-          <div className="flex justify-between items-center">
+          <div className="flex justify-between items-center gap-2">
             <span>
               {bcLastClosingDate === yesterdayDate
                 ? 'Yesterday Pending Cash:'
                 : `Last Pending Cash (${bcLastClosingDate}):`}
             </span>
-            <span className="font-bold font-mono text-white">
+            <span className="font-bold font-mono text-white whitespace-nowrap shrink-0">
               Rs. {yesterdayBreakdown.totalBalance.toLocaleString()}
             </span>
           </div>
 
           {/* Line 1b: Yesterday Account Closing Carried (+) if > 0 */}
-          {yesterdayBreakdown.activeClosing > 0 && (
-            <div className="flex justify-between items-center text-[11px] text-sky-100">
-              <span>
-                {bcLastClosingDate === yesterdayDate
-                  ? `Yesterday Account Closing (${yesterdayBreakdown.userClosings[0]?.userName || 'Account'}):`
-                  : `Last Account Closing (${bcLastClosingDate}):`}
-              </span>
-              <span className="font-bold font-mono text-emerald-200">
-                + Rs. {yesterdayBreakdown.activeClosing.toLocaleString()}
-              </span>
-            </div>
-          )}
+          {yesterdayBreakdown.activeClosing > 0 && (() => {
+            const yClosingName = yesterdayBreakdown.userClosings[0]?.userName || 'Account';
+            const isLongYName = yClosingName.length > 10;
+            return (
+              <div className="text-[11px] text-sky-100">
+                <div className="flex justify-between items-center gap-2">
+                  <span>
+                    {bcLastClosingDate === yesterdayDate
+                      ? (isLongYName ? 'Yesterday Account Closing:' : `Yesterday Account Closing (${yClosingName}):`)
+                      : `Last Account Closing (${bcLastClosingDate}):`}
+                  </span>
+                  <span className="font-bold font-mono text-emerald-200 whitespace-nowrap shrink-0">
+                    + Rs. {yesterdayBreakdown.activeClosing.toLocaleString()}
+                  </span>
+                </div>
+                {bcLastClosingDate === yesterdayDate && isLongYName && (
+                  <div className="text-[10px] text-sky-200/95 font-semibold leading-tight mt-0.5">
+                    ({yClosingName})
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Line 2: Today Admin / User Closing Line */}
           {todayBreakdown.userClosings.length > 0 ? (
-            todayBreakdown.userClosings.map((uc, idx) => (
-              <div key={idx} className="flex justify-between items-center text-[11px] text-amber-200 font-semibold pt-0.5 border-t border-white/10">
-                <span>Closing Balance ({uc.userRole ? uc.userRole.toUpperCase() : 'ADMIN'}: {uc.userName}):</span>
-                <span className="font-bold font-mono text-amber-300">
-                  Rs. {uc.amount.toLocaleString()}
-                </span>
-              </div>
-            ))
+            todayBreakdown.userClosings.map((uc, idx) => {
+              const roleLabel = uc.userRole ? uc.userRole.toUpperCase() : 'ADMIN';
+              const isLongTodayName = (uc.userName || '').length > 14;
+              return (
+                <div key={idx} className="text-[11px] text-amber-200 font-semibold pt-0.5 border-t border-white/10">
+                  <div className="flex justify-between items-center gap-2">
+                    <span>
+                      {isLongTodayName
+                        ? 'Closing Balance:'
+                        : `Closing Balance (${roleLabel}: ${uc.userName}):`}
+                    </span>
+                    <span className="font-bold font-mono text-amber-300 whitespace-nowrap shrink-0">
+                      Rs. {uc.amount.toLocaleString()}
+                    </span>
+                  </div>
+                  {isLongTodayName && (
+                    <div className="text-[10px] text-amber-200/95 font-semibold leading-tight mt-0.5">
+                      ({roleLabel}: {uc.userName})
+                    </div>
+                  )}
+                </div>
+              );
+            })
           ) : todayBreakdown.activeClosing !== 0 ? (
-            <div className="flex justify-between items-center text-[11px] text-amber-200 font-semibold pt-0.5 border-t border-white/10">
+            <div className="flex justify-between items-center gap-2 text-[11px] text-amber-200 font-semibold pt-0.5 border-t border-white/10">
               <span>Closing Balance (Admin/User Closing):</span>
-              <span className="font-bold font-mono text-amber-300">
+              <span className="font-bold font-mono text-amber-300 whitespace-nowrap shrink-0">
                 Rs. {todayBreakdown.activeClosing.toLocaleString()}
               </span>
             </div>
           ) : (
-            <div className="flex justify-between items-center text-[10px] text-white/70 pt-0.5">
+            <div className="flex justify-between items-center gap-2 text-[10px] text-white/70 pt-0.5">
               <span>Closing Balance Staff:</span>
-              <span className="font-bold font-mono">Rs. 0</span>
+              <span className="font-bold font-mono whitespace-nowrap shrink-0">Rs. 0</span>
             </div>
           )}
         </div>
@@ -1392,8 +1418,8 @@ export const BackCashView: React.FC = () => {
               : []),
             ...sortedFilteredList.map(t => ({
               id: t.id,
-              note: `${t.note || 'Back Cash Entry'} [${t.created_by_designation || t.created_by || 'Staff'}]${
-                t.edited_by ? ` (Edit: ${t.edited_by_role || t.edited_by})` : ''
+              note: `${t.note || 'Back Cash Entry'} [${t.created_by_name || t.created_by_designation || t.created_by || 'Staff'}]${
+                t.edited_by ? ` (Edit: ${t.edited_by_name || t.edited_by_role || t.edited_by})` : ''
               }`,
               type: t.type === 'closing' ? 'out' : t.type,
               amount: t.amount

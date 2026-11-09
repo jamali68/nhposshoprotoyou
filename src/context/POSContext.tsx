@@ -2996,9 +2996,19 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       } catch {}
     }
 
+    const prevOwnerName = (currentShop.owner_name || '').trim();
+    const nextOwnerName = (profile.owner_name || currentShop.owner_name || '').trim();
+    const todayIso = new Date().toISOString().split('T')[0];
+    const effectiveChangeDate =
+      prevOwnerName && nextOwnerName && prevOwnerName !== nextOwnerName
+        ? (filterDate && filterDate <= todayIso ? filterDate : todayIso)
+        : (currentShop.owner_name_updated_date || '2026-11-08');
+
     const updated: ShopProfile = {
       ...currentShop,
       ...profile,
+      owner_name: nextOwnerName || currentShop.owner_name,
+      owner_name_updated_date: effectiveChangeDate,
       password: finalPassword,
       passwordHash: passwordHash || currentShop.passwordHash,
       passwordSalt: passwordSalt || currentShop.passwordSalt,
@@ -3012,11 +3022,63 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const updatedUser: User = {
         ...currentUser,
         shopName: profile.shop_name || currentUser.shopName,
-        name: profile.owner_name || currentUser.name,
+        name: nextOwnerName || currentUser.name,
         password: finalPassword
       };
       setCurrentUser(updatedUser);
       localStorage.setItem('taj_pos_user', JSON.stringify(updatedUser));
+    }
+
+    // Propagate updated Admin name to transactions from effectiveChangeDate onward (leaving older dates untouched)
+    if (nextOwnerName) {
+      setBackCashTransactions(prev =>
+        prev.map(tx => {
+          const isAdminTx =
+            tx.created_by === 'admin' ||
+            tx.created_by_role === 'admin' ||
+            tx.created_by_role === 'super_admin';
+          if (isAdminTx && tx.transaction_date && tx.transaction_date >= effectiveChangeDate) {
+            const oldTxName = (tx.created_by_name || prevOwnerName || '').trim();
+            let updatedNote = tx.note || '';
+            if (oldTxName && oldTxName !== nextOwnerName && updatedNote.includes(oldTxName)) {
+              updatedNote = updatedNote.replace(oldTxName, nextOwnerName);
+            }
+            if (tx.created_by_name !== nextOwnerName || updatedNote !== tx.note) {
+              const updatedTx = { ...tx, created_by_name: nextOwnerName, note: updatedNote };
+              saveDocToShop('back_cash_transactions', updatedTx.id, updatedTx);
+              return updatedTx;
+            }
+          }
+          return tx;
+        })
+      );
+
+      setDailyTransactions(prev =>
+        prev.map(tx => {
+          const isAdminTx = tx.created_by === 'admin' || tx.created_by === 'super_admin';
+          if (isAdminTx && tx.transaction_date && tx.transaction_date >= effectiveChangeDate) {
+            const oldTxName = (tx.created_by_name || prevOwnerName || '').trim();
+            let updatedDesc = tx.description || '';
+            if (oldTxName && oldTxName !== nextOwnerName && updatedDesc.includes(oldTxName)) {
+              updatedDesc = updatedDesc.replace(oldTxName, nextOwnerName);
+            }
+            const nextExtra = tx.extra_fields?.user_name
+              ? { ...tx.extra_fields, user_name: nextOwnerName }
+              : tx.extra_fields;
+            if (tx.created_by_name !== nextOwnerName || updatedDesc !== tx.description) {
+              const updatedTx = {
+                ...tx,
+                created_by_name: nextOwnerName,
+                description: updatedDesc,
+                ...(nextExtra ? { extra_fields: nextExtra } : {})
+              };
+              saveDocToShop('daily_transactions', updatedTx.id, updatedTx);
+              return updatedTx;
+            }
+          }
+          return tx;
+        })
+      );
     }
 
     localStorage.setItem('taj_pos_shop', JSON.stringify(updated));
@@ -3032,6 +3094,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         JSON.stringify({
           shop_name: updated.shop_name,
           owner_name: updated.owner_name,
+          owner_name_updated_date: updated.owner_name_updated_date,
           phone: updated.phone || '',
           address: updated.address || '',
           owner_email: cleanEmail,
@@ -3899,6 +3962,96 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return { opening, cashIn, cashOut, balance };
   };
 
+  // Automatically reconcile Admin / Staff transactions on or after their profile name update date
+  // while strictly preserving historical names on older dates (e.g. <= 2026-11-07).
+  const effectiveAdminNameDate = currentShop?.owner_name_updated_date || '2026-11-08';
+  const currentOwnerName = (currentShop?.owner_name || '').trim();
+
+  const resolveEffectiveTxUserName = (
+    txDate: string | undefined,
+    roleOrCreatedBy: string | undefined,
+    storedName: string | undefined
+  ): string => {
+    const r = (roleOrCreatedBy || 'admin').toLowerCase();
+    const isAdmin = r === 'admin' || r === 'super_admin';
+    if (isAdmin && txDate && txDate >= effectiveAdminNameDate && currentOwnerName) {
+      return currentOwnerName;
+    }
+    if (!isAdmin && txDate && staffAccounts.length > 0) {
+      const matchedStaff = staffAccounts.find(
+        s =>
+          s.username.toLowerCase() === r ||
+          (storedName && s.name.toLowerCase() === storedName.toLowerCase())
+      );
+      if (matchedStaff && matchedStaff.name_updated_date && txDate >= matchedStaff.name_updated_date) {
+        return matchedStaff.name;
+      }
+    }
+    return storedName || (isAdmin ? currentOwnerName || 'Admin' : r === 'cashier' ? 'Cashier' : 'Staff');
+  };
+
+  useEffect(() => {
+    if (!currentOwnerName) return;
+
+    let hasBackCashUpdates = false;
+    const nextBackCash = backCashTransactions.map(tx => {
+      const isAdminTx =
+        tx.created_by === 'admin' ||
+        tx.created_by_role === 'admin' ||
+        tx.created_by_role === 'super_admin' ||
+        (!tx.created_by_role && tx.created_by === 'admin');
+      if (isAdminTx && tx.transaction_date && tx.transaction_date >= effectiveAdminNameDate) {
+        const oldName = (tx.created_by_name || '').trim();
+        let updatedNote = tx.note || '';
+        if (oldName && oldName !== currentOwnerName && updatedNote.includes(oldName)) {
+          updatedNote = updatedNote.replace(oldName, currentOwnerName);
+        }
+        if (oldName !== currentOwnerName || updatedNote !== tx.note) {
+          hasBackCashUpdates = true;
+          const updatedTx = { ...tx, created_by_name: currentOwnerName, note: updatedNote };
+          saveDocToShop('back_cash_transactions', updatedTx.id, updatedTx);
+          return updatedTx;
+        }
+      }
+      return tx;
+    });
+
+    if (hasBackCashUpdates) {
+      setBackCashTransactions(nextBackCash);
+    }
+
+    let hasDailyUpdates = false;
+    const nextDaily = dailyTransactions.map(tx => {
+      const isAdminTx = tx.created_by === 'admin' || tx.created_by === 'super_admin';
+      if (isAdminTx && tx.transaction_date && tx.transaction_date >= effectiveAdminNameDate) {
+        const oldName = (tx.created_by_name || '').trim();
+        let updatedDesc = tx.description || '';
+        if (oldName && oldName !== currentOwnerName && updatedDesc.includes(oldName)) {
+          updatedDesc = updatedDesc.replace(oldName, currentOwnerName);
+        }
+        if (oldName !== currentOwnerName || updatedDesc !== tx.description) {
+          hasDailyUpdates = true;
+          const nextExtra = tx.extra_fields?.user_name
+            ? { ...tx.extra_fields, user_name: currentOwnerName }
+            : tx.extra_fields;
+          const updatedTx = {
+            ...tx,
+            created_by_name: currentOwnerName,
+            description: updatedDesc,
+            ...(nextExtra ? { extra_fields: nextExtra } : {})
+          };
+          saveDocToShop('daily_transactions', updatedTx.id, updatedTx);
+          return updatedTx;
+        }
+      }
+      return tx;
+    });
+
+    if (hasDailyUpdates) {
+      setDailyTransactions(nextDaily);
+    }
+  }, [currentOwnerName, effectiveAdminNameDate, backCashTransactions, dailyTransactions]);
+
   const computeBackCashStateForDate = (targetDate: string) => {
     const upToTxs = backCashTransactions.filter(t => t.transaction_date <= targetDate);
     const allDates = Array.from(new Set(upToTxs.map(t => t.transaction_date))).sort((a, b) => a.localeCompare(b));
@@ -3966,7 +4119,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           dayActiveClosing += amt;
 
           const role = t.created_by_role || t.created_by || 'admin';
-          const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
+          const name = resolveEffectiveTxUserName(t.transaction_date, role, t.created_by_name);
           const key = `${role}_${name}`;
           if (!dayUserMap[key]) {
             dayUserMap[key] = { userId: t.created_by, userName: name, userRole: role, amount: 0 };
@@ -3985,7 +4138,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           dayActiveClosing = Math.max(0, dayActiveClosing - amt);
 
           const role = t.created_by_role || t.created_by || 'admin';
-          const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
+          const name = resolveEffectiveTxUserName(t.transaction_date, role, t.created_by_name);
           const key = `${role}_${name}`;
           if (dayUserMap[key] && dayUserMap[key].amount > 0) {
             const deduct = Math.min(dayUserMap[key].amount, amt);
@@ -4478,6 +4631,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             description: shopNote,
             transaction_date: params.transaction_date,
             created_by: currentUser?.role || 'user',
+            created_by_name: name,
             linked_transfer_id: bcId,
             transfer_direction: 'from_back_cash'
           };
@@ -4497,6 +4651,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             description: shopNote,
             transaction_date: params.transaction_date,
             created_by: currentUser?.role || 'user',
+            created_by_name: name,
             linked_transfer_id: bcId,
             transfer_direction: 'to_back_cash'
           };

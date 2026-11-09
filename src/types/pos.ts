@@ -21,6 +21,7 @@ export interface ShopProfile {
   isLegacyPassword?: boolean; // Flagged true when account uses temporary 123456 migration password
   phone?: string;
   address?: string;
+  owner_name_updated_date?: string; // YYYY-MM-DD from which updated owner_name applies
   created_at: string;
   last_login?: string;
 }
@@ -46,6 +47,7 @@ export interface StaffAccount {
   name: string;
   role: UserRole;
   phone?: string;
+  name_updated_date?: string; // YYYY-MM-DD from which updated staff name applies
   created_at: string;
   created_by: string;
   is_active: boolean;
