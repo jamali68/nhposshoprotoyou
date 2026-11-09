@@ -94,7 +94,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
       setModuleConfig(superAdminService.getModuleControlConfig());
     };
     window.addEventListener('taj_module_control_updated', handleModuleUpdate);
-    superAdminService.syncModuleControlFromCloud().then(cfg => setModuleConfig(cfg)).catch(() => {});
     return () => window.removeEventListener('taj_module_control_updated', handleModuleUpdate);
   }, []);
 
@@ -111,8 +110,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     setIsManualSyncing(true);
     try {
       const res = await syncNow(true);
-      if (res.success) {
-        setSyncFeedback('✓ تمام ریکارڈز کلاؤڈ پر اپڈیٹ ہو چکے ہیں');
+      if (res.noPendingData) {
+        setSyncFeedback('✓ No Pending Data — کوئی پینڈنگ ڈیٹا نہیں ہے! (30m ٹائمر ری اسٹارٹ)');
+      } else if (res.success) {
+        setSyncFeedback(`✓ ${res.count || 1} پینڈنگ انٹریز کلاؤڈ پر اپڈیٹ ہو چکی ہیں`);
       } else {
         setSyncFeedback(res.error || 'سنک نہ ہو سکا۔ کنکشن چیک کریں۔');
       }
@@ -120,7 +121,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
       setSyncFeedback('سنک نہیں ہو سکا۔ دوبارہ کوشش کریں۔');
     } finally {
       setIsManualSyncing(false);
-      setTimeout(() => setSyncFeedback(null), 4000);
+      setTimeout(() => setSyncFeedback(null), 4500);
     }
   };
 

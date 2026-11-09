@@ -536,7 +536,7 @@ export const BackCashView: React.FC = () => {
           {todayBreakdown.activeClosing > 0 && (
             <div className="flex justify-center gap-2 text-xs mt-2 font-bold flex-wrap">
               <span className="bg-white/20 px-2.5 py-0.5 rounded-lg text-white">
-                Counter: Rs. {todayBreakdown.remainingCounter.toLocaleString()}
+                Pending Bal: Rs. {bcTotal.toLocaleString()}
               </span>
               <span className="bg-amber-400/30 border border-amber-300/40 px-2.5 py-0.5 rounded-lg text-amber-200">
                 Closing Bal: Rs. {todayBreakdown.activeClosing.toLocaleString()}
@@ -587,21 +587,35 @@ export const BackCashView: React.FC = () => {
           )}
         </div>
 
-        {/* Bottom lines in Blue Box: Yesterday Closing & Active User Closing details */}
+        {/* Bottom lines in Blue Box: Yesterday Pending Cash & Active User Closing details */}
         <div className="mt-3.5 pt-2.5 border-t border-white/25 text-xs text-white/95 font-medium space-y-1">
-          {/* Line 1: Yesterday Closing Counter Cash */}
+          {/* Line 1: Yesterday Pending Cash (Blue Box carry) */}
           <div className="flex justify-between items-center">
             <span>
               {bcLastClosingDate === yesterdayDate
-                ? (todayBreakdown.activeClosing !== 0 || yesterdayBreakdown.activeClosing !== 0 ? 'Yesterday Closing (Counter Cash):' : 'Yesterday Closing Cash:')
-                : (todayBreakdown.activeClosing !== 0 || yesterdayBreakdown.activeClosing !== 0 ? `Last Closing Counter (${bcLastClosingDate}):` : `Last Closing Cash (${bcLastClosingDate}):`)}
+                ? 'Yesterday Pending Cash:'
+                : `Last Pending Cash (${bcLastClosingDate}):`}
             </span>
             <span className="font-bold font-mono text-white">
-              Rs. {bcLastClosingAmount.toLocaleString()}
+              Rs. {yesterdayBreakdown.totalBalance.toLocaleString()}
             </span>
           </div>
 
-          {/* Line 2: Admin / User Closing Line */}
+          {/* Line 1b: Yesterday Account Closing Carried (+) if > 0 */}
+          {yesterdayBreakdown.activeClosing > 0 && (
+            <div className="flex justify-between items-center text-[11px] text-sky-100">
+              <span>
+                {bcLastClosingDate === yesterdayDate
+                  ? `Yesterday Account Closing (${yesterdayBreakdown.userClosings[0]?.userName || 'Account'}):`
+                  : `Last Account Closing (${bcLastClosingDate}):`}
+              </span>
+              <span className="font-bold font-mono text-emerald-200">
+                + Rs. {yesterdayBreakdown.activeClosing.toLocaleString()}
+              </span>
+            </div>
+          )}
+
+          {/* Line 2: Today Admin / User Closing Line */}
           {todayBreakdown.userClosings.length > 0 ? (
             todayBreakdown.userClosings.map((uc, idx) => (
               <div key={idx} className="flex justify-between items-center text-[11px] text-amber-200 font-semibold pt-0.5 border-t border-white/10">
@@ -627,7 +641,7 @@ export const BackCashView: React.FC = () => {
         </div>
       </div>
 
-      {/* Dedicated Last / Yesterday Closing Balance Card */}
+      {/* Dedicated Last / Yesterday Closing & Pending Auto-Carried Card */}
       <div className="bg-gradient-to-r from-sky-50 via-blue-50 to-indigo-50 border border-blue-200/90 rounded-2xl p-3.5 shadow-xs">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -640,7 +654,7 @@ export const BackCashView: React.FC = () => {
             <div>
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-[10px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">
-                  {bcLastClosingDate === yesterdayDate ? 'Yesterday Closing Balance' : 'Last Closing Balance'}
+                  {bcLastClosingDate === yesterdayDate ? 'Yesterday Pending + Closing' : 'Last Pending + Closing'}
                 </span>
                 <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-700 text-white">
                   AUTO CARRIED
@@ -648,7 +662,7 @@ export const BackCashView: React.FC = () => {
               </div>
               <p className="text-[11px] font-semibold text-slate-600 mt-0.5">
                 {bcLastClosingDate === yesterdayDate
-                  ? `Previous Day Closing (${bcLastClosingDate})`
+                  ? `Previous Day Carried (${bcLastClosingDate})`
                   : `Last Closed Date (${bcLastClosingDate})`}
               </p>
             </div>
@@ -664,21 +678,28 @@ export const BackCashView: React.FC = () => {
           </div>
         </div>
 
-        {/* Detailed Breakdown: Counter Cash + Active User Account Closing Balance (Always visible even when 0) */}
+        {/* Detailed Breakdown: Pending Balance + Account Closing Balance */}
         <div className="mt-2.5 pt-2 border-t border-blue-200/70 grid grid-cols-2 gap-2 text-xs">
           <div className="bg-white/80 p-2 rounded-xl border border-blue-100">
-            <span className="text-[10px] font-bold text-slate-500 block uppercase">Counter Cash Left</span>
+            <span className="text-[10px] font-bold text-slate-500 block uppercase">Yesterday Pending Balance</span>
             <span className="font-mono font-black text-slate-800 text-xs sm:text-sm">
-              Rs. {todayBreakdown.remainingCounter.toLocaleString()}
+              Rs. {yesterdayBreakdown.totalBalance.toLocaleString()}
             </span>
           </div>
           <div className="bg-amber-50 p-2 rounded-xl border border-amber-200">
             <span className="text-[10px] font-bold text-amber-800 block uppercase">
-              {todayBreakdown.userClosings[0]?.userName || yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Closing
+              {todayBreakdown.activeClosing > 0
+                ? `${todayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Today Closing`
+                : `${yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Yesterday Closing`}
             </span>
             <span className="font-mono font-black text-amber-700 text-xs sm:text-sm">
-              Rs. {todayBreakdown.activeClosing.toLocaleString()}
+              Rs. {(todayBreakdown.activeClosing > 0 ? todayBreakdown.activeClosing : yesterdayBreakdown.activeClosing).toLocaleString()}
             </span>
+            {todayBreakdown.activeClosing > 0 && yesterdayBreakdown.activeClosing > 0 && (
+              <span className="block text-[9px] font-semibold text-amber-600/90 mt-0.5">
+                Kal Closing Added: +Rs. {yesterdayBreakdown.activeClosing.toLocaleString()}
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -1035,31 +1056,36 @@ export const BackCashView: React.FC = () => {
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 border border-blue-200">
-                  {bcLastClosingDate === yesterdayDate ? 'YESTERDAY CLOSING' : 'PREVIOUS CLOSING'}
+                  {bcLastClosingDate === yesterdayDate ? 'YESTERDAY PENDING + CLOSING' : 'PREVIOUS PENDING + CLOSING'}
                 </span>
                 <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-700 text-white">
                   AUTO CARRIED
                 </span>
               </div>
               <p className="font-bold text-slate-800 text-[12px] truncate mt-1">
-                Previous Closing Balance ({bcLastClosingDate})
+                Previous Carried Total ({bcLastClosingDate})
               </p>
             </div>
             <div className="text-right">
               <div className="text-sm font-black font-mono text-blue-700">
                 Rs. {bcLastClosingAmount.toLocaleString()}
               </div>
-              <span className="text-[9px] text-slate-500 font-medium">Last Closed Total</span>
+              <span className="text-[9px] text-slate-500 font-medium">Today Main Shamil</span>
             </div>
           </div>
 
-          {/* Detailed breakdown: Counter Cash Left + Active User Closing (Always visible even when 0) */}
+          {/* Detailed breakdown: Yesterday Pending + Account Closing */}
           <div className="pt-1.5 border-t border-blue-100/90 flex items-center justify-between text-[11px] text-slate-600 flex-wrap gap-2">
             <span>
-              Counter Cash Left: <b className="font-mono text-slate-800">Rs. {todayBreakdown.remainingCounter.toLocaleString()}</b>
+              Yesterday Pending: <b className="font-mono text-slate-800">Rs. {yesterdayBreakdown.totalBalance.toLocaleString()}</b>
             </span>
             <span className="text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200/60">
-              {todayBreakdown.userClosings[0]?.userName || yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Closing: <b className="font-mono text-amber-700">Rs. {todayBreakdown.activeClosing.toLocaleString()}</b>
+              {todayBreakdown.activeClosing > 0
+                ? `${todayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Today Closing`
+                : `${yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Yesterday Closing`}:{' '}
+              <b className="font-mono text-amber-700">
+                Rs. {(todayBreakdown.activeClosing > 0 ? todayBreakdown.activeClosing : yesterdayBreakdown.activeClosing).toLocaleString()}
+              </b>
             </span>
           </div>
         </div>
@@ -1344,14 +1370,24 @@ export const BackCashView: React.FC = () => {
           dateStr={filterDate}
           closingBalance={bcTotal}
           items={[
-            ...(bcLastClosingAmount !== undefined
+            ...(closingInfo.hasPrior
               ? [
                   {
-                    id: 'yesterday-closing',
-                    note: `Previous Closing Balance (${bcLastClosingDate})`,
+                    id: 'yesterday-pending',
+                    note: `Yesterday Pending Balance (${bcLastClosingDate})`,
                     type: 'opening',
-                    amount: bcLastClosingAmount
-                  }
+                    amount: yesterdayBreakdown.totalBalance
+                  },
+                  ...(yesterdayBreakdown.activeClosing > 0
+                    ? [
+                        {
+                          id: 'yesterday-account-closing',
+                          note: `${yesterdayBreakdown.userClosings[0]?.userName || 'Account'} Yesterday Closing (${bcLastClosingDate})`,
+                          type: 'opening',
+                          amount: yesterdayBreakdown.activeClosing
+                        }
+                      ]
+                    : [])
                 ]
               : []),
             ...sortedFilteredList.map(t => ({
@@ -1359,7 +1395,7 @@ export const BackCashView: React.FC = () => {
               note: `${t.note || 'Back Cash Entry'} [${t.created_by_designation || t.created_by || 'Staff'}]${
                 t.edited_by ? ` (Edit: ${t.edited_by_role || t.edited_by})` : ''
               }`,
-              type: t.type,
+              type: t.type === 'closing' ? 'out' : t.type,
               amount: t.amount
             }))
           ]}

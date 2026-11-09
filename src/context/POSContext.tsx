@@ -170,7 +170,7 @@ interface POSContextType {
   isSyncing: boolean;
   nextSyncRemainingSec: number;
   isWaitingForOnlineSync: boolean;
-  syncNow: (manual?: boolean) => Promise<{ success: boolean; count?: number; error?: string }>;
+  syncNow: (manual?: boolean) => Promise<{ success: boolean; count?: number; noPendingData?: boolean; message?: string; error?: string }>;
 
   // Data Update Delayed Loading Wheel (Configurable by Super Admin, default 1000ms)
   mutationLoader: {
@@ -820,39 +820,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     []
   );
 
-  // Real-time listener on platform_settings/module_control so all accounts stay synced with Super Admin's Data Update Delay & Module Controls
-  useEffect(() => {
-    try {
-      const unsubPlatform = onSnapshot(
-        doc(db, 'platform_settings', 'module_control'),
-        (snap) => {
-          if (snap.exists()) {
-            const cloudCfg = snap.data();
-            const currentLocal = superAdminService.getModuleControlConfig();
-            const merged = {
-              ...currentLocal,
-              ...cloudCfg,
-              globalModules: {
-                ...currentLocal.globalModules,
-                ...(cloudCfg.globalModules || {})
-              },
-              featurePermissions: {
-                ...currentLocal.featurePermissions,
-                ...(cloudCfg.featurePermissions || {})
-              },
-              shopOverrides: cloudCfg.shopOverrides || currentLocal.shopOverrides || {}
-            };
-            localStorage.setItem('taj_super_admin_module_control', JSON.stringify(merged));
-            window.dispatchEvent(new CustomEvent('taj_module_control_updated', { detail: merged }));
-          }
-        },
-        () => {}
-      );
-      return () => unsubPlatform();
-    } catch {
-      return;
-    }
-  }, []);
+  // Note: Continuous platform_settings onSnapshot removed to prevent automatic network requests on every app open.
 
   // Sync pendingSyncQueue to localStorage whenever it changes
   useEffect(() => {
@@ -969,11 +937,65 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  // Immediate Sync Now trigger (for manual click, auto 30m refresh when online, or instant sync upon reconnecting from offline)
-  const syncNow = async (manual: boolean = false): Promise<{ success: boolean; count?: number; error?: string }> => {
+  // Check if local store has any unsynced pending items for currentShopId
+  const getPendingWorkForShop = useCallback(
+    (shopId?: string) => {
+      if (!shopId || isDemoMode) {
+        return { queue: [] as PendingSyncItem[], hasPendingProfile: false, needsInitialHydration: false, hasAnyWork: false };
+      }
+
+      let storedQueue: PendingSyncItem[] = [];
+      try {
+        const rawQ = localStorage.getItem(`taj_pos_pending_queue_${shopId}`);
+        if (rawQ) storedQueue = JSON.parse(rawQ);
+      } catch {}
+
+      const mergedQueueMap = new Map<string, PendingSyncItem>();
+      for (const item of storedQueue) {
+        if (item && item.id) mergedQueueMap.set(item.id, item);
+      }
+      for (const item of pendingSyncQueue) {
+        if (item && item.id) mergedQueueMap.set(item.id, item);
+      }
+      const queue = Array.from(mergedQueueMap.values());
+
+      let hasPendingProfile = false;
+      try {
+        hasPendingProfile = Boolean(localStorage.getItem(`taj_pos_pending_profile_${shopId}`));
+      } catch {}
+
+      // Only true once on a brand-new device that has never hydrated local storage for this shop
+      let needsInitialHydration = false;
+      try {
+        const alreadyHydrated = localStorage.getItem(`taj_pos_initial_hydrated_${shopId}`) === 'true';
+        const hasLocalData =
+          localStorage.getItem(`taj_pos_${shopId}_daily_tx`) !== null ||
+          localStorage.getItem(`taj_pos_${shopId}_back_tx`) !== null;
+        if (hasLocalData && !alreadyHydrated) {
+          localStorage.setItem(`taj_pos_initial_hydrated_${shopId}`, 'true');
+        } else if (!alreadyHydrated && !hasLocalData) {
+          needsInitialHydration = true;
+        }
+      } catch {}
+
+      return {
+        queue,
+        hasPendingProfile,
+        needsInitialHydration,
+        hasAnyWork: queue.length > 0 || hasPendingProfile || needsInitialHydration
+      };
+    },
+    [pendingSyncQueue, isDemoMode]
+  );
+
+  // Smart Request-Saving Sync Now trigger:
+  // If NO pending entries exist, saves 100% of network requests while updating status & restarting the 30m countdown timer.
+  const syncNow = async (
+    manual: boolean = false
+  ): Promise<{ success: boolean; count?: number; noPendingData?: boolean; message?: string; error?: string }> => {
     if (!currentShopId || isDemoMode) {
       resetSyncTimer30m();
-      return { success: true, count: 0 };
+      return { success: true, count: 0, noPendingData: true, message: 'No Pending Data' };
     }
     if (!navigator.onLine) {
       setFirebaseSyncStatus('offline');
@@ -985,6 +1007,27 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return { success: false, error: 'انٹرنیٹ کنکشن موجود نہیں ہے — آن لائن ہوتے ہی خودکار اپڈیٹ ہو جائے گا' };
     }
 
+    const work = getPendingWorkForShop(currentShopId);
+
+    // SMART REQUEST SAVER: If there are NO pending entries and local store is already hydrated,
+    // DO NOT send any Firestore/network request! Reset 30m timer and inform user.
+    if (!work.hasAnyWork) {
+      const now = new Date();
+      setLastSyncTime(now);
+      setIsFirebaseConnected(true);
+      setFirebaseSyncStatus('connected');
+      try {
+        localStorage.setItem(`taj_pos_last_sync_${currentShopId}`, now.toISOString());
+      } catch {}
+      resetSyncTimer30m();
+      return {
+        success: true,
+        count: 0,
+        noPendingData: true,
+        message: 'No Pending Data — کوئی پینڈنگ ڈیٹا نہیں ہے، تمام ریکارڈز پہلے سے اپڈیٹ ہیں!'
+      };
+    }
+
     if (isSyncingRef.current && !manual) {
       return { success: true, count: 0 };
     }
@@ -994,21 +1037,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setFirebaseSyncStatus('syncing');
 
     try {
-      // 1. Flush any pending queue items (merge state + localStorage queue for this shop)
-      let storedQueue: PendingSyncItem[] = [];
-      try {
-        const rawQ = localStorage.getItem(`taj_pos_pending_queue_${currentShopId}`);
-        if (rawQ) storedQueue = JSON.parse(rawQ);
-      } catch {}
-
-      const mergedQueueMap = new Map<string, PendingSyncItem>();
-      for (const item of storedQueue) {
-        if (item && item.id) mergedQueueMap.set(item.id, item);
-      }
-      for (const item of pendingSyncQueue) {
-        if (item && item.id) mergedQueueMap.set(item.id, item);
-      }
-      const currentQueue = Array.from(mergedQueueMap.values());
+      // 1. Flush pending queue items
+      const currentQueue = work.queue;
       const flushedIds = new Set<string>();
       let flushedCount = 0;
 
@@ -1076,119 +1106,124 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         console.warn('Pending profile sync error:', profErr);
       }
 
-      // 2. Refresh fresh records from Firestore for current shop
-      try {
-        const [
-          shopSnap,
-          dailySnap,
-          backCashSnap,
-          wholesalersSnap,
-          customersSnap,
-          easyloadSnap,
-          bottlesSnap,
-          stockSnap,
-          staffSnap,
-          editSnap,
-          delSnap
-        ] = await Promise.all([
-          getDoc(doc(db, 'shops', currentShopId)).catch(() => null),
-          getDocs(collection(db, 'shops', currentShopId, 'daily_transactions')).catch(() => null),
-          getDocs(collection(db, 'shops', currentShopId, 'back_cash_transactions')).catch(() => null),
-          getDocs(collection(db, 'shops', currentShopId, 'wholesaler_bills')).catch(() => null),
-          getDocs(collection(db, 'shops', currentShopId, 'customer_bills')).catch(() => null),
-          getDocs(collection(db, 'shops', currentShopId, 'easyload_records')).catch(() => null),
-          getDocs(collection(db, 'shops', currentShopId, 'bottle_items')).catch(() => null),
-          getDocs(collection(db, 'shops', currentShopId, 'stock_transactions')).catch(() => null),
-          getDocs(collection(db, 'shops', currentShopId, 'staff_accounts')).catch(() => null),
-          getDocs(collection(db, 'shops', currentShopId, 'edit_history')).catch(() => null),
-          getDocs(collection(db, 'shops', currentShopId, 'deleted_history')).catch(() => null)
-        ]);
+      // 2. Only fetch collections from Firestore if this device needs one-time initial hydration
+      if (work.needsInitialHydration) {
+        try {
+          const [
+            shopSnap,
+            dailySnap,
+            backCashSnap,
+            wholesalersSnap,
+            customersSnap,
+            easyloadSnap,
+            bottlesSnap,
+            stockSnap,
+            staffSnap,
+            editSnap,
+            delSnap
+          ] = await Promise.all([
+            getDoc(doc(db, 'shops', currentShopId)).catch(() => null),
+            getDocs(collection(db, 'shops', currentShopId, 'daily_transactions')).catch(() => null),
+            getDocs(collection(db, 'shops', currentShopId, 'back_cash_transactions')).catch(() => null),
+            getDocs(collection(db, 'shops', currentShopId, 'wholesaler_bills')).catch(() => null),
+            getDocs(collection(db, 'shops', currentShopId, 'customer_bills')).catch(() => null),
+            getDocs(collection(db, 'shops', currentShopId, 'easyload_records')).catch(() => null),
+            getDocs(collection(db, 'shops', currentShopId, 'bottle_items')).catch(() => null),
+            getDocs(collection(db, 'shops', currentShopId, 'stock_transactions')).catch(() => null),
+            getDocs(collection(db, 'shops', currentShopId, 'staff_accounts')).catch(() => null),
+            getDocs(collection(db, 'shops', currentShopId, 'edit_history')).catch(() => null),
+            getDocs(collection(db, 'shops', currentShopId, 'deleted_history')).catch(() => null)
+          ]);
 
-        if (shopSnap && shopSnap.exists()) {
-          const sData = shopSnap.data() as ShopProfile;
-          setCurrentShop(sData);
-        }
-        if (dailySnap && !dailySnap.empty) {
-          const list: DailyTransaction[] = [];
-          dailySnap.forEach(d => list.push(d.data() as DailyTransaction));
-          const merged = mergeCollectionWithPending(list, 'daily_transactions');
-          setDailyTransactions(merged);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_daily_tx`, JSON.stringify(merged)); } catch {}
-        }
-        if (backCashSnap && !backCashSnap.empty) {
-          const list: BackCashTransaction[] = [];
-          backCashSnap.forEach(d => list.push(d.data() as BackCashTransaction));
-          const merged = mergeCollectionWithPending(list, 'back_cash_transactions');
-          setBackCashTransactions(merged);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_back_tx`, JSON.stringify(merged)); } catch {}
-        }
-        if (wholesalersSnap && !wholesalersSnap.empty) {
-          const list: WholesalerBill[] = [];
-          wholesalersSnap.forEach(d => list.push(d.data() as WholesalerBill));
-          const merged = mergeCollectionWithPending(list, 'wholesaler_bills');
-          setWholesalers(merged);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_wholesalers`, JSON.stringify(merged)); } catch {}
-        }
-        if (customersSnap && !customersSnap.empty) {
-          const list: CustomerBill[] = [];
-          customersSnap.forEach(d => list.push(d.data() as CustomerBill));
-          const merged = mergeCollectionWithPending(list, 'customer_bills');
-          setCustomers(merged);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_customers`, JSON.stringify(merged)); } catch {}
-        }
-        if (easyloadSnap && !easyloadSnap.empty) {
-          const map: Record<string, EasyloadRecord> = {};
-          easyloadSnap.forEach(d => {
-            const item = d.data() as EasyloadRecord;
-            if (item.date_recorded) map[item.date_recorded] = item;
-          });
-          setEasyloadRecords(map);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_easyload`, JSON.stringify(map)); } catch {}
-        }
-        if (bottlesSnap && !bottlesSnap.empty) {
-          const list: BottleItem[] = [];
-          bottlesSnap.forEach(d => list.push(d.data() as BottleItem));
-          const merged = mergeCollectionWithPending(list, 'bottle_items');
-          setBottleItems(merged);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_bottles`, JSON.stringify(merged)); } catch {}
-        }
-        if (stockSnap && !stockSnap.empty) {
-          const list: StockTransaction[] = [];
-          stockSnap.forEach(d => list.push(d.data() as StockTransaction));
-          const merged = mergeCollectionWithPending(list, 'stock_transactions');
-          setStockTransactions(merged);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_stock_tx`, JSON.stringify(merged)); } catch {}
-        }
-        if (staffSnap && !staffSnap.empty) {
-          const list: StaffAccount[] = [];
-          staffSnap.forEach(d => list.push(d.data() as StaffAccount));
-          const merged = mergeCollectionWithPending(list, 'staff_accounts');
-          setStaffAccounts(merged);
+          if (shopSnap && shopSnap.exists()) {
+            const sData = shopSnap.data() as ShopProfile;
+            setCurrentShop(sData);
+          }
+          if (dailySnap && !dailySnap.empty) {
+            const list: DailyTransaction[] = [];
+            dailySnap.forEach(d => list.push(d.data() as DailyTransaction));
+            const merged = mergeCollectionWithPending(list, 'daily_transactions');
+            setDailyTransactions(merged);
+            try { localStorage.setItem(`taj_pos_${currentShopId}_daily_tx`, JSON.stringify(merged)); } catch {}
+          }
+          if (backCashSnap && !backCashSnap.empty) {
+            const list: BackCashTransaction[] = [];
+            backCashSnap.forEach(d => list.push(d.data() as BackCashTransaction));
+            const merged = mergeCollectionWithPending(list, 'back_cash_transactions');
+            setBackCashTransactions(merged);
+            try { localStorage.setItem(`taj_pos_${currentShopId}_back_tx`, JSON.stringify(merged)); } catch {}
+          }
+          if (wholesalersSnap && !wholesalersSnap.empty) {
+            const list: WholesalerBill[] = [];
+            wholesalersSnap.forEach(d => list.push(d.data() as WholesalerBill));
+            const merged = mergeCollectionWithPending(list, 'wholesaler_bills');
+            setWholesalers(merged);
+            try { localStorage.setItem(`taj_pos_${currentShopId}_wholesalers`, JSON.stringify(merged)); } catch {}
+          }
+          if (customersSnap && !customersSnap.empty) {
+            const list: CustomerBill[] = [];
+            customersSnap.forEach(d => list.push(d.data() as CustomerBill));
+            const merged = mergeCollectionWithPending(list, 'customer_bills');
+            setCustomers(merged);
+            try { localStorage.setItem(`taj_pos_${currentShopId}_customers`, JSON.stringify(merged)); } catch {}
+          }
+          if (easyloadSnap && !easyloadSnap.empty) {
+            const map: Record<string, EasyloadRecord> = {};
+            easyloadSnap.forEach(d => {
+              const item = d.data() as EasyloadRecord;
+              if (item.date_recorded) map[item.date_recorded] = item;
+            });
+            setEasyloadRecords(map);
+            try { localStorage.setItem(`taj_pos_${currentShopId}_easyload`, JSON.stringify(map)); } catch {}
+          }
+          if (bottlesSnap && !bottlesSnap.empty) {
+            const list: BottleItem[] = [];
+            bottlesSnap.forEach(d => list.push(d.data() as BottleItem));
+            const merged = mergeCollectionWithPending(list, 'bottle_items');
+            setBottleItems(merged);
+            try { localStorage.setItem(`taj_pos_${currentShopId}_bottles`, JSON.stringify(merged)); } catch {}
+          }
+          if (stockSnap && !stockSnap.empty) {
+            const list: StockTransaction[] = [];
+            stockSnap.forEach(d => list.push(d.data() as StockTransaction));
+            const merged = mergeCollectionWithPending(list, 'stock_transactions');
+            setStockTransactions(merged);
+            try { localStorage.setItem(`taj_pos_${currentShopId}_stock_tx`, JSON.stringify(merged)); } catch {}
+          }
+          if (staffSnap && !staffSnap.empty) {
+            const list: StaffAccount[] = [];
+            staffSnap.forEach(d => list.push(d.data() as StaffAccount));
+            const merged = mergeCollectionWithPending(list, 'staff_accounts');
+            setStaffAccounts(merged);
+            try {
+              localStorage.setItem(`taj_pos_${currentShopId}_staff_accounts`, JSON.stringify(merged));
+              const existingGlobal = JSON.parse(localStorage.getItem('taj_pos_staff_accounts') || '[]');
+              const globalList: StaffAccount[] = Array.isArray(existingGlobal)
+                ? existingGlobal.filter((e: any) => e && e.shop_id !== currentShopId && !merged.some(s => s.id === e.id))
+                : [];
+              localStorage.setItem('taj_pos_staff_accounts', JSON.stringify([...globalList, ...merged]));
+            } catch {}
+          }
+          if (editSnap && !editSnap.empty) {
+            const list: EditHistoryRecord[] = [];
+            editSnap.forEach(d => list.push(d.data() as EditHistoryRecord));
+            const merged = mergeCollectionWithPending(list, 'edit_history');
+            setEditHistory(merged);
+            try { localStorage.setItem(`taj_pos_${currentShopId}_edit_history`, JSON.stringify(merged)); } catch {}
+          }
+          if (delSnap && !delSnap.empty) {
+            const list: DeletedHistoryRecord[] = [];
+            delSnap.forEach(d => list.push(d.data() as DeletedHistoryRecord));
+            const merged = mergeCollectionWithPending(list, 'deleted_history');
+            setDeletedHistory(merged);
+            try { localStorage.setItem(`taj_pos_${currentShopId}_deleted_history`, JSON.stringify(merged)); } catch {}
+          }
           try {
-            localStorage.setItem(`taj_pos_${currentShopId}_staff_accounts`, JSON.stringify(merged));
-            const existingGlobal = JSON.parse(localStorage.getItem('taj_pos_staff_accounts') || '[]');
-            const globalList: StaffAccount[] = Array.isArray(existingGlobal)
-              ? existingGlobal.filter((e: any) => e && e.shop_id !== currentShopId && !merged.some(s => s.id === e.id))
-              : [];
-            localStorage.setItem('taj_pos_staff_accounts', JSON.stringify([...globalList, ...merged]));
+            localStorage.setItem(`taj_pos_initial_hydrated_${currentShopId}`, 'true');
           } catch {}
+        } catch (fetchErr) {
+          console.warn('Initial hydration fetch note:', fetchErr);
         }
-        if (editSnap && !editSnap.empty) {
-          const list: EditHistoryRecord[] = [];
-          editSnap.forEach(d => list.push(d.data() as EditHistoryRecord));
-          const merged = mergeCollectionWithPending(list, 'edit_history');
-          setEditHistory(merged);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_edit_history`, JSON.stringify(merged)); } catch {}
-        }
-        if (delSnap && !delSnap.empty) {
-          const list: DeletedHistoryRecord[] = [];
-          delSnap.forEach(d => list.push(d.data() as DeletedHistoryRecord));
-          const merged = mergeCollectionWithPending(list, 'deleted_history');
-          setDeletedHistory(merged);
-          try { localStorage.setItem(`taj_pos_${currentShopId}_deleted_history`, JSON.stringify(merged)); } catch {}
-        }
-      } catch (fetchErr) {
-        console.warn('Fresh fetch note during syncNow:', fetchErr);
       }
 
       const now = new Date();
@@ -1197,14 +1232,20 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setFirebaseSyncStatus('connected');
       try {
         localStorage.setItem(`taj_pos_last_sync_${currentShopId}`, now.toISOString());
+        localStorage.setItem(`taj_pos_initial_hydrated_${currentShopId}`, 'true');
       } catch {}
 
-      // Reset 30-minute countdown duration after every successful sync (manual, 30m auto, or reconnect)
+      // Reset 30-minute countdown duration after every successful sync
       resetSyncTimer30m();
 
       isSyncingRef.current = false;
       setIsSyncing(false);
-      return { success: true, count: flushedCount };
+      return {
+        success: true,
+        count: flushedCount,
+        noPendingData: false,
+        message: `✓ ${flushedCount} پینڈنگ انٹریز کلاؤڈ پر اپڈیٹ ہو گئیں!`
+      };
     } catch (err: any) {
       console.error('syncNow error:', err);
       isSyncingRef.current = false;
@@ -1220,9 +1261,22 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   useEffect(() => {
     if (!currentShopId || isDemoMode) return;
 
-    // 1. On initial login/boot: if online, sync immediately and start 30m timer; if offline, wait for online
+    // 1. On initial app open / mount:
+    //    Do NOT waste a network request if there are 0 pending entries!
+    //    Only run syncNow if there are actual pending entries waiting to be flushed (or one-time initial device hydration).
     if (navigator.onLine) {
-      syncNow(false);
+      setIsFirebaseConnected(true);
+      setFirebaseSyncStatus('connected');
+      const initialWork = getPendingWorkForShop(currentShopId);
+      if (initialWork.hasAnyWork && (waitingForOnlineSyncRef.current || Date.now() >= nextSyncAtRef.current || initialWork.needsInitialHydration)) {
+        syncNow(false);
+      } else {
+        waitingForOnlineSyncRef.current = false;
+        setIsWaitingForOnlineSync(false);
+        if (Date.now() >= nextSyncAtRef.current) {
+          resetSyncTimer30m();
+        }
+      }
     } else {
       waitingForOnlineSyncRef.current = true;
       setIsWaitingForOnlineSync(true);
@@ -1232,7 +1286,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       } catch {}
     }
 
-    // 2. When device goes offline: enter "waiting for online" mode so it syncs instantly upon reconnect
+    // 2. When device goes offline: enter "waiting for online" mode
     const handleOfflineEvent = () => {
       waitingForOnlineSyncRef.current = true;
       setIsWaitingForOnlineSync(true);
@@ -1242,9 +1296,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       } catch {}
     };
 
-    // 3. When device comes back online: immediately run instant sync and restart 30m countdown
+    // 3. When device comes back online:
+    //    syncNow(false) checks if there are pending entries. If 0 pending entries, it sends 0 requests and resets 30m timer!
     const handleOnlineEvent = () => {
-      console.info('[NH POS Shop] Reconnected to internet — running instant cloud sync...');
       waitingForOnlineSyncRef.current = false;
       setIsWaitingForOnlineSync(false);
       syncNow(false);
@@ -1255,8 +1309,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     // 4. 1-Second Heartbeat Watcher:
     //    - If offline: keeps checking when device comes online
-    //    - If online & was waiting for online: triggers instant sync
-    //    - If online & 30m duration completed: triggers auto-sync and resets 30m duration
+    //    - If online & was waiting for online: triggers smart check (0 requests if no pending data)
+    //    - If online & 30m duration completed: triggers smart check (0 requests if no pending data) and resets 30m duration
     const watcherInterval = setInterval(() => {
       const online = typeof navigator !== 'undefined' ? navigator.onLine : true;
 
@@ -1275,10 +1329,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
 
       // Device is online!
-      // Case A: Was offline earlier -> run instant sync as soon as online is detected
+      // Case A: Was offline earlier -> run smart check as soon as online is detected
       if (waitingForOnlineSyncRef.current) {
         if (!isSyncingRef.current) {
-          console.info('[NH POS Shop] Online detected after offline wait — syncing immediately...');
           waitingForOnlineSyncRef.current = false;
           setIsWaitingForOnlineSync(false);
           syncNow(false);
@@ -1286,11 +1339,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         return;
       }
 
-      // Case B: Online and 30 minutes duration has completed -> run 30m auto-sync
+      // Case B: Online and 30 minutes duration has completed -> run 30m smart check
       const nowMs = Date.now();
       if (nowMs >= nextSyncAtRef.current) {
         if (!isSyncingRef.current) {
-          console.info('[NH POS Shop] 30-minute duration completed while online — auto-syncing...');
           nextSyncAtRef.current = nowMs + AUTO_SYNC_DURATION_MS;
           syncNow(false);
         }
@@ -3855,17 +3907,26 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       allDates.sort((a, b) => a.localeCompare(b));
     }
 
-    let runningTotal = 0;
+    // Running state at the end of each day:
+    // - runningPendingBalance: The Blue Box amount (Pending Hard Cash Balance left at end of day)
+    // - runningActiveClosing: The User/Admin Account Closing Balance left at end of day
+    let runningPendingBalance = 0;
     let runningActiveClosing = 0;
     let runningUserMap: { [key: string]: { userId: string; userName: string; userRole: string; amount: number } } = {};
 
-    let priorTotalBeforeTarget = 0;
+    let carriedPendingBeforeTarget = 0;
+    let carriedClosingBeforeTarget = 0;
     let lastActiveDateBeforeTarget = getYesterdayDateString(targetDate);
     let hasPriorBeforeTarget = false;
 
     for (const d of allDates) {
+      // At the start of day 'd', BOTH Yesterday's Pending Balance (Blue Box)
+      // AND Yesterday's Account Closing Balance are added (+) into day 'd'!
+      const carriedFromYesterdayTotal = runningPendingBalance + runningActiveClosing;
+
       if (d === targetDate) {
-        priorTotalBeforeTarget = runningTotal;
+        carriedPendingBeforeTarget = runningPendingBalance;
+        carriedClosingBeforeTarget = runningActiveClosing;
       }
 
       const dayTxs = upToTxs.filter(t => t.transaction_date === d);
@@ -3874,57 +3935,61 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         hasPriorBeforeTarget = true;
       }
 
-      // 1. Apply normal inflows & outflows for day 'd'
+      // Start day 'd' Blue Box with (Yesterday Pending Balance + Yesterday Closing Balance)
+      let dayPendingBalance = carriedFromYesterdayTotal;
+      let dayActiveClosing = 0;
+      let dayUserMap: { [key: string]: { userId: string; userName: string; userRole: string; amount: number } } = {};
+
+      // 1. Apply normal inflows (+) & outflows (-) for day 'd'
       dayTxs.forEach(t => {
         const amt = Number(t.amount) || 0;
         if (t.type === 'out' || t.type === 'transfer_to_shop') {
-          runningTotal -= amt;
+          dayPendingBalance -= amt;
         } else if (t.type === 'closing' || t.type === 'closing_minus' || t.type === 'commission') {
           // closing & closing_minus handled below; commission is separate profit
         } else {
           // opening, receiving, transfer_from_shop
-          runningTotal += amt;
+          dayPendingBalance += amt;
         }
       });
 
-      // 2. Apply closing (+) and closing_minus (-) for day 'd'
+      // 2. Apply closing (Account Closing Balance) and closing_minus (Minis Closing Balance) for day 'd'
       const dayClosingTxs = dayTxs.filter(t => t.type === 'closing');
       const dayClosingMinusTxs = dayTxs.filter(t => t.type === 'closing_minus');
 
       if (dayClosingTxs.length > 0) {
-        // Yesterday's closing balance was already carried into runningTotal in the morning.
-        // Once a fresh Closing Balance (+) is added on day 'd', yesterday's closing entry is finalized (0 in closing box)
-        // and day 'd' allocates the new Closing Balance out of runningTotal without increasing runningTotal.
-        runningActiveClosing = 0;
-        runningUserMap = {};
-
         dayClosingTxs.forEach(t => {
           const amt = Number(t.amount) || 0;
-          runningActiveClosing += amt;
+          // Adding Closing Balance subtracts (-) from Today's Blue Box (Pending Balance)
+          // and places the amount into Today's Account Closing Balance box!
+          dayPendingBalance -= amt;
+          dayActiveClosing += amt;
+
           const role = t.created_by_role || t.created_by || 'admin';
           const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
           const key = `${role}_${name}`;
-          if (!runningUserMap[key]) {
-            runningUserMap[key] = { userId: t.created_by, userName: name, userRole: role, amount: 0 };
+          if (!dayUserMap[key]) {
+            dayUserMap[key] = { userId: t.created_by, userName: name, userRole: role, amount: 0 };
           }
-          runningUserMap[key].amount += amt;
+          dayUserMap[key].amount += amt;
         });
       }
 
       if (dayClosingMinusTxs.length > 0) {
-        // Closing Minis (-) reduces BOTH the active Closing Balance AND Total Back Cash
+        // Minis Closing Balance (-) reduces the User's Account Closing Balance
+        // (just like editing 10k down to 5k in the old system when cash is sent back to the shop user),
+        // so only the remaining Closing Balance (e.g. 5k) is carried into tomorrow!
         let remainingMinus = 0;
         dayClosingMinusTxs.forEach(t => {
           const amt = Number(t.amount) || 0;
-          runningActiveClosing -= amt;
-          runningTotal -= amt;
+          dayActiveClosing = Math.max(0, dayActiveClosing - amt);
 
           const role = t.created_by_role || t.created_by || 'admin';
           const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
           const key = `${role}_${name}`;
-          if (runningUserMap[key] && runningUserMap[key].amount > 0) {
-            const deduct = Math.min(runningUserMap[key].amount, amt);
-            runningUserMap[key].amount -= deduct;
+          if (dayUserMap[key] && dayUserMap[key].amount > 0) {
+            const deduct = Math.min(dayUserMap[key].amount, amt);
+            dayUserMap[key].amount -= deduct;
             remainingMinus += (amt - deduct);
           } else {
             remainingMinus += amt;
@@ -3932,44 +3997,32 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         });
 
         if (remainingMinus > 0) {
-          for (const key of Object.keys(runningUserMap)) {
+          for (const key of Object.keys(dayUserMap)) {
             if (remainingMinus <= 0) break;
-            if (runningUserMap[key].amount > 0) {
-              const deduct = Math.min(runningUserMap[key].amount, remainingMinus);
-              runningUserMap[key].amount -= deduct;
+            if (dayUserMap[key].amount > 0) {
+              const deduct = Math.min(dayUserMap[key].amount, remainingMinus);
+              dayUserMap[key].amount -= deduct;
               remainingMinus -= deduct;
             }
           }
         }
-
-        if (remainingMinus > 0) {
-          const firstKey = Object.keys(runningUserMap)[0];
-          if (firstKey) {
-            runningUserMap[firstKey].amount -= remainingMinus;
-          } else {
-            const t = dayClosingMinusTxs[dayClosingMinusTxs.length - 1];
-            const role = t.created_by_role || t.created_by || 'admin';
-            const name = t.created_by_name || (role === 'admin' ? 'Admin' : (role === 'cashier' ? 'Cashier' : 'Staff'));
-            runningUserMap[`${role}_${name}`] = {
-              userId: t.created_by,
-              userName: name,
-              userRole: role,
-              amount: -remainingMinus
-            };
-          }
-        }
       }
+
+      runningPendingBalance = dayPendingBalance;
+      runningActiveClosing = dayActiveClosing;
+      runningUserMap = dayUserMap;
     }
 
-    const remainingCounter = runningTotal - runningActiveClosing;
-    const userClosings = Object.values(runningUserMap).filter(u => u.amount !== 0);
+    const userClosings = Object.values(runningUserMap).filter(u => u.amount > 0);
 
     return {
-      totalBalance: runningTotal,
+      totalBalance: runningPendingBalance,
       activeClosing: runningActiveClosing,
-      remainingCounter,
+      remainingCounter: runningPendingBalance,
       userClosings,
-      priorTotal: priorTotalBeforeTarget,
+      priorPending: carriedPendingBeforeTarget,
+      priorClosing: carriedClosingBeforeTarget,
+      priorTotal: carriedPendingBeforeTarget + carriedClosingBeforeTarget,
       lastActiveDate: lastActiveDateBeforeTarget,
       hasPrior: hasPriorBeforeTarget
     };

@@ -71,6 +71,7 @@ const MainAppContent: React.FC = () => {
   const [templateSavedMsg, setTemplateSavedMsg] = useState(false);
   const [isOnline, setIsOnline] = useState<boolean>(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [showStatusToast, setShowStatusToast] = useState<boolean>(false);
+  const [topSyncFeedback, setTopSyncFeedback] = useState<{ text: string; isNoPending?: boolean } | null>(null);
   const [showInstallGuide, setShowInstallGuide] = useState<boolean>(false);
   const [showExitToast, setShowExitToast] = useState<boolean>(false);
   const [showSuperAdminAuthModal, setShowSuperAdminAuthModal] = useState<boolean>(false);
@@ -541,7 +542,24 @@ const MainAppContent: React.FC = () => {
                     onClick={async (e) => {
                       e.stopPropagation();
                       if (!isOnline) return;
-                      await syncNow(true);
+                      const res = await syncNow(true);
+                      if (res.noPendingData) {
+                        setTopSyncFeedback({
+                          text: '✓ No Pending Data — کوئی پینڈنگ ڈیٹا نہیں ہے! (30m ٹائمر ری اسٹارٹ)',
+                          isNoPending: true
+                        });
+                      } else if (res.success) {
+                        setTopSyncFeedback({
+                          text: `✓ ${res.count || 1} پینڈنگ انٹریز کلاؤڈ پر اپڈیٹ ہو گئیں! (30m ٹائمر ری اسٹارٹ)`,
+                          isNoPending: false
+                        });
+                      } else {
+                        setTopSyncFeedback({
+                          text: res.error || 'اپڈیٹ نہیں ہو سکا',
+                          isNoPending: false
+                        });
+                      }
+                      setTimeout(() => setTopSyncFeedback(null), 4500);
                     }}
                     className={`w-full mt-1 py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
                       isOnline
@@ -552,6 +570,18 @@ const MainAppContent: React.FC = () => {
                     <RefreshCw className={`w-3.5 h-3.5 ${isOnline && isSyncing ? 'animate-spin' : ''}`} />
                     <span>{isSyncing ? 'کلاؤڈ اپڈیٹ ہو رہا ہے...' : '🔄 ابھی اپڈیٹ کریں (Sync Now)'}</span>
                   </button>
+
+                  {topSyncFeedback && (
+                    <div
+                      className={`mt-1.5 py-1.5 px-2.5 rounded-xl text-[10.5px] font-bold text-center border animate-in fade-in ${
+                        topSyncFeedback.isNoPending
+                          ? 'bg-amber-50 border-amber-200 text-amber-800'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                      }`}
+                    >
+                      {topSyncFeedback.text}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
