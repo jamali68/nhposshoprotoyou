@@ -13,7 +13,10 @@ import {
   PlatformMetrics,
   PlatformModuleControlConfig,
   ModuleHealthTestResult,
-  ControllableModuleId
+  ControllableModuleId,
+  ShopStaffPermissionsConfig,
+  StaffTargetPermissions,
+  StaffPermissionActionId
 } from './types';
 
 export const MASTER_EMAILS = [
@@ -45,6 +48,130 @@ export const ALL_CONTROLLABLE_MODULES: Array<{
   { id: 'staff_management', label: 'Staff & User Accounts', urduLabel: 'عملہ اور یوزر اکاؤنٹس', description: 'Create and manage NH- staff logins and role permissions' },
   { id: 'deleted_history', label: 'Deleted Logs (Trash)', urduLabel: 'ڈیلیٹ شدہ ریکارڈز', description: 'Trash bin recovery and permanent deletion logs' }
 ];
+
+export const ALL_STAFF_CONTROLLABLE_MODULES: Array<{
+  id: ControllableModuleId;
+  label: string;
+  urduLabel: string;
+  description: string;
+}> = ALL_CONTROLLABLE_MODULES.filter(m => m.id !== 'staff_management');
+
+export const ALL_STAFF_CONTROLLABLE_ACTIONS: Array<{
+  id: StaffPermissionActionId;
+  label: string;
+  urduLabel: string;
+  description: string;
+}> = [
+  {
+    id: 'allowAddEntry',
+    label: 'Add New Entries',
+    urduLabel: 'نئی انٹری شامل کرنا',
+    description: 'Allow adding new cash, back cash, or ledger entries'
+  },
+  {
+    id: 'allowEditEntry',
+    label: 'Edit Saved Entries',
+    urduLabel: 'انٹری ایڈٹ / تبدیل کرنا',
+    description: 'Allow editing existing daily cash or back cash transactions'
+  },
+  {
+    id: 'allowDeleteEntry',
+    label: 'Delete Entries to Trash',
+    urduLabel: 'انٹری ڈیلیٹ کرنا (Trash)',
+    description: 'Allow deleting transactions into Trash bin'
+  },
+  {
+    id: 'allowManageBills',
+    label: 'Create & Manage Khata Bills',
+    urduLabel: 'نیا بل یا کھاتہ بنانا',
+    description: 'Allow creating and managing Customer & Wholesaler bills'
+  },
+  {
+    id: 'allowManageStock',
+    label: 'Update Bottle & Crates Stock',
+    urduLabel: 'اسٹاک جمع یا کم کرنا',
+    description: 'Allow adding or removing bottle and crate stock quantities'
+  },
+  {
+    id: 'allowManagePrices',
+    label: 'Edit Items Price List',
+    urduLabel: 'ریٹ لسٹ میں تبدیلی کرنا',
+    description: 'Allow adding, editing, or deleting items in Price List'
+  }
+];
+
+export const DEFAULT_SHOP_STAFF_PERMISSIONS: ShopStaffPermissionsConfig = {
+  rolePermissions: {
+    manager: {
+      modules: {
+        daily_cash: true,
+        back_cash: true,
+        easyload: true,
+        bottle_stock: true,
+        items_price: true,
+        wholesaler: true,
+        customer: true,
+        pos: true,
+        monthly_summary: true,
+        deleted_history: false
+      },
+      actions: {
+        allowAddEntry: true,
+        allowEditEntry: true,
+        allowDeleteEntry: false,
+        allowManageBills: true,
+        allowManageStock: true,
+        allowManagePrices: true
+      }
+    },
+    cashier: {
+      modules: {
+        daily_cash: true,
+        back_cash: false,
+        easyload: true,
+        bottle_stock: false,
+        items_price: true,
+        wholesaler: false,
+        customer: false,
+        pos: true,
+        monthly_summary: false,
+        deleted_history: false
+      },
+      actions: {
+        allowAddEntry: true,
+        allowEditEntry: false,
+        allowDeleteEntry: false,
+        allowManageBills: false,
+        allowManageStock: false,
+        allowManagePrices: false
+      }
+    },
+    salesman: {
+      modules: {
+        daily_cash: false,
+        back_cash: false,
+        easyload: false,
+        bottle_stock: false,
+        items_price: true,
+        wholesaler: false,
+        customer: true,
+        pos: true,
+        monthly_summary: false,
+        deleted_history: false
+      },
+      actions: {
+        allowAddEntry: true,
+        allowEditEntry: false,
+        allowDeleteEntry: false,
+        allowManageBills: true,
+        allowManageStock: false,
+        allowManagePrices: false
+      }
+    }
+  },
+  userOverrides: {},
+  updatedAt: new Date().toISOString()
+};
 
 export const DEFAULT_MODULE_CONTROL_CONFIG: PlatformModuleControlConfig = {
   globalModules: {
@@ -269,6 +396,186 @@ export const superAdminService = {
       return false;
     }
     return true;
+  },
+
+  /**
+   * Load Store Admin's Staff & Manager Lock/Unlock Permissions for a Shop
+   */
+  getShopStaffPermissions(shopId?: string): ShopStaffPermissionsConfig {
+    const key = `taj_shop_staff_perms_${shopId || 'default'}`;
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          rolePermissions: {
+            manager: {
+              modules: {
+                ...DEFAULT_SHOP_STAFF_PERMISSIONS.rolePermissions.manager.modules,
+                ...(parsed?.rolePermissions?.manager?.modules || {})
+              },
+              actions: {
+                ...DEFAULT_SHOP_STAFF_PERMISSIONS.rolePermissions.manager.actions,
+                ...(parsed?.rolePermissions?.manager?.actions || {})
+              }
+            },
+            cashier: {
+              modules: {
+                ...DEFAULT_SHOP_STAFF_PERMISSIONS.rolePermissions.cashier.modules,
+                ...(parsed?.rolePermissions?.cashier?.modules || {})
+              },
+              actions: {
+                ...DEFAULT_SHOP_STAFF_PERMISSIONS.rolePermissions.cashier.actions,
+                ...(parsed?.rolePermissions?.cashier?.actions || {})
+              }
+            },
+            salesman: {
+              modules: {
+                ...DEFAULT_SHOP_STAFF_PERMISSIONS.rolePermissions.salesman.modules,
+                ...(parsed?.rolePermissions?.salesman?.modules || {})
+              },
+              actions: {
+                ...DEFAULT_SHOP_STAFF_PERMISSIONS.rolePermissions.salesman.actions,
+                ...(parsed?.rolePermissions?.salesman?.actions || {})
+              }
+            }
+          },
+          userOverrides: parsed?.userOverrides || {},
+          updatedAt: parsed?.updatedAt || new Date().toISOString(),
+          updatedBy: parsed?.updatedBy
+        };
+      }
+    } catch {}
+    return JSON.parse(JSON.stringify(DEFAULT_SHOP_STAFF_PERMISSIONS));
+  },
+
+  /**
+   * Save Store Admin's Staff & Manager Lock/Unlock Permissions to LocalStorage + Cloud Firestore
+   */
+  async saveShopStaffPermissions(
+    shopId: string,
+    config: ShopStaffPermissionsConfig
+  ): Promise<boolean> {
+    if (!shopId) return false;
+    try {
+      const updated: ShopStaffPermissionsConfig = {
+        ...config,
+        updatedAt: new Date().toISOString()
+      };
+      localStorage.setItem(`taj_shop_staff_perms_${shopId}`, JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('taj_module_control_updated', { detail: updated }));
+
+      if (navigator.onLine) {
+        await setDoc(
+          doc(db, 'shops', shopId),
+          {
+            staff_permissions_config: updated,
+            last_data_sync_at: Date.now()
+          },
+          { merge: true }
+        ).catch(() => {});
+      }
+      return true;
+    } catch (err) {
+      console.error('Error saving shop staff permissions:', err);
+      return false;
+    }
+  },
+
+  /**
+   * Check if a module/option is Unlocked (true) or Locked (false) for a specific user
+   */
+  isModuleUnlockedForUser(
+    moduleId: string,
+    user?: {
+      username?: string;
+      role?: string;
+      email?: string;
+      isGoogleUser?: boolean;
+      shopId?: string;
+    } | null
+  ): { unlocked: boolean; lockedBy?: 'super_admin' | 'admin' } {
+    if (moduleId === 'dashboard' || moduleId === 'super_admin') {
+      return { unlocked: true };
+    }
+    const isVerifiedSuper = Boolean(
+      user?.role === 'super_admin' && this.isMasterAdminEmail(user?.email)
+    );
+    if (isVerifiedSuper) {
+      return { unlocked: true };
+    }
+
+    // 1. Check Super Admin platform/shop lock first
+    if (!this.isModuleEnabledForShop(moduleId, user?.shopId)) {
+      return { unlocked: false, lockedBy: 'super_admin' };
+    }
+
+    // 2. Store Admin has full access to their shop modules (unless locked by Super Admin above)
+    const isStoreAdmin = Boolean(
+      user?.isGoogleUser || user?.role === 'admin' || user?.role === 'super_admin'
+    );
+    if (isStoreAdmin) {
+      return { unlocked: true };
+    }
+
+    // 3. Check Store Admin's Staff/Manager Lock/Unlock configuration
+    const perms = this.getShopStaffPermissions(user?.shopId);
+    const cleanUserKey = (user?.username || '').trim().toLowerCase();
+    const userOverride: StaffTargetPermissions | undefined = cleanUserKey
+      ? perms.userOverrides[cleanUserKey]
+      : undefined;
+
+    if (userOverride && typeof userOverride.modules?.[moduleId] === 'boolean') {
+      return userOverride.modules[moduleId]
+        ? { unlocked: true }
+        : { unlocked: false, lockedBy: 'admin' };
+    }
+
+    const roleKey =
+      user?.role === 'manager' || user?.role === 'cashier' || user?.role === 'salesman'
+        ? user.role
+        : 'cashier';
+    const roleAllowed = perms.rolePermissions[roleKey]?.modules?.[moduleId];
+    if (roleAllowed === false) {
+      return { unlocked: false, lockedBy: 'admin' };
+    }
+    return { unlocked: true };
+  },
+
+  /**
+   * Check if an action (e.g. allowAddEntry, allowEditEntry, allowDeleteEntry) is Unlocked for a user
+   */
+  isActionUnlockedForUser(
+    actionId: StaffPermissionActionId,
+    user?: {
+      username?: string;
+      role?: string;
+      email?: string;
+      isGoogleUser?: boolean;
+      shopId?: string;
+    } | null
+  ): boolean {
+    const isVerifiedSuper = Boolean(
+      user?.role === 'super_admin' && this.isMasterAdminEmail(user?.email)
+    );
+    const isStoreAdmin = Boolean(
+      user?.isGoogleUser || user?.role === 'admin' || user?.role === 'super_admin' || isVerifiedSuper
+    );
+    if (isStoreAdmin) return true;
+
+    const perms = this.getShopStaffPermissions(user?.shopId);
+    const cleanUserKey = (user?.username || '').trim().toLowerCase();
+    const userOverride = cleanUserKey ? perms.userOverrides[cleanUserKey] : undefined;
+
+    if (userOverride && typeof userOverride.actions?.[actionId] === 'boolean') {
+      return userOverride.actions[actionId];
+    }
+
+    const roleKey =
+      user?.role === 'manager' || user?.role === 'cashier' || user?.role === 'salesman'
+        ? user.role
+        : 'cashier';
+    return perms.rolePermissions[roleKey]?.actions?.[actionId] !== false;
   },
 
   /**

@@ -93,6 +93,17 @@ export interface BackCashTransaction {
   extra_fields?: Record<string, any>;
 }
 
+export interface BackCashClosingLedgerEntry {
+  id: string;
+  amount: number;
+  note: string;
+  userName: string;
+  userRole: string;
+  createdAt?: string;
+  date: string;
+  type: 'closing' | 'closing_minus';
+}
+
 export interface BackCashClosingBreakdown {
   totalBalance: number;
   activeClosing: number;
@@ -103,6 +114,21 @@ export interface BackCashClosingBreakdown {
     userRole: string;
     amount: number;
   }[];
+  priorPending?: number;
+  priorClosing?: number;
+  priorInitialClosing?: number;
+  priorMinusDeducted?: number;
+  priorTotal?: number;
+  priorUserClosings?: {
+    userId: string;
+    userName: string;
+    userRole: string;
+    amount: number;
+  }[];
+  priorMinusEntries?: BackCashClosingLedgerEntry[];
+  todayInitialClosing?: number;
+  todayMinusDeducted?: number;
+  todayClosingEntries?: BackCashClosingLedgerEntry[];
 }
 
 export interface WholesalerBill {

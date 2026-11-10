@@ -95,6 +95,16 @@ export const BackCashView: React.FC = () => {
   const [showUserWiseCommission, setShowUserWiseCommission] = useState<boolean>(false);
   const [isCommissionSummaryExpanded, setIsCommissionSummaryExpanded] = useState<boolean>(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [closingLedgerModal, setClosingLedgerModal] = useState<'yesterday' | 'today' | null>(null);
+
+  // Hardware back closes closing ledger modal first
+  useEffect(() => {
+    if (!closingLedgerModal) return;
+    return registerBackHandler(() => {
+      setClosingLedgerModal(null);
+      return true;
+    });
+  }, [closingLedgerModal, registerBackHandler]);
 
   // Hardware back closes delete confirm modal first
   useEffect(() => {
@@ -217,6 +227,21 @@ export const BackCashView: React.FC = () => {
   const bcLastClosingDate = closingInfo.lastDate;
   const todayBreakdown = getBackCashClosingDetails(filterDate);
   const yesterdayBreakdown = getBackCashClosingDetails(closingInfo.lastDate);
+
+  const priorPendingBalance = todayBreakdown.priorPending ?? yesterdayBreakdown.totalBalance;
+  const effectiveYesterdayClosing = todayBreakdown.priorClosing ?? yesterdayBreakdown.activeClosing;
+  const priorInitialClosing = todayBreakdown.priorInitialClosing ?? yesterdayBreakdown.activeClosing;
+  const priorMinusDeducted = todayBreakdown.priorMinusDeducted ?? 0;
+  const priorMinusEntries = todayBreakdown.priorMinusEntries ?? [];
+  const todayInitialClosing = todayBreakdown.todayInitialClosing ?? todayBreakdown.activeClosing;
+  const todayMinusDeducted = todayBreakdown.todayMinusDeducted ?? 0;
+  const todayClosingEntries = todayBreakdown.todayClosingEntries ?? [];
+  const priorUserClosings = todayBreakdown.priorUserClosings ?? yesterdayBreakdown.userClosings;
+  const yesterdayClosingUserName =
+    priorUserClosings[0]?.userName ||
+    yesterdayBreakdown.userClosings[0]?.userName ||
+    currentUser?.name ||
+    'Account';
   const filteredList = backCashTransactions.filter(t => t.transaction_date === filterDate);
 
   const getTxTimestamp = (tx: { id?: string; created_at?: string }) => {
@@ -597,13 +622,13 @@ export const BackCashView: React.FC = () => {
                 : `Last Pending Cash (${bcLastClosingDate}):`}
             </span>
             <span className="font-bold font-mono text-white whitespace-nowrap shrink-0">
-              Rs. {yesterdayBreakdown.totalBalance.toLocaleString()}
+              Rs. {priorPendingBalance.toLocaleString()}
             </span>
           </div>
 
-          {/* Line 1b: Yesterday Account Closing Carried (+) if > 0 */}
-          {yesterdayBreakdown.activeClosing > 0 && (() => {
-            const yClosingName = yesterdayBreakdown.userClosings[0]?.userName || 'Account';
+          {/* Line 1b: Yesterday Account Closing Carried (+) if > 0 or if minused today */}
+          {(effectiveYesterdayClosing > 0 || priorMinusDeducted > 0) && (() => {
+            const yClosingName = yesterdayClosingUserName;
             const isLongYName = yClosingName.length > 10;
             return (
               <div className="text-[11px] text-sky-100">
@@ -613,9 +638,15 @@ export const BackCashView: React.FC = () => {
                       ? (isLongYName ? 'Yesterday Account Closing:' : `Yesterday Account Closing (${yClosingName}):`)
                       : `Last Account Closing (${bcLastClosingDate}):`}
                   </span>
-                  <span className="font-bold font-mono text-emerald-200 whitespace-nowrap shrink-0">
-                    + Rs. {yesterdayBreakdown.activeClosing.toLocaleString()}
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setClosingLedgerModal('yesterday')}
+                    className={`font-bold font-mono whitespace-nowrap shrink-0 cursor-pointer underline-offset-2 hover:underline ${
+                      priorMinusDeducted > 0 ? 'text-rose-200' : 'text-emerald-200'
+                    }`}
+                  >
+                    + Rs. {effectiveYesterdayClosing.toLocaleString()}
+                  </button>
                 </div>
                 {bcLastClosingDate === yesterdayDate && isLongYName && (
                   <div className="text-[10px] text-sky-200/95 font-semibold leading-tight mt-0.5">
@@ -709,25 +740,46 @@ export const BackCashView: React.FC = () => {
           <div className="bg-white/80 p-2 rounded-xl border border-blue-100">
             <span className="text-[10px] font-bold text-slate-500 block uppercase">Yesterday Pending Balance</span>
             <span className="font-mono font-black text-slate-800 text-xs sm:text-sm">
-              Rs. {yesterdayBreakdown.totalBalance.toLocaleString()}
+              Rs. {priorPendingBalance.toLocaleString()}
             </span>
           </div>
-          <div className="bg-amber-50 p-2 rounded-xl border border-amber-200">
-            <span className="text-[10px] font-bold text-amber-800 block uppercase">
-              {todayBreakdown.activeClosing > 0
-                ? `${todayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Today Closing`
-                : `${yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Yesterday Closing`}
+          <button
+            type="button"
+            onClick={() => setClosingLedgerModal('yesterday')}
+            className={`p-2 rounded-xl border text-left transition-all active:scale-[0.98] cursor-pointer shadow-xs ${
+              priorMinusDeducted > 0
+                ? 'bg-gradient-to-br from-rose-600 to-red-600 border-red-700 text-white hover:from-rose-700 hover:to-red-700'
+                : 'bg-gradient-to-br from-emerald-600 to-green-600 border-emerald-700 text-white hover:from-emerald-700 hover:to-green-700'
+            }`}
+          >
+            <span className={`text-[10px] font-bold block uppercase ${
+              priorMinusDeducted > 0 ? 'text-rose-100' : 'text-emerald-100'
+            }`}>
+              {yesterdayClosingUserName} Yesterday Closing
             </span>
-            <span className="font-mono font-black text-amber-700 text-xs sm:text-sm">
-              Rs. {(todayBreakdown.activeClosing > 0 ? todayBreakdown.activeClosing : yesterdayBreakdown.activeClosing).toLocaleString()}
+            <span className="font-mono font-black text-white text-xs sm:text-sm block mt-0.5">
+              Rs. {effectiveYesterdayClosing.toLocaleString()}
             </span>
-            {todayBreakdown.activeClosing > 0 && yesterdayBreakdown.activeClosing > 0 && (
-              <span className="block text-[9px] font-semibold text-amber-600/90 mt-0.5">
-                Kal Closing Added: +Rs. {yesterdayBreakdown.activeClosing.toLocaleString()}
-              </span>
-            )}
-          </div>
+          </button>
         </div>
+        {(todayBreakdown.activeClosing > 0 || todayInitialClosing > 0) && (
+          <button
+            type="button"
+            onClick={() => setClosingLedgerModal('today')}
+            className={`mt-2 w-full px-2.5 py-2 rounded-xl border flex items-center justify-between text-[11px] font-bold transition-all active:scale-[0.99] cursor-pointer shadow-xs ${
+              todayMinusDeducted > 0
+                ? 'bg-gradient-to-r from-rose-600 to-red-600 border-red-700 text-white hover:from-rose-700 hover:to-red-700'
+                : 'bg-gradient-to-r from-emerald-600 to-green-600 border-emerald-700 text-white hover:from-emerald-700 hover:to-green-700'
+            }`}
+          >
+            <span>
+              {todayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Today Closing Balance:
+            </span>
+            <span className="font-mono font-black text-white">
+              Rs. {todayBreakdown.activeClosing.toLocaleString()}
+            </span>
+          </button>
+        )}
       </div>
 
       {/* Sending & Receiving Commission Stats Card (Daily / Weekly / Monthly & User-wise) - Touch to Expand */}
@@ -1103,16 +1155,22 @@ export const BackCashView: React.FC = () => {
           {/* Detailed breakdown: Yesterday Pending + Account Closing */}
           <div className="pt-1.5 border-t border-blue-100/90 flex items-center justify-between text-[11px] text-slate-600 flex-wrap gap-2">
             <span>
-              Yesterday Pending: <b className="font-mono text-slate-800">Rs. {yesterdayBreakdown.totalBalance.toLocaleString()}</b>
+              Yesterday Pending: <b className="font-mono text-slate-800">Rs. {priorPendingBalance.toLocaleString()}</b>
             </span>
-            <span className="text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200/60">
-              {todayBreakdown.activeClosing > 0
-                ? `${todayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Today Closing`
-                : `${yesterdayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin'} Yesterday Closing`}:{' '}
-              <b className="font-mono text-amber-700">
-                Rs. {(todayBreakdown.activeClosing > 0 ? todayBreakdown.activeClosing : yesterdayBreakdown.activeClosing).toLocaleString()}
+            <button
+              type="button"
+              onClick={() => setClosingLedgerModal('yesterday')}
+              className={`font-semibold px-2.5 py-1 rounded-lg border transition-all active:scale-95 cursor-pointer shadow-2xs ${
+                priorMinusDeducted > 0
+                  ? 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700'
+                  : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
+              }`}
+            >
+              {yesterdayClosingUserName} Yesterday Closing:{' '}
+              <b className="font-mono text-white">
+                Rs. {effectiveYesterdayClosing.toLocaleString()}
               </b>
-            </span>
+            </button>
           </div>
         </div>
 
@@ -1378,6 +1436,192 @@ export const BackCashView: React.FC = () => {
         );
       })()}
 
+      {/* Closing Balance Ledger / History Modal (Opens when Red/Green Closing Box is clicked) */}
+      {closingLedgerModal && (() => {
+        const isYesterdayMode = closingLedgerModal === 'yesterday';
+        const ownerName = isYesterdayMode
+          ? yesterdayClosingUserName
+          : (todayBreakdown.userClosings[0]?.userName || currentUser?.name || 'Admin');
+        const initialAmount = isYesterdayMode ? priorInitialClosing : todayInitialClosing;
+        const minusAmount = isYesterdayMode ? priorMinusDeducted : todayMinusDeducted;
+        const remainingAmount = isYesterdayMode ? effectiveYesterdayClosing : todayBreakdown.activeClosing;
+        const sourceDate = isYesterdayMode ? bcLastClosingDate : filterDate;
+        const isRedState = minusAmount > 0;
+
+        // Build chronological ledger rows with running remaining balance
+        let runningBal = initialAmount;
+        const minusRows = (isYesterdayMode
+          ? priorMinusEntries
+          : todayClosingEntries.filter(e => e.type === 'closing_minus')
+        ).map(entry => {
+          runningBal = Math.max(0, runningBal - entry.amount);
+          let timeStr = '';
+          if (entry.createdAt) {
+            const d = new Date(entry.createdAt);
+            if (!isNaN(d.getTime())) {
+              timeStr = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+            }
+          }
+          return {
+            ...entry,
+            timeStr,
+            remainingAfter: runningBal
+          };
+        });
+
+        return (
+          <div
+            className="fixed inset-0 z-50 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in"
+            onClick={() => setClosingLedgerModal(null)}
+          >
+            <div
+              className="bg-white rounded-2xl w-full max-w-md shadow-2xl border border-slate-200 overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Modal Header */}
+              <div
+                className={`p-4 text-white flex items-center justify-between ${
+                  isRedState
+                    ? 'bg-gradient-to-r from-rose-600 via-red-600 to-rose-700'
+                    : 'bg-gradient-to-r from-emerald-600 via-green-600 to-teal-700'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center gap-2">
+                    <History className="w-4 h-4 text-white/90" />
+                    <h4 className="font-black text-sm tracking-tight">
+                      Closing Balance Ledger (کلوزنگ لیجر)
+                    </h4>
+                  </div>
+                  <p className="text-[11px] text-white/90 font-semibold mt-0.5">
+                    {ownerName} • Date: {filterDate}
+                  </p>
+                </div>
+                <span className="text-[10px] font-black uppercase px-2 py-1 rounded-lg bg-white/20 border border-white/25">
+                  {isRedState ? 'Minis Applied' : 'Active Closing'}
+                </span>
+              </div>
+
+              <div className="p-4 space-y-3.5 max-h-[75vh] overflow-y-auto">
+                {/* 3-Row Ledger Summary Card: Yesterday Closing -> Today Minis -> Baki */}
+                <div className="rounded-xl border border-slate-200 bg-slate-50/80 divide-y divide-slate-200/80 overflow-hidden">
+                  {/* Row 1: Yesterday / Initial Closing */}
+                  <div className="p-3 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-extrabold text-slate-800 block">
+                        {isYesterdayMode ? 'Yesterday Closing' : 'Today Closing Added'}
+                      </span>
+                      <span className="text-[10px] font-semibold text-slate-500">
+                        {isYesterdayMode ? `Carried from ${sourceDate} (${ownerName})` : `Added on ${filterDate} (${ownerName})`}
+                      </span>
+                    </div>
+                    <span className="font-mono font-black text-sm text-emerald-700">
+                      Rs. {initialAmount.toLocaleString()}
+                    </span>
+                  </div>
+
+                  {/* Row 2: Today Minis (-) */}
+                  <div className="p-3 flex items-center justify-between bg-rose-50/60">
+                    <div>
+                      <span className="text-xs font-extrabold text-rose-700 block">
+                        Today Minis (-)
+                      </span>
+                      <span className="text-[10px] font-semibold text-rose-500">
+                        Deducted on {filterDate} ({minusRows.length} {minusRows.length === 1 ? 'entry' : 'entries'})
+                      </span>
+                    </div>
+                    <span className="font-mono font-black text-sm text-rose-600">
+                      - Rs. {minusAmount.toLocaleString()}
+                    </span>
+                  </div>
+
+                  {/* Row 3: Baki (Remaining Balance) */}
+                  <div
+                    className={`p-3 flex items-center justify-between ${
+                      isRedState ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'
+                    }`}
+                  >
+                    <div>
+                      <span className="text-xs font-black uppercase tracking-wide block">
+                        Baki (باقی کلوزنگ بیلنس)
+                      </span>
+                      <span className="text-[10px] text-white/85 font-medium">
+                        Current Remaining Closing Balance
+                      </span>
+                    </div>
+                    <span className="font-mono font-black text-base text-white">
+                      Rs. {remainingAmount.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Detailed Minus History List */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-extrabold uppercase text-slate-600">
+                      Minis History Details (مائنس کی تفصیل)
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-400">
+                      {filterDate}
+                    </span>
+                  </div>
+
+                  {minusRows.length > 0 ? (
+                    <div className="space-y-2">
+                      {minusRows.map((row, idx) => (
+                        <div
+                          key={row.id || idx}
+                          className="p-2.5 rounded-xl bg-rose-50/70 border border-rose-200 flex items-center justify-between gap-2 text-xs"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-rose-600 text-white">
+                                MINIS #{idx + 1}
+                              </span>
+                              <span className="text-[10px] font-bold text-slate-700">
+                                {row.userName} ({row.userRole.toUpperCase()})
+                              </span>
+                              {row.timeStr && (
+                                <span className="text-[10px] font-semibold text-slate-400">
+                                  • {row.timeStr}
+                                </span>
+                              )}
+                            </div>
+                            <p className="font-bold text-slate-800 text-[11px] truncate mt-1">
+                              {row.note}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <span className="font-mono font-black text-rose-600 text-xs block">
+                              - Rs. {row.amount.toLocaleString()}
+                            </span>
+                            <span className="font-mono font-bold text-[10px] text-slate-500 block">
+                              Baki: Rs. {row.remainingAfter.toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="p-3 rounded-xl bg-emerald-50/70 border border-emerald-200 text-center text-xs text-emerald-800 font-semibold">
+                      آج اس کلوزنگ بیلنس سے کوئی رقم مائنس (Minis) نہیں کی گئی۔
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setClosingLedgerModal(null)}
+                  className="w-full py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-black rounded-xl text-xs transition-all cursor-pointer"
+                >
+                  Close Ledger (بند کریں)
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* History Sub-Modal */}
       {selectedHisTxId && (
         <HistoryModal
@@ -1402,27 +1646,35 @@ export const BackCashView: React.FC = () => {
                     id: 'yesterday-pending',
                     note: `Yesterday Pending Balance (${bcLastClosingDate})`,
                     type: 'opening',
-                    amount: yesterdayBreakdown.totalBalance
+                    amount: priorPendingBalance
                   },
-                  ...(yesterdayBreakdown.activeClosing > 0
+                  ...(effectiveYesterdayClosing > 0
                     ? [
                         {
                           id: 'yesterday-account-closing',
-                          note: `${yesterdayBreakdown.userClosings[0]?.userName || 'Account'} Yesterday Closing (${bcLastClosingDate})`,
+                          note: `${yesterdayClosingUserName} Yesterday Closing (${bcLastClosingDate})`,
                           type: 'opening',
-                          amount: yesterdayBreakdown.activeClosing
+                          amount: effectiveYesterdayClosing
                         }
                       ]
                     : [])
                 ]
               : []),
-            ...sortedFilteredList.map(t => ({
-              id: t.id,
-              note: `${t.note || 'Back Cash Entry'} [${t.created_by_name || t.created_by_designation || t.created_by || 'Staff'}]${
-                t.edited_by ? ` (Edit: ${t.edited_by_name || t.edited_by_role || t.edited_by})` : ''
-              }`,
-              type: t.type === 'closing' ? 'out' : t.type,
-              amount: t.amount
+            ...sortedFilteredList
+              .filter(t => t.type !== 'closing_minus' && t.type !== 'closing')
+              .map(t => ({
+                id: t.id,
+                note: `${t.note || 'Back Cash Entry'} [${t.created_by_name || t.created_by_designation || t.created_by || 'Staff'}]${
+                  t.edited_by ? ` (Edit: ${t.edited_by_name || t.edited_by_role || t.edited_by})` : ''
+                }`,
+                type: t.type,
+                amount: t.amount
+              })),
+            ...todayBreakdown.userClosings.map((uc, idx) => ({
+              id: `today-closing-${idx}`,
+              note: `${uc.userName} Closing Balance [${uc.userRole.toUpperCase()}]`,
+              type: 'out',
+              amount: uc.amount
             }))
           ]}
         />

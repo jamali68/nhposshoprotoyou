@@ -89,3 +89,28 @@ export interface ModuleHealthTestResult {
   latencyMs: number;
   details: string;
 }
+
+export type StaffPermissionActionId =
+  | 'allowAddEntry'
+  | 'allowEditEntry'
+  | 'allowDeleteEntry'
+  | 'allowManageBills'
+  | 'allowManageStock'
+  | 'allowManagePrices';
+
+export interface StaffTargetPermissions {
+  modules: Record<string, boolean>; // moduleId -> true (Unlocked) / false (Locked)
+  actions: Record<StaffPermissionActionId, boolean>; // actionId -> true (Unlocked) / false (Locked)
+}
+
+export interface ShopStaffPermissionsConfig {
+  rolePermissions: {
+    manager: StaffTargetPermissions;
+    cashier: StaffTargetPermissions;
+    salesman: StaffTargetPermissions;
+  };
+  userOverrides: Record<string, StaffTargetPermissions>; // key: lowercase username
+  updatedAt: string;
+  updatedBy?: string;
+}
+

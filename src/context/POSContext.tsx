@@ -23,7 +23,8 @@ import {
   DeletedHistoryRecord,
   SystemSettings,
   CartItem,
-  BackCashClosingBreakdown
+  BackCashClosingBreakdown,
+  BackCashClosingLedgerEntry
 } from '../types/pos';
 import {
   getTodayDateString,
@@ -62,6 +63,7 @@ export type ActiveView =
   | 'deleted_history'
   | 'edit_logs'
   | 'staff_management'
+  | 'permissions'
   | 'super_admin';
 
 export interface BachatSummary {
@@ -1129,7 +1131,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (delSnap) {
           const list: DeletedHistoryRecord[] = [];
           delSnap.forEach(d => list.push(d.data() as DeletedHistoryRecord));
-          const merged = mergeCollectionWithPending(list, 'deleted_history');
+          const merged = mergeCollectionWithPending(list, 'deleted_history').sort((a, b) => {
+            const tA = a.deleted_at ? new Date(a.deleted_at).getTime() : 0;
+            const tB = b.deleted_at ? new Date(b.deleted_at).getTime() : 0;
+            if (!Number.isNaN(tA) && !Number.isNaN(tB) && tB !== tA) return tB - tA;
+            return String(b.id || '').localeCompare(String(a.id || ''));
+          });
           setDeletedHistory(merged);
           try { localStorage.setItem(`taj_pos_${shopId}_deleted_history`, JSON.stringify(merged)); } catch {}
           pulledColsCount++;
@@ -1159,6 +1166,20 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       async snap => {
         if (!snap.exists()) return;
         const sData = snap.data() as any;
+
+        // Sync Store Admin's Staff/Manager Lock/Unlock Permissions in real time across devices
+        if (sData.staff_permissions_config && typeof sData.staff_permissions_config === 'object') {
+          try {
+            const prevRaw = localStorage.getItem(`taj_shop_staff_perms_${currentShopId}`);
+            const nextRaw = JSON.stringify(sData.staff_permissions_config);
+            if (prevRaw !== nextRaw) {
+              localStorage.setItem(`taj_shop_staff_perms_${currentShopId}`, nextRaw);
+              window.dispatchEvent(
+                new CustomEvent('taj_module_control_updated', { detail: sData.staff_permissions_config })
+              );
+            }
+          } catch {}
+        }
 
         const remotePulse = Number(sData.last_data_sync_at) || 0;
         const remoteColMap: Record<string, number> =
@@ -4302,6 +4323,45 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       allDates.sort((a, b) => a.localeCompare(b));
     }
 
+    const getTxChronoTimestamp = (tx: { id?: string; created_at?: string }): number => {
+      if (tx.created_at) {
+        const parsed = Date.parse(tx.created_at);
+        if (!isNaN(parsed) && parsed > 0) return parsed;
+      }
+      if (tx.id) {
+        const parts = tx.id.split('-');
+        if (parts.length >= 2) {
+          const ts = parseInt(parts[1], 10);
+          if (!isNaN(ts) && ts > 1500000000000) return ts;
+        }
+      }
+      return 0;
+    };
+
+    const deductFromUserClosingMap = (
+      map: { [key: string]: { userId: string; userName: string; userRole: string; amount: number } },
+      preferredKey: string,
+      amountToDeduct: number
+    ) => {
+      let rem = amountToDeduct;
+      if (rem <= 0) return;
+      if (map[preferredKey] && map[preferredKey].amount > 0) {
+        const d = Math.min(map[preferredKey].amount, rem);
+        map[preferredKey].amount -= d;
+        rem -= d;
+      }
+      if (rem > 0) {
+        for (const k of Object.keys(map)) {
+          if (rem <= 0) break;
+          if (map[k].amount > 0) {
+            const d = Math.min(map[k].amount, rem);
+            map[k].amount -= d;
+            rem -= d;
+          }
+        }
+      }
+    };
+
     // Running state at the end of each day:
     // - runningPendingBalance: The Blue Box amount (Pending Hard Cash Balance left at end of day)
     // - runningActiveClosing: The User/Admin Account Closing Balance left at end of day
@@ -4310,114 +4370,254 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     let runningUserMap: { [key: string]: { userId: string; userName: string; userRole: string; amount: number } } = {};
 
     let carriedPendingBeforeTarget = 0;
-    let carriedClosingBeforeTarget = 0;
+    let carriedInitialClosingBeforeTarget = 0;
+    let carriedRemainingClosingBeforeTarget = 0;
+    let carriedMinusDeductedOnTarget = 0;
+    let carriedUserClosingsBeforeTarget: { userId: string; userName: string; userRole: string; amount: number }[] = [];
+    let carriedPriorMinusEntriesOnTarget: BackCashClosingLedgerEntry[] = [];
+    let targetTodayInitialClosing = 0;
+    let targetTodayMinusDeducted = 0;
+    let targetTodayClosingEntries: BackCashClosingLedgerEntry[] = [];
+    let targetTotalBalance = 0;
+    let targetActiveClosing = 0;
+    let targetUserClosings: { userId: string; userName: string; userRole: string; amount: number }[] = [];
     let lastActiveDateBeforeTarget = getYesterdayDateString(targetDate);
     let hasPriorBeforeTarget = false;
 
     for (const d of allDates) {
-      // At the start of day 'd', BOTH Yesterday's Pending Balance (Blue Box)
-      // AND Yesterday's Account Closing Balance are added (+) into day 'd'!
-      const carriedFromYesterdayTotal = runningPendingBalance + runningActiveClosing;
+      const dayPriorPending = runningPendingBalance;
+      const dayPriorInitialClosing = runningActiveClosing;
+      let dayPriorRemainingClosing = runningActiveClosing;
+      let dayPriorMinusDeducted = 0;
+      const dayPriorMinusEntries: BackCashClosingLedgerEntry[] = [];
+      const dayPriorUserMap: { [key: string]: { userId: string; userName: string; userRole: string; amount: number } } = {};
+      Object.keys(runningUserMap).forEach(k => {
+        dayPriorUserMap[k] = { ...runningUserMap[k] };
+      });
 
-      if (d === targetDate) {
-        carriedPendingBeforeTarget = runningPendingBalance;
-        carriedClosingBeforeTarget = runningActiveClosing;
-      }
-
-      const dayTxs = upToTxs.filter(t => t.transaction_date === d);
-      if (d < targetDate && dayTxs.length > 0) {
+      const rawDayTxs = upToTxs.filter(t => t.transaction_date === d);
+      if (d < targetDate && rawDayTxs.length > 0) {
         lastActiveDateBeforeTarget = d;
         hasPriorBeforeTarget = true;
       }
 
-      // Start day 'd' Blue Box with (Yesterday Pending Balance + Yesterday Closing Balance)
-      let dayPendingBalance = carriedFromYesterdayTotal;
+      // Sort day's transactions chronologically (oldest first -> newest last)
+      const sortedDayTxs = rawDayTxs
+        .map((tx, idx) => ({ tx, idx, time: getTxChronoTimestamp(tx) }))
+        .sort((a, b) => {
+          if (a.time !== 0 && b.time !== 0 && a.time !== b.time) {
+            return a.time - b.time;
+          }
+          return b.idx - a.idx;
+        })
+        .map(item => item.tx);
+
+      let dayNetFlows = 0;
+      let dayInitialClosing = 0;
       let dayActiveClosing = 0;
+      let dayTodayMinusDeducted = 0;
+      const dayTodayClosingEntries: BackCashClosingLedgerEntry[] = [];
       let dayUserMap: { [key: string]: { userId: string; userName: string; userRole: string; amount: number } } = {};
+      let hasNewClosingOnDay = false;
+      let unappliedSameDayMinus = 0;
 
-      // 1. Apply normal inflows (+) & outflows (-) for day 'd'
-      dayTxs.forEach(t => {
+      sortedDayTxs.forEach(t => {
         const amt = Number(t.amount) || 0;
+        const role = t.created_by_role || t.created_by || 'admin';
+        const name = resolveEffectiveTxUserName(t.transaction_date, role, t.created_by_name);
+        const key = `${role}_${name}`;
+
         if (t.type === 'out' || t.type === 'transfer_to_shop') {
-          dayPendingBalance -= amt;
-        } else if (t.type === 'closing' || t.type === 'closing_minus' || t.type === 'commission') {
-          // closing & closing_minus handled below; commission is separate profit
-        } else {
-          // opening, receiving, transfer_from_shop
-          dayPendingBalance += amt;
-        }
-      });
-
-      // 2. Apply closing (Account Closing Balance) and closing_minus (Minis Closing Balance) for day 'd'
-      const dayClosingTxs = dayTxs.filter(t => t.type === 'closing');
-      const dayClosingMinusTxs = dayTxs.filter(t => t.type === 'closing_minus');
-
-      if (dayClosingTxs.length > 0) {
-        dayClosingTxs.forEach(t => {
-          const amt = Number(t.amount) || 0;
-          // Adding Closing Balance subtracts (-) from Today's Blue Box (Pending Balance)
-          // and places the amount into Today's Account Closing Balance box!
-          dayPendingBalance -= amt;
+          dayNetFlows -= amt;
+        } else if (t.type === 'commission') {
+          // commission is tracked separately as 100% profit
+        } else if (t.type === 'closing') {
+          hasNewClosingOnDay = true;
+          dayNetFlows -= amt;
+          dayInitialClosing += amt;
           dayActiveClosing += amt;
 
-          const role = t.created_by_role || t.created_by || 'admin';
-          const name = resolveEffectiveTxUserName(t.transaction_date, role, t.created_by_name);
-          const key = `${role}_${name}`;
+          dayTodayClosingEntries.push({
+            id: t.id,
+            amount: amt,
+            note: t.note || `${name} Closing Balance`,
+            userName: name,
+            userRole: role,
+            createdAt: t.created_at,
+            date: t.transaction_date,
+            type: 'closing'
+          });
+
           if (!dayUserMap[key]) {
             dayUserMap[key] = { userId: t.created_by, userName: name, userRole: role, amount: 0 };
           }
           dayUserMap[key].amount += amt;
-        });
-      }
 
-      if (dayClosingMinusTxs.length > 0) {
-        // Minis Closing Balance (-) reduces the User's Account Closing Balance
-        // (just like editing 10k down to 5k in the old system when cash is sent back to the shop user),
-        // so only the remaining Closing Balance (e.g. 5k) is carried into tomorrow!
-        let remainingMinus = 0;
-        dayClosingMinusTxs.forEach(t => {
-          const amt = Number(t.amount) || 0;
-          dayActiveClosing = Math.max(0, dayActiveClosing - amt);
-
-          const role = t.created_by_role || t.created_by || 'admin';
-          const name = resolveEffectiveTxUserName(t.transaction_date, role, t.created_by_name);
-          const key = `${role}_${name}`;
-          if (dayUserMap[key] && dayUserMap[key].amount > 0) {
-            const deduct = Math.min(dayUserMap[key].amount, amt);
-            dayUserMap[key].amount -= deduct;
-            remainingMinus += (amt - deduct);
-          } else {
-            remainingMinus += amt;
+          if (unappliedSameDayMinus > 0 && dayActiveClosing > 0) {
+            const deductNow = Math.min(dayActiveClosing, unappliedSameDayMinus);
+            dayActiveClosing -= deductNow;
+            dayTodayMinusDeducted += deductNow;
+            unappliedSameDayMinus -= deductNow;
+            deductFromUserClosingMap(dayUserMap, key, deductNow);
           }
-        });
+        } else if (t.type === 'closing_minus') {
+          if (!hasNewClosingOnDay) {
+            // Before any new Closing Balance is added on day 'd',
+            // Closing Minis (-) deducts from Yesterday's Carried Closing Balance!
+            if (dayPriorRemainingClosing > 0) {
+              const deductFromPrior = Math.min(dayPriorRemainingClosing, amt);
+              dayPriorRemainingClosing -= deductFromPrior;
+              dayPriorMinusDeducted += deductFromPrior;
+              deductFromUserClosingMap(dayPriorUserMap, key, deductFromPrior);
 
-        if (remainingMinus > 0) {
-          for (const key of Object.keys(dayUserMap)) {
-            if (remainingMinus <= 0) break;
-            if (dayUserMap[key].amount > 0) {
-              const deduct = Math.min(dayUserMap[key].amount, remainingMinus);
-              dayUserMap[key].amount -= deduct;
-              remainingMinus -= deduct;
+              dayPriorMinusEntries.push({
+                id: t.id,
+                amount: deductFromPrior,
+                note: t.note || `${name} Closing Minus (-)`,
+                userName: name,
+                userRole: role,
+                createdAt: t.created_at,
+                date: t.transaction_date,
+                type: 'closing_minus'
+              });
+
+              const leftover = amt - deductFromPrior;
+              if (leftover > 0) {
+                unappliedSameDayMinus += leftover;
+                dayTodayClosingEntries.push({
+                  id: `${t.id}-today`,
+                  amount: leftover,
+                  note: t.note || `${name} Closing Minus (-)`,
+                  userName: name,
+                  userRole: role,
+                  createdAt: t.created_at,
+                  date: t.transaction_date,
+                  type: 'closing_minus'
+                });
+              }
+            } else {
+              unappliedSameDayMinus += amt;
+              dayTodayClosingEntries.push({
+                id: t.id,
+                amount: amt,
+                note: t.note || `${name} Closing Minus (-)`,
+                userName: name,
+                userRole: role,
+                createdAt: t.created_at,
+                date: t.transaction_date,
+                type: 'closing_minus'
+              });
+            }
+          } else {
+            // After a new Closing Balance has been added on day 'd',
+            // Closing Minis (-) deducts from Today's new Closing Balance!
+            if (dayActiveClosing > 0) {
+              const deductFromToday = Math.min(dayActiveClosing, amt);
+              dayActiveClosing -= deductFromToday;
+              dayTodayMinusDeducted += deductFromToday;
+              deductFromUserClosingMap(dayUserMap, key, deductFromToday);
+
+              dayTodayClosingEntries.push({
+                id: t.id,
+                amount: deductFromToday,
+                note: t.note || `${name} Closing Minus (-)`,
+                userName: name,
+                userRole: role,
+                createdAt: t.created_at,
+                date: t.transaction_date,
+                type: 'closing_minus'
+              });
+
+              const leftover = amt - deductFromToday;
+              if (leftover > 0 && dayPriorRemainingClosing > 0) {
+                const deductFromPrior = Math.min(dayPriorRemainingClosing, leftover);
+                dayPriorRemainingClosing -= deductFromPrior;
+                dayPriorMinusDeducted += deductFromPrior;
+                deductFromUserClosingMap(dayPriorUserMap, key, deductFromPrior);
+                dayPriorMinusEntries.push({
+                  id: `${t.id}-prior`,
+                  amount: deductFromPrior,
+                  note: t.note || `${name} Closing Minus (-)`,
+                  userName: name,
+                  userRole: role,
+                  createdAt: t.created_at,
+                  date: t.transaction_date,
+                  type: 'closing_minus'
+                });
+              }
+            } else if (dayPriorRemainingClosing > 0) {
+              const deductFromPrior = Math.min(dayPriorRemainingClosing, amt);
+              dayPriorRemainingClosing -= deductFromPrior;
+              dayPriorMinusDeducted += deductFromPrior;
+              deductFromUserClosingMap(dayPriorUserMap, key, deductFromPrior);
+              dayPriorMinusEntries.push({
+                id: t.id,
+                amount: deductFromPrior,
+                note: t.note || `${name} Closing Minus (-)`,
+                userName: name,
+                userRole: role,
+                createdAt: t.created_at,
+                date: t.transaction_date,
+                type: 'closing_minus'
+              });
             }
           }
+        } else {
+          // opening, receiving, transfer_from_shop
+          dayNetFlows += amt;
         }
+      });
+
+      // Today's carried total is Yesterday's Pending + Yesterday's Remaining Closing (after any pre-closing minus on day 'd')
+      const effectiveCarriedFromYesterday = dayPriorPending + dayPriorRemainingClosing;
+      const dayPendingBalance = effectiveCarriedFromYesterday + dayNetFlows;
+
+      if (d === targetDate) {
+        carriedPendingBeforeTarget = dayPriorPending;
+        carriedInitialClosingBeforeTarget = dayPriorInitialClosing;
+        carriedRemainingClosingBeforeTarget = dayPriorRemainingClosing;
+        carriedMinusDeductedOnTarget = dayPriorMinusDeducted;
+        carriedPriorMinusEntriesOnTarget = dayPriorMinusEntries;
+        targetTodayInitialClosing = dayInitialClosing;
+        targetTodayMinusDeducted = dayTodayMinusDeducted;
+        targetTodayClosingEntries = dayTodayClosingEntries;
+        targetTotalBalance = dayPendingBalance;
+        targetActiveClosing = dayActiveClosing;
+        const activeTodayUsers = Object.values(dayUserMap).filter(u => u.amount > 0);
+        const allTodayUsers = Object.values(dayUserMap);
+        targetUserClosings = activeTodayUsers.length > 0 ? activeTodayUsers : allTodayUsers;
+        // Keep user entries even if amount became 0 after minus so we still know whose yesterday closing it was
+        const activePriorUsers = Object.values(dayPriorUserMap).filter(u => u.amount > 0);
+        const allPriorUsers = Object.values(dayPriorUserMap);
+        carriedUserClosingsBeforeTarget = activePriorUsers.length > 0 ? activePriorUsers : allPriorUsers;
       }
 
-      runningPendingBalance = dayPendingBalance;
-      runningActiveClosing = dayActiveClosing;
-      runningUserMap = dayUserMap;
+      if (hasNewClosingOnDay) {
+        runningPendingBalance = dayPendingBalance;
+        runningActiveClosing = dayActiveClosing;
+        runningUserMap = dayUserMap;
+      } else {
+        runningPendingBalance = dayPriorPending + dayNetFlows;
+        runningActiveClosing = dayPriorRemainingClosing;
+        runningUserMap = dayPriorUserMap;
+      }
     }
 
-    const userClosings = Object.values(runningUserMap).filter(u => u.amount > 0);
-
     return {
-      totalBalance: runningPendingBalance,
-      activeClosing: runningActiveClosing,
-      remainingCounter: runningPendingBalance,
-      userClosings,
+      totalBalance: targetTotalBalance,
+      activeClosing: targetActiveClosing,
+      remainingCounter: targetTotalBalance,
+      userClosings: targetUserClosings,
       priorPending: carriedPendingBeforeTarget,
-      priorClosing: carriedClosingBeforeTarget,
-      priorTotal: carriedPendingBeforeTarget + carriedClosingBeforeTarget,
+      priorClosing: carriedRemainingClosingBeforeTarget,
+      priorInitialClosing: carriedInitialClosingBeforeTarget,
+      priorMinusDeducted: carriedMinusDeductedOnTarget,
+      priorTotal: carriedPendingBeforeTarget + carriedRemainingClosingBeforeTarget,
+      priorUserClosings: carriedUserClosingsBeforeTarget,
+      priorMinusEntries: carriedPriorMinusEntriesOnTarget,
+      todayInitialClosing: targetTodayInitialClosing,
+      todayMinusDeducted: targetTodayMinusDeducted,
+      todayClosingEntries: targetTodayClosingEntries,
       lastActiveDate: lastActiveDateBeforeTarget,
       hasPrior: hasPriorBeforeTarget
     };
@@ -4446,7 +4646,17 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       totalBalance: state.totalBalance,
       activeClosing: state.activeClosing,
       remainingCounter: state.remainingCounter,
-      userClosings: state.userClosings
+      userClosings: state.userClosings,
+      priorPending: state.priorPending,
+      priorClosing: state.priorClosing,
+      priorInitialClosing: state.priorInitialClosing,
+      priorMinusDeducted: state.priorMinusDeducted,
+      priorTotal: state.priorTotal,
+      priorUserClosings: state.priorUserClosings,
+      priorMinusEntries: state.priorMinusEntries,
+      todayInitialClosing: state.todayInitialClosing,
+      todayMinusDeducted: state.todayMinusDeducted,
+      todayClosingEntries: state.todayClosingEntries
     };
   };
 

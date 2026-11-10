@@ -32,7 +32,8 @@ import {
   CheckCircle2,
   AlertTriangle,
   FileCode,
-  ShieldCheck
+  ShieldCheck,
+  Lock
 } from 'lucide-react';
 import { useAppVersion, refreshAppVersion } from '../utils/version';
 import { usePOS, ActiveView } from '../context/POSContext';
@@ -172,6 +173,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     { id: 'pos', label: 'New Sale (POS Counter)', icon: ShoppingCart },
     { id: 'monthly_summary', label: 'Monthly Cash & Trends', icon: TrendingUp },
     { id: 'staff_management', label: 'Staff & Users', icon: UserCheck },
+    { id: 'permissions', label: 'Permissions (Lock/Unlock)', icon: Lock },
     { id: 'deleted_history', label: 'Deleted Logs (Trash)', icon: Trash2 }
   ];
 
@@ -185,23 +187,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     : currentUser?.role === 'super_admin'
     ? 'admin'
     : currentUser?.role || (isStoreAdmin ? 'admin' : 'cashier');
-  const navItems = allNavItems.filter(item => {
-    // Super Admin module gate check: if disabled by Super Admin, hide for non-super_admin users
-    const isModuleEnabled = superAdminService.isModuleEnabledForShop(item.id, currentUser?.shopId);
-    if (!isModuleEnabled && !isVerifiedSuperAdmin) {
-      return false;
-    }
 
-    if (item.id === 'staff_management') return isStoreAdmin;
-    if (isStoreAdmin) return true;
-    if (userRole === 'manager') return item.id !== 'deleted_history';
-    if (userRole === 'cashier') {
-      return ['dashboard', 'daily_cash', 'easyload', 'pos', 'items_price'].includes(item.id);
+  // Keep all POS options visible for all users; locked options show a Lock badge instead of disappearing!
+  const navItems = allNavItems.filter(item => {
+    if (item.id === 'staff_management' || item.id === 'permissions') {
+      return isStoreAdmin;
     }
-    if (userRole === 'salesman') {
-      return ['dashboard', 'customer', 'items_price', 'pos'].includes(item.id);
-    }
-    return false;
+    return true;
   });
 
   return (
@@ -312,25 +304,31 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
             const Icon = item.icon;
             const isActive = activeView === item.id;
             const isModEnabled = superAdminService.isModuleEnabledForShop(item.id, currentUser?.shopId);
+            const userLockCheck = superAdminService.isModuleUnlockedForUser(item.id, currentUser);
+            const isOptionLocked = !userLockCheck.unlocked || !isModEnabled;
+
             return (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => handleNav(item.id)}
-                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all ${
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
                   isActive
                     ? 'bg-[#2980b9] text-white shadow-md shadow-[#2980b9]/30'
+                    : isOptionLocked && userRole !== 'super_admin'
+                    ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
                     : 'text-slate-300 hover:text-white hover:bg-slate-800/60'
                 }`}
               >
-                <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : isOptionLocked ? 'text-rose-400' : 'text-slate-400'}`} />
                 <span className="truncate flex-1 text-left">{item.label}</span>
-                {!isModEnabled && userRole === 'super_admin' && (
-                  <span className="text-[9px] px-1.5 py-0.5 bg-rose-500/20 text-rose-300 rounded-full border border-rose-500/30 font-bold shrink-0">
-                    OFF
+                {isOptionLocked && (
+                  <span className="text-[9px] px-1.5 py-0.5 bg-rose-500/20 text-rose-300 rounded-full border border-rose-500/40 font-bold shrink-0 flex items-center gap-0.5">
+                    <Lock className="w-2.5 h-2.5" />
+                    <span>Locked</span>
                   </span>
                 )}
-                {item.id === 'staff_management' && typeof navigator !== 'undefined' && !navigator.onLine && (
+                {!isOptionLocked && item.id === 'staff_management' && typeof navigator !== 'undefined' && !navigator.onLine && (
                   <span className="text-[9px] px-1.5 py-0.5 bg-amber-500/20 text-amber-300 rounded-full border border-amber-500/30 font-bold shrink-0">
                     Online Only
                   </span>

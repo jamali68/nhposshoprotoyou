@@ -24,25 +24,246 @@ import {
   Globe,
   ArrowLeft,
   Lock,
+  Unlock,
+  Sliders,
   CloudCheck,
   Check,
   Info
 } from 'lucide-react';
 import { usePOS, formatNHUsername } from '../context/POSContext';
 import { StaffAccount, UserRole } from '../types/pos';
+import {
+  superAdminService,
+  ALL_STAFF_CONTROLLABLE_MODULES,
+  ALL_STAFF_CONTROLLABLE_ACTIONS,
+  DEFAULT_SHOP_STAFF_PERMISSIONS
+} from '../superadmin/superAdminService';
+import {
+  ShopStaffPermissionsConfig,
+  StaffPermissionActionId,
+  StaffTargetPermissions
+} from '../superadmin/types';
 
 export const StaffManagementView: React.FC = () => {
   const {
     currentUser,
+    currentShop,
     staffAccounts,
     addStaffAccount,
     updateStaffAccount,
     deleteStaffAccount,
     checkUsernameAvailability,
-    setActiveView
+    activeView,
+    setActiveView,
+    systemSettings,
+    setSystemSettings
   } = usePOS();
 
+  const shopId = currentShop?.id || currentUser?.shopId || 'default';
   const isStoreAdmin = Boolean(currentUser?.isGoogleUser || currentUser?.role === 'admin' || currentUser?.role === 'super_admin');
+
+  // Active sub-tab: 'accounts' or 'permissions'
+  const [activeSubTab, setActiveSubTab] = useState<'accounts' | 'permissions'>(() =>
+    activeView === 'permissions' ? 'permissions' : 'accounts'
+  );
+
+  useEffect(() => {
+    if (activeView === 'permissions') {
+      setActiveSubTab('permissions');
+    } else if (activeView === 'staff_management') {
+      setActiveSubTab('accounts');
+    }
+  }, [activeView]);
+
+  // Store Admin Staff & Manager Permissions State
+  const [staffPerms, setStaffPerms] = useState<ShopStaffPermissionsConfig>(() =>
+    superAdminService.getShopStaffPermissions(shopId)
+  );
+  const [selectedPermTarget, setSelectedPermTarget] = useState<string>('ROLE_MANAGER');
+  const [permSaveBanner, setPermSaveBanner] = useState<string | null>(null);
+
+  useEffect(() => {
+    setStaffPerms(superAdminService.getShopStaffPermissions(shopId));
+    const handleUpdate = () => {
+      setStaffPerms(superAdminService.getShopStaffPermissions(shopId));
+    };
+    window.addEventListener('taj_module_control_updated', handleUpdate);
+    return () => window.removeEventListener('taj_module_control_updated', handleUpdate);
+  }, [shopId]);
+
+  const getEffectiveTargetPerms = (
+    targetKey: string,
+    cfg: ShopStaffPermissionsConfig = staffPerms
+  ): StaffTargetPermissions => {
+    if (targetKey === 'ROLE_MANAGER') return cfg.rolePermissions.manager;
+    if (targetKey === 'ROLE_CASHIER') return cfg.rolePermissions.cashier;
+    if (targetKey === 'ROLE_SALESMAN') return cfg.rolePermissions.salesman;
+
+    const cleanUser = targetKey.trim().toLowerCase();
+    if (cfg.userOverrides[cleanUser]) {
+      return cfg.userOverrides[cleanUser];
+    }
+    const staffAcc = staffAccounts.find(s => s.username.toLowerCase() === cleanUser);
+    const roleKey =
+      staffAcc?.role === 'manager' || staffAcc?.role === 'cashier' || staffAcc?.role === 'salesman'
+        ? staffAcc.role
+        : 'cashier';
+    return {
+      modules: { ...cfg.rolePermissions[roleKey].modules },
+      actions: { ...cfg.rolePermissions[roleKey].actions }
+    };
+  };
+
+  const saveUpdatedStaffPerms = async (
+    nextCfg: ShopStaffPermissionsConfig,
+    bannerMsg = '✓ یوزر / مینیجر پرمیشنز (Lock / Unlock) اپڈیٹ ہو گئیں!'
+  ) => {
+    setStaffPerms(nextCfg);
+    await superAdminService.saveShopStaffPermissions(shopId, nextCfg);
+    setPermSaveBanner(bannerMsg);
+    setTimeout(() => setPermSaveBanner(null), 3000);
+  };
+
+  const handleToggleTargetModuleLock = async (moduleId: string) => {
+    const currentTarget = getEffectiveTargetPerms(selectedPermTarget);
+    const nextUnlocked = !(currentTarget.modules[moduleId] !== false);
+    const nextTargetPerms: StaffTargetPermissions = {
+      modules: {
+        ...currentTarget.modules,
+        [moduleId]: nextUnlocked
+      },
+      actions: { ...currentTarget.actions }
+    };
+
+    const nextCfg: ShopStaffPermissionsConfig = {
+      ...staffPerms,
+      rolePermissions: { ...staffPerms.rolePermissions },
+      userOverrides: { ...staffPerms.userOverrides },
+      updatedBy: currentUser?.name || currentUser?.username || 'Admin'
+    };
+
+    if (selectedPermTarget === 'ROLE_MANAGER') {
+      nextCfg.rolePermissions.manager = nextTargetPerms;
+    } else if (selectedPermTarget === 'ROLE_CASHIER') {
+      nextCfg.rolePermissions.cashier = nextTargetPerms;
+    } else if (selectedPermTarget === 'ROLE_SALESMAN') {
+      nextCfg.rolePermissions.salesman = nextTargetPerms;
+    } else {
+      nextCfg.userOverrides[selectedPermTarget.trim().toLowerCase()] = nextTargetPerms;
+    }
+
+    await saveUpdatedStaffPerms(
+      nextCfg,
+      nextUnlocked
+        ? `🔓 آپشن ان لاک (Unlocked) کر دیا گیا!`
+        : `🔒 آپشن لاک (Locked) کر دیا گیا!`
+    );
+  };
+
+  const handleToggleTargetActionLock = async (actionId: StaffPermissionActionId) => {
+    const currentTarget = getEffectiveTargetPerms(selectedPermTarget);
+    const nextUnlocked = !(currentTarget.actions[actionId] !== false);
+    const nextTargetPerms: StaffTargetPermissions = {
+      modules: { ...currentTarget.modules },
+      actions: {
+        ...currentTarget.actions,
+        [actionId]: nextUnlocked
+      }
+    };
+
+    const nextCfg: ShopStaffPermissionsConfig = {
+      ...staffPerms,
+      rolePermissions: { ...staffPerms.rolePermissions },
+      userOverrides: { ...staffPerms.userOverrides },
+      updatedBy: currentUser?.name || currentUser?.username || 'Admin'
+    };
+
+    if (selectedPermTarget === 'ROLE_MANAGER') {
+      nextCfg.rolePermissions.manager = nextTargetPerms;
+    } else if (selectedPermTarget === 'ROLE_CASHIER') {
+      nextCfg.rolePermissions.cashier = nextTargetPerms;
+    } else if (selectedPermTarget === 'ROLE_SALESMAN') {
+      nextCfg.rolePermissions.salesman = nextTargetPerms;
+    } else {
+      nextCfg.userOverrides[selectedPermTarget.trim().toLowerCase()] = nextTargetPerms;
+    }
+
+    if (actionId === 'allowDeleteEntry') {
+      setSystemSettings({ ...systemSettings, user_can_delete: nextUnlocked });
+    }
+
+    await saveUpdatedStaffPerms(
+      nextCfg,
+      nextUnlocked
+        ? `🔓 ایکشن پرمیشن ان لاک (Unlocked) کر دی گئی!`
+        : `🔒 ایکشن پرمیشن لاک (Locked) کر دی گئی!`
+    );
+  };
+
+  const handleBulkSetAllTargetLocks = async (unlockAll: boolean) => {
+    const nextModules: Record<string, boolean> = {};
+    ALL_STAFF_CONTROLLABLE_MODULES.forEach(m => {
+      nextModules[m.id] = unlockAll;
+    });
+    const nextActions: Record<StaffPermissionActionId, boolean> = {
+      allowAddEntry: unlockAll,
+      allowEditEntry: unlockAll,
+      allowDeleteEntry: unlockAll,
+      allowManageBills: unlockAll,
+      allowManageStock: unlockAll,
+      allowManagePrices: unlockAll
+    };
+
+    const nextTargetPerms: StaffTargetPermissions = {
+      modules: nextModules,
+      actions: nextActions
+    };
+
+    const nextCfg: ShopStaffPermissionsConfig = {
+      ...staffPerms,
+      rolePermissions: { ...staffPerms.rolePermissions },
+      userOverrides: { ...staffPerms.userOverrides },
+      updatedBy: currentUser?.name || currentUser?.username || 'Admin'
+    };
+
+    if (selectedPermTarget === 'ROLE_MANAGER') {
+      nextCfg.rolePermissions.manager = nextTargetPerms;
+    } else if (selectedPermTarget === 'ROLE_CASHIER') {
+      nextCfg.rolePermissions.cashier = nextTargetPerms;
+    } else if (selectedPermTarget === 'ROLE_SALESMAN') {
+      nextCfg.rolePermissions.salesman = nextTargetPerms;
+    } else {
+      nextCfg.userOverrides[selectedPermTarget.trim().toLowerCase()] = nextTargetPerms;
+    }
+
+    await saveUpdatedStaffPerms(
+      nextCfg,
+      unlockAll
+        ? '🔓 تمام آپشنز ان لاک (Unlocked) کر دیے گئے!'
+        : '🔒 تمام آپشنز لاک (Locked) کر دیے گئے!'
+    );
+  };
+
+  const handleResetUserOverride = async () => {
+    if (selectedPermTarget.startsWith('ROLE_')) {
+      const nextCfg: ShopStaffPermissionsConfig = {
+        ...staffPerms,
+        rolePermissions: JSON.parse(JSON.stringify(DEFAULT_SHOP_STAFF_PERMISSIONS.rolePermissions)),
+        updatedBy: currentUser?.name || currentUser?.username || 'Admin'
+      };
+      await saveUpdatedStaffPerms(nextCfg, '✓ ڈیفالٹ رول پرمیشنز بحال کر دی گئیں!');
+      return;
+    }
+    const cleanUser = selectedPermTarget.trim().toLowerCase();
+    const nextOverrides = { ...staffPerms.userOverrides };
+    delete nextOverrides[cleanUser];
+    const nextCfg: ShopStaffPermissionsConfig = {
+      ...staffPerms,
+      userOverrides: nextOverrides,
+      updatedBy: currentUser?.name || currentUser?.username || 'Admin'
+    };
+    await saveUpdatedStaffPerms(nextCfg, '✓ اس یوزر کیلئے رول کی ڈیفالٹ پرمیشنز بحال کر دی گئیں!');
+  };
 
   // Online / Offline Real-time Detection
   const [isOnline, setIsOnline] = useState<boolean>(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
@@ -339,111 +560,362 @@ export const StaffManagementView: React.FC = () => {
     );
   }
 
-  // 2. OFFLINE GUARD SCREEN (Beautiful English UI as requested)
-  if (!isOnline) {
+  const activeTargetPerms = getEffectiveTargetPerms(selectedPermTarget);
+
+  // 2. Top Navigation Tabs for Store Admin: (1) Staff & User Accounts, (2) Permissions Lock / Unlock
+  const renderTopAdminTabs = () => (
+    <div className="grid grid-cols-2 gap-2 bg-slate-900 p-1.5 rounded-2xl border border-slate-800 shadow-sm text-xs font-bold">
+      <button
+        type="button"
+        onClick={() => {
+          setActiveSubTab('accounts');
+          setActiveView('staff_management');
+        }}
+        className={`py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer ${
+          activeSubTab === 'accounts'
+            ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+            : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+        }`}
+      >
+        <Users className="w-4 h-4 shrink-0" />
+        <span>Staff &amp; User Accounts</span>
+        <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/30 font-mono">
+          {staffAccounts.length}
+        </span>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => {
+          setActiveSubTab('permissions');
+          setActiveView('permissions');
+        }}
+        className={`py-2.5 px-3 rounded-xl flex items-center justify-center gap-2 transition-all cursor-pointer ${
+          activeSubTab === 'permissions'
+            ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+            : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+        }`}
+      >
+        <Lock className="w-4 h-4 shrink-0" />
+        <span>Permissions (Lock / Unlock)</span>
+      </button>
+    </div>
+  );
+
+  // 3. PERMISSIONS LOCK / UNLOCK TAB VIEW (Works Online & Offline)
+  if (activeSubTab === 'permissions') {
     return (
-      <div className="max-w-2xl mx-auto my-6 p-4 sm:p-6 animate-in fade-in duration-300">
-        <div className="bg-white rounded-3xl p-6 sm:p-10 shadow-2xl border border-slate-200/90 text-center relative overflow-hidden">
-          {/* Decorative glowing gradient aura */}
-          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-80 h-36 bg-gradient-to-b from-amber-500/15 via-rose-500/10 to-transparent blur-2xl pointer-events-none" />
+      <div className="space-y-4 pb-12 animate-in fade-in duration-200">
+        {renderTopAdminTabs()}
 
-          {/* Top Category Badge */}
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-800 border border-amber-300/80 rounded-full text-[11px] font-bold uppercase tracking-wider mb-5 shadow-xs">
-            <Globe className="w-3.5 h-3.5 text-amber-600 animate-pulse" />
-            <span>Cloud Identity Service • Online Only</span>
+        {permSaveBanner && (
+          <div className="p-3 bg-emerald-600 text-white rounded-2xl text-xs font-bold flex items-center justify-between shadow-md animate-in fade-in">
+            <span>{permSaveBanner}</span>
+            <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono">REAL-TIME APPLIED</span>
           </div>
+        )}
 
-          {/* Animated Offline Icon */}
-          <div className="relative w-20 h-20 mx-auto mb-5 flex items-center justify-center">
-            <div className="absolute inset-0 rounded-full bg-rose-100/70 animate-ping opacity-30" />
-            <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-rose-50 via-amber-50 to-orange-50 border border-rose-200 shadow-inner flex items-center justify-center text-rose-600">
-              <WifiOff className="w-10 h-10" />
-            </div>
-          </div>
-
-          {/* Main English Message (As requested) */}
-          <h2 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight mb-2">
-            You Are Currently Offline
-          </h2>
-          <p className="text-sm sm:text-base text-slate-600 max-w-lg mx-auto leading-relaxed font-medium mb-6">
-            Please connect to the internet first. Creating and managing Staff & User accounts requires an active online connection to verify unique usernames and securely sync user credentials across devices.
-          </p>
-
-          {/* Feature Highlights: Why Online is Mandatory */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-left mb-6">
-            <div className="p-3.5 bg-slate-50 hover:bg-slate-100/80 rounded-2xl border border-slate-200/80 transition-all">
-              <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center mb-2 font-bold text-xs">
-                🛡️
+        {/* Header & Target Selector (Role or Specific Staff Member) */}
+        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/80 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
+                <Sliders className="w-5 h-5" />
               </div>
-              <h4 className="text-xs font-bold text-slate-900 mb-0.5">Zero Duplicate Guarantee</h4>
-              <p className="text-[11px] text-slate-500 leading-normal">
-                Verifies in real-time that no other store or user is using the same NH- username.
-              </p>
-            </div>
-
-            <div className="p-3.5 bg-slate-50 hover:bg-slate-100/80 rounded-2xl border border-slate-200/80 transition-all">
-              <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center mb-2 font-bold text-xs">
-                ☁️
+              <div>
+                <h2 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
+                  User &amp; Manager Permissions — Lock / Unlock Control
+                </h2>
+                <p className="text-xs text-slate-500">
+                  ہر آپشن یوزر کو نظر آئے گا، لیکن جس آپشن کو آپ <b>🔒 Lock</b> کر دیں گے وہ لاک رہے گا اور جسے <b>🔓 Unlock</b> کریں گے وہ کام کرے گا۔
+                </p>
               </div>
-              <h4 className="text-xs font-bold text-slate-900 mb-0.5">Instant Multi-Device Login</h4>
-              <p className="text-[11px] text-slate-500 leading-normal">
-                Safely saves user credentials to the cloud directory so staff can immediately log in on mobile.
-              </p>
-            </div>
-
-            <div className="p-3.5 bg-slate-50 hover:bg-slate-100/80 rounded-2xl border border-slate-200/80 transition-all">
-              <div className="w-7 h-7 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center mb-2 font-bold text-xs">
-                🔒
-              </div>
-              <h4 className="text-xs font-bold text-slate-900 mb-0.5">Role & Permission Security</h4>
-              <p className="text-[11px] text-slate-500 leading-normal">
-                Strictly enforces cashier, manager, and salesman access rights without tampering.
-              </p>
             </div>
           </div>
 
-          {/* Live Feedback Toast if user clicked check */}
-          {connectionFeedback && (
-            <div className="mb-5 p-3 rounded-xl bg-slate-900 text-white text-xs font-bold flex items-center justify-center gap-2 animate-in fade-in">
-              <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
-              <span>{connectionFeedback}</span>
-            </div>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={selectedPermTarget}
+              onChange={e => setSelectedPermTarget(e.target.value)}
+              className="px-3 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-600"
+            >
+              <optgroup label="Role Permissions (تمام رولز کیلئے)">
+                <option value="ROLE_MANAGER">📋 Manager Role (تمام مینیجرز)</option>
+                <option value="ROLE_CASHIER">💵 Cashier Role (تمام کیشیئرز)</option>
+                <option value="ROLE_SALESMAN">🚚 Salesman Role (تمام سیلز مین)</option>
+              </optgroup>
+              {staffAccounts.length > 0 && (
+                <optgroup label="Specific User / Staff (مخصوص یوزر سلیکٹ کریں)">
+                  {staffAccounts.map(acc => (
+                    <option key={acc.id} value={acc.username.toLowerCase()}>
+                      👤 {acc.name} ({acc.username} • {acc.role.toUpperCase()})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
 
-          {/* Action Buttons */}
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 max-w-md mx-auto">
             <button
               type="button"
-              onClick={handleCheckConnection}
-              disabled={isCheckingConnection}
-              className="w-full sm:w-auto flex-1 py-3 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-lg shadow-blue-600/25 transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
+              onClick={() => handleBulkSetAllTargetLocks(true)}
+              className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
             >
-              <RefreshCw className={`w-4 h-4 ${isCheckingConnection ? 'animate-spin' : ''}`} />
-              <span>{isCheckingConnection ? 'Checking Connection...' : 'Check Connection / Refresh'}</span>
+              <Unlock className="w-3.5 h-3.5" />
+              <span>Unlock All</span>
             </button>
 
             <button
               type="button"
-              onClick={() => setActiveView('dashboard')}
-              className="w-full sm:w-auto py-3 px-5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+              onClick={() => handleBulkSetAllTargetLocks(false)}
+              className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
             >
-              <ArrowLeft className="w-4 h-4" />
-              <span>Back to Dashboard</span>
+              <Lock className="w-3.5 h-3.5" />
+              <span>Lock All</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleResetUserOverride}
+              className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              title="Reset to default role permissions"
+            >
+              Reset Default
             </button>
           </div>
+        </div>
 
-          {/* Polite Urdu Subtext for shopkeepers */}
-          <p className="text-[11px] text-slate-400 mt-5 font-urdu">
-            اسٹاف اور یوزر اکاؤنٹ بنانے کے لیے انٹرنیٹ کنکشن لازمی ہے تاکہ یوزر نیم محفوظ اور منفرد رہے
-          </p>
+        {/* Section 1: All POS Modules & Navigation Options (Lock / Unlock) */}
+        <div className="space-y-2.5">
+          <div className="flex items-center justify-between px-1">
+            <h3 className="text-xs sm:text-sm font-black text-slate-800 uppercase tracking-wide flex items-center gap-1.5">
+              <Lock className="w-4 h-4 text-indigo-600" />
+              <span>1. POS Modules &amp; Screens (آپشنز لاک / ان لاک کریں)</span>
+            </h3>
+            <span className="text-[11px] font-bold text-slate-500">
+              Target:{' '}
+              <b className="text-indigo-600">
+                {selectedPermTarget === 'ROLE_MANAGER'
+                  ? 'All Managers'
+                  : selectedPermTarget === 'ROLE_CASHIER'
+                  ? 'All Cashiers'
+                  : selectedPermTarget === 'ROLE_SALESMAN'
+                  ? 'All Salesmen'
+                  : selectedPermTarget.toUpperCase()}
+              </b>
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {ALL_STAFF_CONTROLLABLE_MODULES.map(mod => {
+              const isUnlocked = activeTargetPerms.modules[mod.id] !== false;
+              const isSuperLocked = !superAdminService.isModuleEnabledForShop(mod.id, shopId);
+
+              return (
+                <div
+                  key={mod.id}
+                  className={`p-4 rounded-2xl border transition-all flex flex-col justify-between gap-3 ${
+                    isUnlocked && !isSuperLocked
+                      ? 'bg-white border-slate-200/90 shadow-xs'
+                      : 'bg-amber-50/40 border-amber-200/90'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        {isUnlocked && !isSuperLocked ? (
+                          <Unlock className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        ) : (
+                          <Lock className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                        )}
+                        <h4 className="font-black text-xs text-slate-900">{mod.label}</h4>
+                      </div>
+                      <span className="text-[11px] font-bold text-indigo-600 block mt-0.5">
+                        {mod.urduLabel}
+                      </span>
+                      <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                        {mod.description}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleToggleTargetModuleLock(mod.id)}
+                      className={`px-3 py-1.5 rounded-xl text-[11px] font-black border flex items-center gap-1.5 shrink-0 transition-all cursor-pointer active:scale-95 ${
+                        isUnlocked
+                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600 shadow-xs'
+                          : 'bg-rose-600 hover:bg-rose-700 text-white border-rose-600 shadow-xs'
+                      }`}
+                      title={isUnlocked ? 'Click to Lock this option' : 'Click to Unlock this option'}
+                    >
+                      {isUnlocked ? (
+                        <>
+                          <Unlock className="w-3.5 h-3.5" />
+                          <span>Unlocked</span>
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="w-3.5 h-3.5" />
+                          <span>Locked</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[10px]">
+                    <span className="text-slate-400 font-medium">
+                      {isUnlocked ? 'یوزر استعمال کر سکتا ہے' : 'آپشن نظر آئے گا مگر لاک ہوگا'}
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded font-bold uppercase flex items-center gap-1 ${
+                        isUnlocked
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : 'bg-rose-100 text-rose-800'
+                      }`}
+                    >
+                      {isUnlocked ? '🔓 UNLOCKED' : '🔒 LOCKED'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Section 2: Action & Button Permissions (Add / Edit / Delete / Bills / Stock / Prices) */}
+        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-4">
+          <div className="border-b border-slate-100 pb-3">
+            <h3 className="font-black text-sm text-slate-900 flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-indigo-600" />
+              <span>2. Action &amp; Function Permissions — Lock / Unlock (بٹن اور ایکشن لاک / ان لاک)</span>
+            </h3>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              مینیجر یا یوزر کے انٹری شامل کرنے، ایڈٹ کرنے، ڈیلیٹ کرنے، اسٹاک اور ریٹ لسٹ اپڈیٹ کرنے کے اختیارات کو لاک یا ان لاک کریں۔
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
+            {ALL_STAFF_CONTROLLABLE_ACTIONS.map(act => {
+              const isUnlocked = activeTargetPerms.actions[act.id] !== false;
+              return (
+                <div
+                  key={act.id}
+                  className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 transition-all ${
+                    isUnlocked
+                      ? 'border-slate-200 bg-slate-50/70'
+                      : 'border-rose-200 bg-rose-50/40'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      {isUnlocked ? (
+                        <Unlock className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      ) : (
+                        <Lock className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                      )}
+                      <span className="font-bold text-slate-900">{act.label}</span>
+                    </div>
+                    <span className="text-[11px] font-bold text-indigo-600 block mt-0.5">
+                      {act.urduLabel}
+                    </span>
+                    <span className="text-[10px] text-slate-500 leading-tight block mt-0.5">
+                      {act.description}
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleToggleTargetActionLock(act.id)}
+                    className={`px-3 py-1.5 rounded-xl text-[11px] font-black border flex items-center gap-1.5 shrink-0 transition-all cursor-pointer active:scale-95 ${
+                      isUnlocked
+                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'
+                        : 'bg-rose-600 hover:bg-rose-700 text-white border-rose-600'
+                    }`}
+                  >
+                    {isUnlocked ? (
+                      <>
+                        <Unlock className="w-3.5 h-3.5" />
+                        <span>Unlocked</span>
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="w-3.5 h-3.5" />
+                        <span>Locked</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     );
   }
 
-  // 3. ONLINE VIEW (Full Advanced Feature Set)
+  // 4. OFFLINE GUARD SCREEN FOR STAFF ACCOUNT CREATION (Permissions Tab above still works offline!)
+  if (!isOnline) {
+    return (
+      <div className="space-y-4">
+        {renderTopAdminTabs()}
+        <div className="max-w-2xl mx-auto my-6 p-4 sm:p-6 animate-in fade-in duration-300">
+          <div className="bg-white rounded-3xl p-6 sm:p-10 shadow-2xl border border-slate-200/90 text-center relative overflow-hidden">
+            {/* Decorative glowing gradient aura */}
+            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-80 h-36 bg-gradient-to-b from-amber-500/15 via-rose-500/10 to-transparent blur-2xl pointer-events-none" />
+
+            {/* Top Category Badge */}
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-800 border border-amber-300/80 rounded-full text-[11px] font-bold uppercase tracking-wider mb-5 shadow-xs">
+              <Globe className="w-3.5 h-3.5 text-amber-600 animate-pulse" />
+              <span>Cloud Identity Service • Online Only</span>
+            </div>
+
+            {/* Animated Offline Icon */}
+            <div className="relative w-20 h-20 mx-auto mb-5 flex items-center justify-center">
+              <div className="absolute inset-0 rounded-full bg-rose-100/70 animate-ping opacity-30" />
+              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-rose-50 via-amber-50 to-orange-50 border border-rose-200 shadow-inner flex items-center justify-center text-rose-600">
+                <WifiOff className="w-10 h-10" />
+              </div>
+            </div>
+
+            {/* Main English Message */}
+            <h2 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight mb-2">
+              You Are Currently Offline
+            </h2>
+            <p className="text-sm sm:text-base text-slate-600 max-w-lg mx-auto leading-relaxed font-medium mb-6">
+              Please connect to the internet first. Creating and managing Staff &amp; User accounts requires an active online connection to verify unique usernames and securely sync user credentials across devices.
+            </p>
+
+            {/* Action Buttons */}
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3 max-w-md mx-auto">
+              <button
+                type="button"
+                onClick={handleCheckConnection}
+                disabled={isCheckingConnection}
+                className="w-full sm:w-auto flex-1 py-3 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-lg shadow-blue-600/25 transition-all active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <RefreshCw className={`w-4 h-4 ${isCheckingConnection ? 'animate-spin' : ''}`} />
+                <span>{isCheckingConnection ? 'Checking Connection...' : 'Check Connection / Refresh'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveSubTab('permissions')}
+                className="w-full sm:w-auto py-3 px-5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Lock className="w-4 h-4" />
+                <span>Open Permissions (Lock/Unlock)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 5. ONLINE VIEW (Full Advanced Feature Set)
   return (
     <div className="space-y-5 animate-in fade-in duration-200">
+      {renderTopAdminTabs()}
+
       {/* Active Online Banner */}
       <div className="bg-gradient-to-r from-emerald-900/90 to-teal-900/90 text-white px-4 py-2 rounded-xl text-xs font-semibold flex items-center justify-between border border-emerald-700/60 shadow-xs">
         <div className="flex items-center gap-2">
@@ -474,14 +946,28 @@ export const StaffManagementView: React.FC = () => {
         </div>
 
         {isStoreAdmin && (
-          <button
-            type="button"
-            onClick={handleOpenAdd}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-600/20 transition-all active:scale-95 cursor-pointer"
-          >
-            <UserPlus className="w-4 h-4" />
-            <span>+ Create New Staff</span>
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveSubTab('permissions');
+                setActiveView('permissions');
+              }}
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold transition-all active:scale-95 cursor-pointer"
+            >
+              <Lock className="w-3.5 h-3.5" />
+              <span>🔒 Permissions (Lock/Unlock)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleOpenAdd}
+              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-600/20 transition-all active:scale-95 cursor-pointer"
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>+ Create New Staff</span>
+            </button>
+          </div>
         )}
       </div>
 
@@ -543,7 +1029,7 @@ export const StaffManagementView: React.FC = () => {
                         </span>
                         {!acc.is_active && (
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-300">
-                            Deactivated
+                            🔒 Locked Account
                           </span>
                         )}
                       </div>
@@ -567,7 +1053,21 @@ export const StaffManagementView: React.FC = () => {
                   </div>
 
                   {/* Actions */}
-                  <div className="flex items-center gap-1.5 self-end sm:self-center">
+                  <div className="flex items-center gap-1.5 flex-wrap self-end sm:self-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedPermTarget(acc.username.toLowerCase());
+                        setActiveSubTab('permissions');
+                        setActiveView('permissions');
+                      }}
+                      title="Manage Lock/Unlock Permissions for this user"
+                      className="p-2 text-indigo-700 hover:bg-indigo-50 rounded-lg transition-colors border border-indigo-200 text-xs flex items-center gap-1 font-bold cursor-pointer"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                      <span className="text-[11px]">Permissions</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => handleCopyDetails(acc)}
@@ -590,14 +1090,24 @@ export const StaffManagementView: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => updateStaffAccount({ ...acc, is_active: !acc.is_active })}
-                      title={acc.is_active ? 'Disable Account' : 'Enable Account'}
-                      className={`p-2 rounded-lg transition-colors border text-xs font-bold cursor-pointer ${
+                      title={acc.is_active ? 'Lock Account Login' : 'Unlock Account Login'}
+                      className={`p-2 rounded-lg transition-colors border text-xs font-bold flex items-center gap-1 cursor-pointer ${
                         acc.is_active
-                          ? 'text-amber-700 hover:bg-amber-50 border-amber-200'
-                          : 'text-emerald-700 hover:bg-emerald-50 border-emerald-200'
+                          ? 'text-emerald-700 hover:bg-emerald-50 border-emerald-200'
+                          : 'text-rose-700 hover:bg-rose-50 border-rose-200'
                       }`}
                     >
-                      {acc.is_active ? 'Deactivate' : 'Activate'}
+                      {acc.is_active ? (
+                        <>
+                          <Unlock className="w-3.5 h-3.5" />
+                          <span>Unlocked</span>
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="w-3.5 h-3.5" />
+                          <span>Locked</span>
+                        </>
+                      )}
                     </button>
 
                     <button

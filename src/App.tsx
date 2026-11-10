@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Menu, Zap, Download, RefreshCw, CheckCircle2, AlertCircle, Cloud, Clock } from 'lucide-react';
+import { Menu, Zap, Download, RefreshCw, CheckCircle2, AlertCircle, Cloud, Clock, Lock } from 'lucide-react';
 import { POSProvider, usePOS } from './context/POSContext';
 import { formatTime12h, formatRelativeTime } from './utils/syncTime';
 import { Sidebar } from './components/Sidebar';
@@ -34,7 +34,7 @@ import { StaffManagementView } from './views/StaffManagementView';
 import { MonthlySummaryView } from './views/MonthlySummaryView';
 import { SuperAdminView } from './superadmin/SuperAdminView';
 import { SuperAdminAuthModal } from './superadmin/SuperAdminAuthModal';
-import { superAdminService, MASTER_EMAIL } from './superadmin/superAdminService';
+import { superAdminService, MASTER_EMAIL, ALL_CONTROLLABLE_MODULES } from './superadmin/superAdminService';
 
 const MainAppContent: React.FC = () => {
   const {
@@ -233,26 +233,39 @@ const MainAppContent: React.FC = () => {
   };
 
   const renderActiveView = () => {
-    // Check if current module is disabled by Super Admin for non-super_admin users
+    // Check if current module is Locked by Super Admin or Store Admin
+    const lockCheck = superAdminService.isModuleUnlockedForUser(activeView, currentUser);
     if (
       !isAuthorizedSuperAdmin &&
       activeView !== 'dashboard' &&
       activeView !== 'super_admin' &&
-      !superAdminService.isModuleEnabledForShop(activeView, currentUser.shopId)
+      activeView !== 'staff_management' &&
+      activeView !== 'permissions' &&
+      !lockCheck.unlocked
     ) {
+      const modInfo = ALL_CONTROLLABLE_MODULES.find(m => m.id === activeView);
+      const isSuperLock = lockCheck.lockedBy === 'super_admin';
       return (
-        <div className="bg-white rounded-2xl border border-rose-200 p-8 text-center max-w-md mx-auto my-8 shadow-sm space-y-3">
-          <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
-            <AlertCircle className="w-6 h-6" />
+        <div className="bg-white rounded-3xl border border-rose-200 p-8 text-center max-w-md mx-auto my-8 shadow-lg space-y-4 animate-in fade-in">
+          <div className="w-16 h-16 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto shadow-inner">
+            <Lock className="w-8 h-8" />
           </div>
-          <h3 className="font-black text-base text-slate-900">Module Disabled by Super Admin</h3>
-          <p className="text-xs text-slate-500 leading-relaxed">
-            یہ ماڈیول سسٹم کے سپر ایڈمن کی جانب سے اس دکان کیلئے بند کیا گیا ہے۔
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-100 text-rose-800 text-[11px] font-black uppercase">
+            <Lock className="w-3 h-3" />
+            <span>{isSuperLock ? 'Locked by Super Admin' : 'Locked by Store Admin'}</span>
+          </div>
+          <h3 className="font-black text-lg text-slate-900">
+            🔒 {modInfo ? `${modInfo.label} (${modInfo.urduLabel})` : 'Option'} Locked
+          </h3>
+          <p className="text-xs text-slate-600 leading-relaxed">
+            {isSuperLock
+              ? 'یہ آپشن سسٹم کے سپر ایڈمن کی جانب سے اس دکان کیلئے لاک (🔒 Locked) کیا گیا ہے۔'
+              : 'یہ آپشن دکان کے ایڈمن کی جانب سے آپ کے اکاؤنٹ کیلئے لاک (🔒 Locked) کیا گیا ہے۔ ان لاک کروانے کیلئے ایڈمن سے رابطہ کریں۔'}
           </p>
           <button
             type="button"
             onClick={() => setActiveView('dashboard')}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl cursor-pointer"
+            className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl cursor-pointer shadow-sm transition-all active:scale-95"
           >
             Return to Dashboard
           </button>
@@ -283,7 +296,8 @@ const MainAppContent: React.FC = () => {
         return <DeletedHistoryView />;
       case 'edit_logs':
         return <EditHistoryLogsView />;
-      case 'staff_management': {
+      case 'staff_management':
+      case 'permissions': {
         const isStoreAdmin = Boolean(currentUser?.isGoogleUser || currentUser?.role === 'admin' || isAuthorizedSuperAdmin);
         return isStoreAdmin ? <StaffManagementView /> : <DashboardView />;
       }

@@ -44,6 +44,17 @@ export const DeletedHistoryView: React.FC = () => {
     }
   };
 
+  const sortedDeletedHistory = React.useMemo(() => {
+    return [...deletedHistory].sort((a, b) => {
+      const timeA = a.deleted_at ? new Date(a.deleted_at).getTime() : 0;
+      const timeB = b.deleted_at ? new Date(b.deleted_at).getTime() : 0;
+      if (!Number.isNaN(timeA) && !Number.isNaN(timeB) && timeB !== timeA) {
+        return timeB - timeA;
+      }
+      return String(b.id || '').localeCompare(String(a.id || ''));
+    });
+  }, [deletedHistory]);
+
   return (
     <div className="space-y-4 pb-12">
       {/* Top Header */}
@@ -83,19 +94,19 @@ export const DeletedHistoryView: React.FC = () => {
       {/* Notice Banner */}
       <div className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-xl text-xs font-bold flex items-center gap-2">
         <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-        <span>Note: Entries 90 din baad automatic permanently delete ho jati hain.</span>
+        <span>Note: Latest deleted entries top par aur older entries neechay show hoti hain (90 days auto-clean).</span>
       </div>
 
       {/* Logs Table */}
       <div className="bg-white rounded-2xl p-4 shadow-xs border border-slate-200/80 space-y-3">
         <div className="flex justify-between items-center text-xs text-slate-500 font-bold">
-          <span>Deleted Items Log</span>
-          <span>{deletedHistory.length} records</span>
+          <span>Deleted Items Log (Latest First)</span>
+          <span>{sortedDeletedHistory.length} records</span>
         </div>
 
         <div className="divide-y divide-slate-100">
-          {deletedHistory.length > 0 ? (
-            deletedHistory.map(item => (
+          {sortedDeletedHistory.length > 0 ? (
+            sortedDeletedHistory.map(item => (
               <div key={item.id} className="py-3.5 flex items-center justify-between gap-3 text-xs">
                 <div className="flex-1 min-w-0 space-y-1">
                   <div className="flex items-center gap-2 flex-wrap">

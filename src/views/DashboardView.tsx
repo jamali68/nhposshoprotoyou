@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Eye,
   EyeOff,
@@ -14,9 +14,12 @@ import {
   Leaf,
   Radio,
   Calendar,
-  Sparkles
+  Sparkles,
+  Lock
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
+import { superAdminService } from '../superadmin/superAdminService';
+import { ControllableModuleId } from '../superadmin/types';
 
 export const DashboardView: React.FC = () => {
   const {
@@ -40,6 +43,21 @@ export const DashboardView: React.FC = () => {
     currentUser,
     currentShop
   } = usePOS();
+
+  const [, setPermTick] = useState(0);
+  useEffect(() => {
+    const onPermChange = () => setPermTick(t => t + 1);
+    window.addEventListener('taj_module_control_updated', onPermChange);
+    return () => window.removeEventListener('taj_module_control_updated', onPermChange);
+  }, []);
+
+  const isModuleLocked = (moduleId: ControllableModuleId): boolean => {
+    const check = superAdminService.isModuleUnlockedForUser(moduleId, {
+      ...currentUser,
+      shopId: currentShop?.id || currentUser?.shopId
+    });
+    return !check.unlocked;
+  };
 
   // Easyload network live records (defaults to 0 for clean accounts)
   const currentLoadRecord = easyloadRecords[filterDate] || {
@@ -189,6 +207,12 @@ export const DashboardView: React.FC = () => {
           >
             {boxPrivacy.backCash ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
           </button>
+          {isModuleLocked('back_cash') && (
+            <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-rose-600/90 text-white text-[9px] font-black uppercase flex items-center gap-0.5 shadow-xs z-10">
+              <Lock className="w-2.5 h-2.5" />
+              <span>Locked</span>
+            </span>
+          )}
           <div
             onClick={() => setActiveView('back_cash')}
             className="cursor-pointer select-none group"
@@ -212,6 +236,12 @@ export const DashboardView: React.FC = () => {
           >
             {boxPrivacy.shopCash ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
           </button>
+          {isModuleLocked('daily_cash') && (
+            <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-rose-600/90 text-white text-[9px] font-black uppercase flex items-center gap-0.5 shadow-xs z-10">
+              <Lock className="w-2.5 h-2.5" />
+              <span>Locked</span>
+            </span>
+          )}
           <div
             onClick={() => setActiveView('daily_cash')}
             className="cursor-pointer select-none group"
@@ -235,6 +265,12 @@ export const DashboardView: React.FC = () => {
           >
             {boxPrivacy.pending ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
           </button>
+          {isModuleLocked('customer') && (
+            <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-rose-600/90 text-white text-[9px] font-black uppercase flex items-center gap-0.5 shadow-xs z-10">
+              <Lock className="w-2.5 h-2.5" />
+              <span>Locked</span>
+            </span>
+          )}
           <div
             onClick={() => setActiveView('customer')}
             className="cursor-pointer select-none group"
@@ -258,6 +294,12 @@ export const DashboardView: React.FC = () => {
           >
             {boxPrivacy.petsStock ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
           </button>
+          {isModuleLocked('bottle_stock') && (
+            <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-rose-600/90 text-white text-[9px] font-black uppercase flex items-center gap-0.5 shadow-xs z-10">
+              <Lock className="w-2.5 h-2.5" />
+              <span>Locked</span>
+            </span>
+          )}
           <div
             onClick={() => setActiveView('bottle_stock')}
             className="cursor-pointer select-none group"
@@ -281,6 +323,12 @@ export const DashboardView: React.FC = () => {
           >
             {boxPrivacy.totalSales ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
           </button>
+          {isModuleLocked('bottle_stock') && (
+            <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-rose-600/90 text-white text-[9px] font-black uppercase flex items-center gap-0.5 shadow-xs z-10">
+              <Lock className="w-2.5 h-2.5" />
+              <span>Locked</span>
+            </span>
+          )}
           <div onClick={() => setActiveView('bottle_stock')} className="cursor-pointer select-none">
             <h3 className="text-xl sm:text-2xl font-black tracking-tight">
               {formatBoxAmount(totalSalesVal, boxPrivacy.totalSales)}

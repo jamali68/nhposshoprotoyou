@@ -23,6 +23,7 @@ import {
   Sliders,
   Cpu,
   Lock,
+  Unlock,
   Play,
   Check,
   AlertTriangle,
@@ -34,7 +35,9 @@ import {
   superAdminService,
   MASTER_EMAIL,
   MASTER_SUPER_ADMIN_EMAILS,
-  ALL_CONTROLLABLE_MODULES
+  ALL_CONTROLLABLE_MODULES,
+  ALL_STAFF_CONTROLLABLE_MODULES,
+  ALL_STAFF_CONTROLLABLE_ACTIONS
 } from './superAdminService';
 import {
   TenantShopInfo,
@@ -42,12 +45,15 @@ import {
   PlatformMetrics,
   ControllableModuleId,
   PlatformModuleControlConfig,
-  ModuleHealthTestResult
+  ModuleHealthTestResult,
+  ShopStaffPermissionsConfig,
+  StaffPermissionActionId
 } from './types';
 
 export const SuperAdminView: React.FC = () => {
   const {
     currentUser,
+    currentShop,
     setActiveView,
     isMaintenanceMode,
     toggleMaintenanceMode,
@@ -74,6 +80,20 @@ export const SuperAdminView: React.FC = () => {
   );
   const [selectedShopForModules, setSelectedShopForModules] = useState<string>('GLOBAL');
   const [moduleSaveBanner, setModuleSaveBanner] = useState<string | null>(null);
+
+  // Store Staff / Manager Permissions Control State (Super Admin can also Lock/Unlock User & Manager roles per shop)
+  const targetShopIdForStaffPerms =
+    selectedShopForModules !== 'GLOBAL'
+      ? selectedShopForModules
+      : currentShop?.id || shops[0]?.id || 'default_shop';
+  const [selectedStaffRoleTarget, setSelectedStaffRoleTarget] = useState<'manager' | 'cashier' | 'salesman'>('manager');
+  const [shopStaffPermConfig, setShopStaffPermConfig] = useState<ShopStaffPermissionsConfig>(() =>
+    superAdminService.getShopStaffPermissions(targetShopIdForStaffPerms)
+  );
+
+  useEffect(() => {
+    setShopStaffPermConfig(superAdminService.getShopStaffPermissions(targetShopIdForStaffPerms));
+  }, [targetShopIdForStaffPerms]);
 
   // Diagnostics State
   const [diagResults, setDiagResults] = useState<ModuleHealthTestResult[]>([]);
@@ -173,7 +193,7 @@ export const SuperAdminView: React.FC = () => {
     });
   }, [auditLogs, selectedSeverity, searchTerm]);
 
-  // Toggle Store Status (Active / Suspended)
+  // Toggle Store Status (Unlocked / Locked)
   const handleToggleStatus = async (shop: TenantShopInfo) => {
     const nextStatus = !shop.is_active;
     const success = await superAdminService.setShopStatus(shop.id, nextStatus);
@@ -183,7 +203,7 @@ export const SuperAdminView: React.FC = () => {
     }
   };
 
-  // Toggle Module Globally or Per-Shop
+  // Toggle Module Lock / Unlock Globally or Per-Shop
   const handleToggleModule = async (moduleId: ControllableModuleId) => {
     const updated: PlatformModuleControlConfig = {
       ...moduleConfig,
@@ -206,11 +226,11 @@ export const SuperAdminView: React.FC = () => {
 
     setModuleConfig(updated);
     await superAdminService.saveModuleControlConfig(updated);
-    setModuleSaveBanner('✓ Module & Function configuration saved and applied in real time!');
+    setModuleSaveBanner('✓ Permission Lock / Unlock status saved and synced across all devices!');
     setTimeout(() => setModuleSaveBanner(null), 3000);
   };
 
-  // Toggle Platform Feature Permission
+  // Toggle Platform Feature Permission Lock / Unlock
   const handleTogglePermission = async (
     permKey: keyof PlatformModuleControlConfig['featurePermissions']
   ) => {
@@ -224,7 +244,69 @@ export const SuperAdminView: React.FC = () => {
     };
     setModuleConfig(updated);
     await superAdminService.saveModuleControlConfig(updated);
-    setModuleSaveBanner('✓ Platform security & feature permission updated!');
+    setModuleSaveBanner('✓ Platform security & feature Lock / Unlock updated!');
+    setTimeout(() => setModuleSaveBanner(null), 3000);
+  };
+
+  // Toggle Store Manager / Cashier / Salesman Module Lock/Unlock from Super Admin
+  const handleToggleShopStaffRoleModule = async (moduleId: ControllableModuleId) => {
+    const currentRoleTarget = shopStaffPermConfig.rolePermissions[selectedStaffRoleTarget] || {
+      modules: {},
+      actions: {}
+    };
+    const isCurrentlyUnlocked = currentRoleTarget.modules?.[moduleId] !== false;
+    const updated: ShopStaffPermissionsConfig = {
+      ...shopStaffPermConfig,
+      rolePermissions: {
+        ...shopStaffPermConfig.rolePermissions,
+        [selectedStaffRoleTarget]: {
+          ...currentRoleTarget,
+          modules: {
+            ...(currentRoleTarget.modules || {}),
+            [moduleId]: !isCurrentlyUnlocked
+          }
+        }
+      },
+      updatedBy: currentUser?.email || MASTER_EMAIL
+    };
+    setShopStaffPermConfig(updated);
+    await superAdminService.saveShopStaffPermissions(targetShopIdForStaffPerms, updated);
+    setModuleSaveBanner(
+      `✓ ${selectedStaffRoleTarget.toUpperCase()} module (${moduleId}) ${
+        !isCurrentlyUnlocked ? 'UNLOCKED 🔓' : 'LOCKED 🔒'
+      }!`
+    );
+    setTimeout(() => setModuleSaveBanner(null), 3000);
+  };
+
+  // Toggle Store Manager / Cashier / Salesman Action Lock/Unlock from Super Admin
+  const handleToggleShopStaffRoleAction = async (actionId: StaffPermissionActionId) => {
+    const currentRoleTarget = shopStaffPermConfig.rolePermissions[selectedStaffRoleTarget] || {
+      modules: {},
+      actions: {}
+    };
+    const isCurrentlyUnlocked = currentRoleTarget.actions?.[actionId] !== false;
+    const updated: ShopStaffPermissionsConfig = {
+      ...shopStaffPermConfig,
+      rolePermissions: {
+        ...shopStaffPermConfig.rolePermissions,
+        [selectedStaffRoleTarget]: {
+          ...currentRoleTarget,
+          actions: {
+            ...(currentRoleTarget.actions || {}),
+            [actionId]: !isCurrentlyUnlocked
+          }
+        }
+      },
+      updatedBy: currentUser?.email || MASTER_EMAIL
+    };
+    setShopStaffPermConfig(updated);
+    await superAdminService.saveShopStaffPermissions(targetShopIdForStaffPerms, updated);
+    setModuleSaveBanner(
+      `✓ ${selectedStaffRoleTarget.toUpperCase()} action (${actionId}) ${
+        !isCurrentlyUnlocked ? 'UNLOCKED 🔓' : 'LOCKED 🔒'
+      }!`
+    );
     setTimeout(() => setModuleSaveBanner(null), 3000);
   };
 
@@ -247,7 +329,7 @@ export const SuperAdminView: React.FC = () => {
     setTimeout(() => setModuleSaveBanner(null), 3000);
   };
 
-  // Enable All / Reset All Modules
+  // Unlock All / Lock All Modules
   const handleEnableAllModules = async () => {
     const updated: PlatformModuleControlConfig = {
       ...moduleConfig,
@@ -263,7 +345,31 @@ export const SuperAdminView: React.FC = () => {
     }
     setModuleConfig(updated);
     await superAdminService.saveModuleControlConfig(updated);
-    setModuleSaveBanner('✓ All modules enabled!');
+    setModuleSaveBanner('✓ All modules UNLOCKED (🔓)!');
+    setTimeout(() => setModuleSaveBanner(null), 3000);
+  };
+
+  const handleLockAllModules = async () => {
+    const updated: PlatformModuleControlConfig = {
+      ...moduleConfig,
+      globalModules: { ...moduleConfig.globalModules },
+      shopOverrides: { ...moduleConfig.shopOverrides },
+      updatedBy: currentUser?.email || MASTER_EMAIL
+    };
+    if (selectedShopForModules === 'GLOBAL') {
+      ALL_CONTROLLABLE_MODULES.forEach(m => {
+        updated.globalModules[m.id] = false;
+      });
+    } else {
+      const shopOverrides = { ...(updated.shopOverrides[selectedShopForModules] || {}) };
+      ALL_CONTROLLABLE_MODULES.forEach(m => {
+        shopOverrides[m.id] = false;
+      });
+      updated.shopOverrides[selectedShopForModules] = shopOverrides;
+    }
+    setModuleConfig(updated);
+    await superAdminService.saveModuleControlConfig(updated);
+    setModuleSaveBanner('🔒 All controllable modules LOCKED (Visible with Lock icon)!');
     setTimeout(() => setModuleSaveBanner(null), 3000);
   };
 
@@ -335,7 +441,7 @@ export const SuperAdminView: React.FC = () => {
                 <span>Super Admin Command Center</span>
               </h1>
               <span className="text-[10px] px-2 py-0.5 rounded-md bg-indigo-500/30 text-indigo-300 border border-indigo-400/30 font-bold uppercase">
-                Netlify Core + Firebase Ready
+                Lock / Unlock Master Control
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
@@ -380,7 +486,7 @@ export const SuperAdminView: React.FC = () => {
           }`}
         >
           <Building2 className="w-4 h-4 shrink-0" />
-          <span className="truncate">Stores &amp; Users</span>
+          <span className="truncate">Stores &amp; Dashboard</span>
           <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/30 font-mono">
             {shops.length}
           </span>
@@ -395,8 +501,8 @@ export const SuperAdminView: React.FC = () => {
               : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
           }`}
         >
-          <Sliders className="w-4 h-4 shrink-0" />
-          <span className="truncate">Module Control</span>
+          <Lock className="w-4 h-4 shrink-0" />
+          <span className="truncate">Permissions (Lock/Unlock)</span>
         </button>
 
         <button
@@ -440,10 +546,102 @@ export const SuperAdminView: React.FC = () => {
       </div>
 
       {/* ========================================================================= */}
-      {/* TAB 1: SHOP & MULTI-USER CONTROLS                                         */}
+      {/* TAB 1: SHOP & MULTI-USER CONTROLS + DASHBOARD QUICK LOCK/UNLOCK           */}
       {/* ========================================================================= */}
       {activeTab === 'shops' && (
         <div className="space-y-4">
+          {moduleSaveBanner && (
+            <div className="p-3 bg-emerald-600 text-white rounded-2xl text-xs font-bold flex items-center justify-between shadow-md animate-in fade-in">
+              <span>{moduleSaveBanner}</span>
+              <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono">LIVE SYNCED</span>
+            </div>
+          )}
+
+          {/* Super Admin Dashboard Quick Permissions Lock / Unlock Matrix */}
+          <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/80 shadow-xs space-y-3.5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              <div>
+                <h2 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-indigo-600" />
+                  <span>Super Admin Dashboard — Quick Permissions (Lock / Unlock)</span>
+                </h2>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  کسی بھی آپشن کو یہاں سے براہِ راست لاک (🔒 Locked) یا ان لاک (🔓 Unlocked) کریں۔ لاک ہونے پر آپشن نظر آئے گا مگر اس پر لاک لگا ہوگا۔
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleEnableAllModules}
+                  className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-[11px] font-black flex items-center gap-1 cursor-pointer"
+                >
+                  <Unlock className="w-3.5 h-3.5" />
+                  <span>Unlock All</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('modules')}
+                  className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-[11px] font-black flex items-center gap-1 cursor-pointer"
+                >
+                  <Sliders className="w-3.5 h-3.5" />
+                  <span>Full Permissions Tab</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
+              {ALL_CONTROLLABLE_MODULES.map(mod => {
+                const isUnlocked = moduleConfig.globalModules[mod.id] !== false;
+                return (
+                  <div
+                    key={mod.id}
+                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 transition-all ${
+                      isUnlocked
+                        ? 'bg-slate-50/70 border-slate-200/90'
+                        : 'bg-rose-50/50 border-rose-200'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="font-bold text-xs text-slate-900 truncate flex items-center gap-1">
+                        {isUnlocked ? (
+                          <Unlock className="w-3 h-3 text-emerald-600 shrink-0" />
+                        ) : (
+                          <Lock className="w-3 h-3 text-rose-600 shrink-0" />
+                        )}
+                        <span className="truncate">{mod.label}</span>
+                      </div>
+                      <span className="text-[10px] font-bold text-indigo-600 block truncate">
+                        {mod.urduLabel}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleToggleModule(mod.id)}
+                      className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black flex items-center gap-1 shrink-0 transition-all cursor-pointer border ${
+                        isUnlocked
+                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 shadow-xs'
+                          : 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-xs'
+                      }`}
+                    >
+                      {isUnlocked ? (
+                        <>
+                          <Unlock className="w-3 h-3" />
+                          <span>Unlocked</span>
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="w-3 h-3" />
+                          <span>Locked</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Quick Metrics & Search Header */}
           <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
             <div className="flex items-center gap-3 w-full sm:w-auto">
@@ -465,11 +663,11 @@ export const SuperAdminView: React.FC = () => {
               </span>
               <span>·</span>
               <span>
-                Active: <b className="text-emerald-600 font-mono">{shops.filter(s => s.is_active).length}</b>
+                Unlocked: <b className="text-emerald-600 font-mono">{shops.filter(s => s.is_active).length}</b>
               </span>
               <span>·</span>
               <span>
-                Suspended: <b className="text-rose-600 font-mono">{shops.filter(s => !s.is_active).length}</b>
+                Locked: <b className="text-rose-600 font-mono">{shops.filter(s => !s.is_active).length}</b>
               </span>
             </div>
           </div>
@@ -483,7 +681,7 @@ export const SuperAdminView: React.FC = () => {
                     <th className="py-3 px-4">Store Profile</th>
                     <th className="py-3 px-4">Owner &amp; Email</th>
                     <th className="py-3 px-4">Created Date</th>
-                    <th className="py-3 px-4 text-center">Access Status</th>
+                    <th className="py-3 px-4 text-center">Store Access (Lock/Unlock)</th>
                     <th className="py-3 px-4 text-right">Master Actions</th>
                   </tr>
                 </thead>
@@ -514,19 +712,24 @@ export const SuperAdminView: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => handleToggleStatus(shop)}
-                            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold border transition-all cursor-pointer ${
+                            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-[10px] font-black border transition-all cursor-pointer ${
                               shop.is_active
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100'
-                                : 'bg-rose-50 text-rose-700 border-rose-300 hover:bg-rose-100'
+                                ? 'bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-700 shadow-xs'
+                                : 'bg-rose-600 text-white border-rose-700 hover:bg-rose-700 shadow-xs'
                             }`}
-                            title="Click to Activate or Suspend store login"
+                            title="Click to Lock or Unlock store access"
                           >
-                            <span
-                              className={`w-1.5 h-1.5 rounded-full ${
-                                shop.is_active ? 'bg-emerald-500' : 'bg-rose-500'
-                              }`}
-                            />
-                            <span>{shop.is_active ? 'Active' : 'Suspended'}</span>
+                            {shop.is_active ? (
+                              <>
+                                <Unlock className="w-3 h-3" />
+                                <span>Unlocked</span>
+                              </>
+                            ) : (
+                              <>
+                                <Lock className="w-3 h-3" />
+                                <span>Locked</span>
+                              </>
+                            )}
                           </button>
                         </td>
 
@@ -539,10 +742,10 @@ export const SuperAdminView: React.FC = () => {
                                 setActiveTab('modules');
                               }}
                               className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
-                              title="Control Modules for this Shop"
+                              title="Lock / Unlock Permissions for this Shop"
                             >
-                              <Sliders className="w-3.5 h-3.5" />
-                              <span className="hidden md:inline">Modules</span>
+                              <Lock className="w-3.5 h-3.5" />
+                              <span className="hidden md:inline">Permissions</span>
                             </button>
 
                             <button
@@ -555,7 +758,7 @@ export const SuperAdminView: React.FC = () => {
                               className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
                               title="Reset Store Owner Password"
                             >
-                              <Lock className="w-3.5 h-3.5" />
+                              <KeyRound className="w-3.5 h-3.5" />
                               <span className="hidden md:inline">Reset Pass</span>
                             </button>
 
@@ -597,7 +800,7 @@ export const SuperAdminView: React.FC = () => {
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 2: ALL MODULES & FUNCTIONS CONTROL MATRIX                             */}
+      {/* TAB 2: ALL MODULES & PERMISSIONS LOCK / UNLOCK MATRIX                     */}
       {/* ========================================================================= */}
       {activeTab === 'modules' && (
         <div className="space-y-4">
@@ -612,11 +815,11 @@ export const SuperAdminView: React.FC = () => {
           <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="text-sm font-black text-slate-900 flex items-center gap-2">
-                <Sliders className="w-4 h-4 text-indigo-600" />
-                <span>Software Modules &amp; Functions Master Control</span>
+                <Lock className="w-4 h-4 text-indigo-600" />
+                <span>Permissions &amp; Modules Master Control (Lock / Unlock)</span>
               </h2>
               <p className="text-[11px] text-slate-500 mt-0.5">
-                Turn any POS module ON or OFF globally across all stores or customize for a single shop.
+                ہر آپشن کو لاک (🔒 Locked) یا ان لاک (🔓 Unlocked) کریں۔ لاک ہونے والا آپشن غائب نہیں ہوگا بلکہ مینو میں لاک آئیکن کے ساتھ نظر آئے گا۔
               </p>
             </div>
 
@@ -626,7 +829,7 @@ export const SuperAdminView: React.FC = () => {
                 onChange={e => setSelectedShopForModules(e.target.value)}
                 className="px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-600"
               >
-                <option value="GLOBAL">🌐 All Stores (Global Platform Control)</option>
+                <option value="GLOBAL">🌐 All Stores (Global Platform Lock/Unlock)</option>
                 {shops.map(s => (
                   <option key={s.id} value={s.id}>
                     🏪 {s.shop_name} ({s.owner_email || s.id.slice(0, 10)})
@@ -637,14 +840,24 @@ export const SuperAdminView: React.FC = () => {
               <button
                 type="button"
                 onClick={handleEnableAllModules}
-                className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-black transition-colors cursor-pointer flex items-center gap-1"
               >
-                Enable All Modules
+                <Unlock className="w-3.5 h-3.5" />
+                <span>Unlock All</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleLockAllModules}
+                className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-black transition-colors cursor-pointer flex items-center gap-1"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                <span>Lock All</span>
               </button>
             </div>
           </div>
 
-          {/* 11 Core POS Modules Grid */}
+          {/* 11 Core POS Modules Grid (Lock / Unlock Buttons) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {ALL_CONTROLLABLE_MODULES.map(mod => {
               const isGlobalEnabled = moduleConfig.globalModules[mod.id] !== false;
@@ -652,7 +865,7 @@ export const SuperAdminView: React.FC = () => {
                 selectedShopForModules !== 'GLOBAL'
                   ? moduleConfig.shopOverrides[selectedShopForModules]
                   : undefined;
-              const isEnabled =
+              const isUnlocked =
                 selectedShopForModules === 'GLOBAL'
                   ? isGlobalEnabled
                   : typeof shopOverrides?.[mod.id] === 'boolean'
@@ -663,7 +876,7 @@ export const SuperAdminView: React.FC = () => {
                 <div
                   key={mod.id}
                   className={`p-4 rounded-2xl border transition-all flex flex-col justify-between gap-3 ${
-                    isEnabled
+                    isUnlocked
                       ? 'bg-white border-slate-200/90 shadow-xs'
                       : 'bg-rose-50/40 border-rose-200/80'
                   }`}
@@ -671,11 +884,11 @@ export const SuperAdminView: React.FC = () => {
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <div className="flex items-center gap-1.5">
-                        <span
-                          className={`w-2 h-2 rounded-full ${
-                            isEnabled ? 'bg-emerald-500' : 'bg-rose-500'
-                          }`}
-                        />
+                        {isUnlocked ? (
+                          <Unlock className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        ) : (
+                          <Lock className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                        )}
                         <h3 className="font-black text-xs text-slate-900">{mod.label}</h3>
                       </div>
                       <span className="text-[11px] font-bold text-indigo-600 block mt-0.5">
@@ -689,34 +902,174 @@ export const SuperAdminView: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => handleToggleModule(mod.id)}
-                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
-                        isEnabled ? 'bg-emerald-600' : 'bg-slate-300'
+                      className={`px-3 py-1.5 rounded-xl text-[11px] font-black flex items-center gap-1.5 shrink-0 cursor-pointer transition-all border ${
+                        isUnlocked
+                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 shadow-xs'
+                          : 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-xs'
                       }`}
-                      title={isEnabled ? 'Click to Disable Module' : 'Click to Enable Module'}
+                      title={isUnlocked ? 'Click to Lock Option' : 'Click to Unlock Option'}
                     >
-                      <span
-                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                          isEnabled ? 'translate-x-5' : 'translate-x-0'
-                        }`}
-                      />
+                      {isUnlocked ? (
+                        <>
+                          <Unlock className="w-3.5 h-3.5" />
+                          <span>Unlocked</span>
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="w-3.5 h-3.5" />
+                          <span>Locked</span>
+                        </>
+                      )}
                     </button>
                   </div>
 
                   <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[10px]">
                     <span className="font-mono text-slate-400">ID: {mod.id}</span>
                     <span
-                      className={`px-2 py-0.5 rounded font-bold uppercase ${
-                        isEnabled
+                      className={`px-2 py-0.5 rounded font-bold uppercase flex items-center gap-1 ${
+                        isUnlocked
                           ? 'bg-emerald-100 text-emerald-800'
                           : 'bg-rose-100 text-rose-800'
                       }`}
                     >
-                      {isEnabled ? 'Active (ON)' : 'Disabled (OFF)'}
+                      {isUnlocked ? '🔓 Unlocked (Open)' : '🔒 Locked (Visible & Locked)'}
                     </span>
                   </div>
                 </div>
               );
             })}
+          </div>
+
+          {/* Store Admin / Manager / Staff Role Permissions Lock/Unlock Control inside Super Admin */}
+          <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="font-black text-sm text-slate-900 flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-purple-600" />
+                  <span>
+                    Store Users &amp; Manager Role Permissions (Lock / Unlock) —{' '}
+                    {selectedShopForModules === 'GLOBAL'
+                      ? currentShop?.shop_name || 'Current Store'
+                      : shops.find(s => s.id === selectedShopForModules)?.shop_name || selectedShopForModules}
+                  </span>
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  سپر ایڈمن بھی یہاں سے کسی بھی دکان کے مینیجر (Manager)، کیشیئر (Cashier) یا سیلزمین (Salesman) کے تمام آپشنز کو لاک (🔒) یا ان لاک (🔓) کر سکتا ہے۔
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+                {(['manager', 'cashier', 'salesman'] as const).map(role => (
+                  <button
+                    key={role}
+                    type="button"
+                    onClick={() => setSelectedStaffRoleTarget(role)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase transition-all cursor-pointer ${
+                      selectedStaffRoleTarget === role
+                        ? 'bg-purple-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {role}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 text-xs">
+              {ALL_STAFF_CONTROLLABLE_MODULES.map(mod => {
+                const isUnlocked =
+                  shopStaffPermConfig.rolePermissions[selectedStaffRoleTarget]?.modules?.[mod.id] !== false;
+                return (
+                  <div
+                    key={mod.id}
+                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                      isUnlocked
+                        ? 'bg-slate-50/70 border-slate-200'
+                        : 'bg-rose-50/50 border-rose-200'
+                    }`}
+                  >
+                    <div>
+                      <span className="font-bold text-slate-900 block">{mod.label}</span>
+                      <span className="text-[10px] font-bold text-purple-600 block">
+                        {mod.urduLabel}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleShopStaffRoleModule(mod.id)}
+                      className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black flex items-center gap-1 cursor-pointer border ${
+                        isUnlocked
+                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
+                          : 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700'
+                      }`}
+                    >
+                      {isUnlocked ? (
+                        <>
+                          <Unlock className="w-3 h-3" />
+                          <span>Unlocked</span>
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="w-3 h-3" />
+                          <span>Locked</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="pt-2 border-t border-slate-100">
+              <span className="text-[11px] font-black text-slate-700 uppercase block mb-2">
+                {selectedStaffRoleTarget.toUpperCase()} Action Permissions (Add / Edit / Delete):
+              </span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 text-xs">
+                {ALL_STAFF_CONTROLLABLE_ACTIONS.map(act => {
+                  const isUnlocked =
+                    shopStaffPermConfig.rolePermissions[selectedStaffRoleTarget]?.actions?.[act.id] !== false;
+                  return (
+                    <div
+                      key={act.id}
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                        isUnlocked
+                          ? 'bg-slate-50/70 border-slate-200'
+                          : 'bg-rose-50/50 border-rose-200'
+                      }`}
+                    >
+                      <div>
+                        <span className="font-bold text-slate-900 block">{act.label}</span>
+                        <span className="text-[10px] font-bold text-indigo-600 block">
+                          {act.urduLabel}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleShopStaffRoleAction(act.id)}
+                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black flex items-center gap-1 cursor-pointer border ${
+                          isUnlocked
+                            ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
+                            : 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700'
+                        }`}
+                      >
+                        {isUnlocked ? (
+                          <>
+                            <Unlock className="w-3 h-3" />
+                            <span>Unlocked</span>
+                          </>
+                        ) : (
+                          <>
+                            <Lock className="w-3 h-3" />
+                            <span>Locked</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           {/* Data Update Delay Time & Loading Wheel Master Control (All Accounts) */}
@@ -843,14 +1196,14 @@ export const SuperAdminView: React.FC = () => {
             </div>
           </div>
 
-          {/* Platform Feature & Function Permissions */}
+          {/* Platform Feature & Function Permissions (Lock / Unlock Buttons) */}
           <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-4">
             <div className="border-b border-slate-100 pb-3">
               <h3 className="font-black text-sm text-slate-900">
-                Global Function &amp; Security Permissions (All Users &amp; Signups)
+                Global Function &amp; Security Permissions (Lock / Unlock)
               </h3>
               <p className="text-[11px] text-slate-500">
-                Control multi-user registration, staff creation, data export, SQL imports, and password policies.
+                Control multi-user registration, staff creation, data export, SQL imports, and password policies via Lock / Unlock.
               </p>
             </div>
 
@@ -891,7 +1244,11 @@ export const SuperAdminView: React.FC = () => {
                 return (
                   <div
                     key={item.key}
-                    className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 flex items-center justify-between gap-3"
+                    className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 ${
+                      enabled
+                        ? 'border-slate-200 bg-slate-50/70'
+                        : 'border-rose-200 bg-rose-50/40'
+                    }`}
                   >
                     <div>
                       <span className="font-bold text-slate-900 block">{item.title}</span>
@@ -902,15 +1259,23 @@ export const SuperAdminView: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => handleTogglePermission(item.key)}
-                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out ${
-                        enabled ? 'bg-indigo-600' : 'bg-slate-300'
+                      className={`px-3 py-1.5 rounded-xl text-[11px] font-black flex items-center gap-1 shrink-0 cursor-pointer transition-all border ${
+                        enabled
+                          ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 shadow-xs'
+                          : 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-xs'
                       }`}
                     >
-                      <span
-                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                          enabled ? 'translate-x-5' : 'translate-x-0'
-                        }`}
-                      />
+                      {enabled ? (
+                        <>
+                          <Unlock className="w-3.5 h-3.5" />
+                          <span>Unlocked</span>
+                        </>
+                      ) : (
+                        <>
+                          <Lock className="w-3.5 h-3.5" />
+                          <span>Locked</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 );
