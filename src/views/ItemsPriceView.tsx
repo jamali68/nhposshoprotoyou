@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
 import { BottleItem } from '../types/pos';
+import { showAppAlert, showAppConfirm } from '../components/AppDialogHost';
 
 export const ItemsPriceView: React.FC = () => {
   const {
@@ -69,15 +70,21 @@ export const ItemsPriceView: React.FC = () => {
 
     const success = updateBottleItem(updatedItem);
     if (!success) {
-      alert('Error: An item with this name already exists!');
+      showAppAlert('Error: An item with this name already exists!');
       return;
     }
 
     setEditingId(null);
   };
 
-  const handleDelete = (id: string, name: string) => {
-    if (window.confirm(`Are you sure you want to delete "${name}"?`)) {
+  const handleDelete = async (id: string, name: string) => {
+    const confirmed = await showAppConfirm({
+      title: 'Delete Item',
+      message: `Are you sure you want to delete "${name}"?`,
+      confirmText: 'Delete',
+      variant: 'danger'
+    });
+    if (confirmed) {
       deleteBottleItem(id);
     }
   };
@@ -99,7 +106,7 @@ export const ItemsPriceView: React.FC = () => {
     });
 
     if (!success) {
-      alert('Error: An item with this name already exists!');
+      showAppAlert('Error: An item with this name already exists!');
       return;
     }
 
@@ -181,6 +188,9 @@ export const ItemsPriceView: React.FC = () => {
                       {isEditing ? (
                         <input
                           type="text"
+                          name="edit_item_name"
+                          list="nh-item-suggestions"
+                          autoComplete="on"
                           value={editValues.item_name ?? item.item_name}
                           onChange={e => setEditValues({ ...editValues, item_name: e.target.value })}
                           className="w-36 p-1 bg-white border border-slate-300 rounded font-bold text-xs"
@@ -296,6 +306,9 @@ export const ItemsPriceView: React.FC = () => {
             <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Item Name</label>
             <input
               type="text"
+              name="item_name"
+              list="nh-item-suggestions"
+              autoComplete="on"
               value={newName}
               onChange={e => setNewName(e.target.value)}
               placeholder="e.g. Cola Next 1.5L / Sugar 1kg"

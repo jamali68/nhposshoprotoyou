@@ -13,7 +13,8 @@ import {
   Trash2,
   CheckCircle,
   Printer,
-  Package
+  Package,
+  AlertTriangle
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { usePOS } from '../context/POSContext';
@@ -32,6 +33,7 @@ export const POSSaleView: React.FC = () => {
   } = usePOS();
 
   const [search, setSearch] = useState<string>('');
+  const [stockWarning, setStockWarning] = useState<string | null>(null);
   const [lastSaleReceipt, setLastSaleReceipt] = useState<{
     saleId: string;
     total: number;
@@ -45,16 +47,43 @@ export const POSSaleView: React.FC = () => {
 
   const cartTotal = cart.reduce((acc, it) => acc + it.price * it.qty, 0);
 
+  const showWarning = (msg: string) => {
+    setStockWarning(msg);
+    setTimeout(() => {
+      setStockWarning(prev => (prev === msg ? null : prev));
+    }, 4000);
+  };
+
+  const handleAddProduct = (product: typeof bottleItems[number]) => {
+    const existing = cart.find(c => c.id === product.id);
+    if (product.total_stock <= 0) {
+      showWarning(`"${product.item_name}" ka stock khatam hai (0 Pets).`);
+      return;
+    }
+    if (existing && existing.qty >= product.total_stock) {
+      showWarning(`"${product.item_name}" ka sirf ${product.total_stock} stock maujood hai.`);
+      return;
+    }
+    setStockWarning(null);
+    addToCart(product);
+  };
+
   const handleCompleteSale = () => {
     if (cart.length === 0) {
-      alert('Cart is empty! Please add items first.');
+      showWarning('Cart khali hai! Pehle items add karein.');
       return;
     }
 
     const currentCartCopy = [...cart];
     const res = completeSale();
 
-    if (res.success && res.saleId) {
+    if (!res.success) {
+      showWarning(res.error || 'Stock kam hone ki wajah se sale complete nahi ho saki.');
+      return;
+    }
+
+    if (res.saleId) {
+      setStockWarning(null);
       // Fire confetti
       confetti({
         particleCount: 80,
@@ -100,6 +129,9 @@ export const POSSaleView: React.FC = () => {
             <Search className="w-4 h-4 text-emerald-600 absolute left-3.5 top-3.5" />
             <input
               type="text"
+              name="pos_item_search"
+              list="nh-item-suggestions"
+              autoComplete="on"
               value={search}
               onChange={e => setSearch(e.target.value)}
               placeholder="Item ka naam likhein (e.g. Pepsi, Cola)..."
@@ -116,14 +148,18 @@ export const POSSaleView: React.FC = () => {
 
             <div className="max-h-[500px] overflow-y-auto space-y-2 pr-1">
               {filteredProducts.map(product => {
+                const inCartQty = cart.find(c => c.id === product.id)?.qty || 0;
                 const isOutOfStock = product.total_stock <= 0;
+                const isMaxInCart = !isOutOfStock && inCartQty >= product.total_stock;
                 return (
                   <div
                     key={product.id}
-                    onClick={() => !isOutOfStock && addToCart(product)}
+                    onClick={() => handleAddProduct(product)}
                     className={`p-3 rounded-xl border flex items-center justify-between text-xs transition-all cursor-pointer ${
                       isOutOfStock
                         ? 'bg-slate-50 border-slate-200 opacity-60 cursor-not-allowed'
+                        : isMaxInCart
+                        ? 'bg-amber-50/40 border-amber-300'
                         : 'bg-white border-slate-200/80 hover:border-emerald-500 hover:shadow-xs hover:bg-emerald-50/20 active:scale-[0.99]'
                     }`}
                   >
@@ -144,19 +180,19 @@ export const POSSaleView: React.FC = () => {
 
                     <button
                       type="button"
-                      disabled={isOutOfStock}
+                      disabled={isOutOfStock || isMaxInCart}
                       onClick={e => {
                         e.stopPropagation();
-                        addToCart(product);
+                        handleAddProduct(product);
                       }}
                       className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1 shadow-xs transition-colors ${
-                        isOutOfStock
-                          ? 'bg-slate-200 text-slate-400'
+                        isOutOfStock || isMaxInCart
+                          ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
                           : 'bg-[#27ae60] hover:bg-emerald-700 text-white'
                       }`}
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>Add</span>
+                      <span>{isMaxInCart ? 'Max' : 'Add'}</span>
                     </button>
                   </div>
                 );
@@ -185,15 +221,25 @@ export const POSSaleView: React.FC = () => {
                 )}
               </div>
 
+              {stockWarning && (
+                <div className="mt-3 p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+                  <span>{stockWarning}</span>
+                </div>
+              )}
+
               {/* Cart Items List */}
               <div className="py-3 max-h-72 overflow-y-auto space-y-2.5 divide-y divide-slate-100">
                 {cart.length > 0 ? (
-                  cart.map(item => (
+                  cart.map(item => {
+                    const liveStock = bottleItems.find(b => b.id === item.id)?.total_stock ?? 0;
+                    const atStockLimit = item.qty >= liveStock;
+                    return (
                     <div key={item.id} className="pt-2 first:pt-0 flex items-center justify-between text-xs gap-2">
                       <div className="flex-1 min-w-0">
                         <span className="font-bold text-slate-800 truncate block">{item.name}</span>
                         <span className="text-[11px] text-slate-500 font-mono">
-                          Rs. {item.price} each
+                          Rs. {item.price} each • Stock: {liveStock}
                         </span>
                       </div>
 
@@ -201,7 +247,10 @@ export const POSSaleView: React.FC = () => {
                       <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
                         <button
                           type="button"
-                          onClick={() => updateCartQty(item.id, item.qty - 1)}
+                          onClick={() => {
+                            setStockWarning(null);
+                            updateCartQty(item.id, item.qty - 1);
+                          }}
                           className="w-5 h-5 bg-white text-slate-600 rounded-lg flex items-center justify-center font-bold hover:bg-slate-200 shadow-xs"
                         >
                           <Minus className="w-3 h-3" />
@@ -209,8 +258,19 @@ export const POSSaleView: React.FC = () => {
                         <span className="font-bold font-mono px-1 min-w-5 text-center">{item.qty}</span>
                         <button
                           type="button"
-                          onClick={() => updateCartQty(item.id, item.qty + 1)}
-                          className="w-5 h-5 bg-white text-slate-600 rounded-lg flex items-center justify-center font-bold hover:bg-slate-200 shadow-xs"
+                          onClick={() => {
+                            if (atStockLimit) {
+                              showWarning(`"${item.name}" ka sirf ${liveStock} stock maujood hai.`);
+                              return;
+                            }
+                            setStockWarning(null);
+                            updateCartQty(item.id, item.qty + 1);
+                          }}
+                          className={`w-5 h-5 rounded-lg flex items-center justify-center font-bold shadow-xs ${
+                            atStockLimit
+                              ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                              : 'bg-white text-slate-600 hover:bg-slate-200'
+                          }`}
                         >
                           <Plus className="w-3 h-3" />
                         </button>
@@ -230,7 +290,8 @@ export const POSSaleView: React.FC = () => {
                         </button>
                       </div>
                     </div>
-                  ))
+                  );
+                  })
                 ) : (
                   <div className="py-16 text-center text-slate-400 text-xs space-y-2">
                     <ShoppingCart className="w-8 h-8 mx-auto opacity-30" />

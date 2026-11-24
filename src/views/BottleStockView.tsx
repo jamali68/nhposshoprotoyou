@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
 import { BottleItem } from '../types/pos';
+import { showAppAlert } from '../components/AppDialogHost';
 
 export const BottleStockView: React.FC = () => {
   const {
@@ -56,13 +57,13 @@ export const BottleStockView: React.FC = () => {
     if (!managingItem) return;
     const num = parseInt(qty, 10);
     if (isNaN(num) || num <= 0) {
-      alert('Please enter a valid quantity!');
+      showAppAlert('Please enter a valid quantity!');
       return;
     }
 
     const success = updateItemStock(managingItem.id, num, stockType, note);
     if (!success) {
-      alert('Insufficient stock! Cannot deduct more than available balance.');
+      showAppAlert('Insufficient stock! Cannot deduct more than available balance.');
       return;
     }
 
@@ -237,6 +238,9 @@ export const BottleStockView: React.FC = () => {
 
               <input
                 type="text"
+                name="stock_note"
+                list="nh-note-suggestions"
+                autoComplete="on"
                 value={note}
                 onChange={e => setNote(e.target.value)}
                 placeholder="Note (e.g. Sold to ABC / Fresh Batch)"

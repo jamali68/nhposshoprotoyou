@@ -17,6 +17,7 @@ import { ForcePasswordChangeModal } from './components/ForcePasswordChangeModal'
 import { AdminProfileModal } from './components/AdminProfileModal';
 import { PWAInstallBanner } from './components/PWAInstallBanner';
 import { PWAInstallGuideModal } from './components/PWAInstallGuideModal';
+import { AppDialogHost } from './components/AppDialogHost';
 
 import { LoginView } from './views/LoginView';
 import { DashboardView } from './views/DashboardView';
@@ -730,6 +731,7 @@ export default function App() {
   return (
     <POSProvider>
       <MainAppContent />
+      <AppDialogHost />
     </POSProvider>
   );
 }

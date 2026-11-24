@@ -1,9 +1,108 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Full power open read and write for all documents, collections, and subcollections
+
+    function isValidId(id) {
+      return id is string
+        && id.size() >= 1
+        && id.size() <= 128
+        && id.matches('^[a-zA-Z0-9._@-]+$');
+    }
+
+    function isSuperAdmin() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && (
+          request.auth.token.email == 'helpgoodforyouofficial@gmail.com' ||
+          request.auth.token.email == 'aliimtiaz1126@gmail.com'
+        );
+    }
+
+    function isValidPayload() {
+      return request.resource.data is map
+        && request.resource.data.keys().size() > 0
+        && request.resource.data.keys().size() <= 120;
+    }
+
+    function isAllowedShopSubcollection(sub) {
+      return sub in [
+        'daily_transactions',
+        'back_cash_transactions',
+        'wholesaler_bills',
+        'customer_bills',
+        'easyload_records',
+        'bottle_items',
+        'stock_transactions',
+        'staff_accounts',
+        'edit_history',
+        'deleted_history'
+      ];
+    }
+
+    // Platform & System Settings: Readable by shops; Writable ONLY by verified Super Admin
+    match /platform_settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if isSuperAdmin();
+      allow create, update: if isSuperAdmin() && isValidId(settingId) && isValidPayload();
+      allow delete: if isSuperAdmin() && isValidId(settingId);
+    }
+
+    match /system_settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if isSuperAdmin();
+      allow create, update: if isSuperAdmin() && isValidId(settingId) && isValidPayload();
+      allow delete: if isSuperAdmin() && isValidId(settingId);
+    }
+
+    // Staff Directory: Single-doc lookup for Staff Login (Blocks bulk credential scraping)
+    match /staff_directory/{username} {
+      allow get: if isValidId(username);
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidId(username) && isValidPayload();
+      allow delete: if isValidId(username);
+    }
+
+    // Account Registry: Lookup by email key or authenticated query; deletion restricted to Super Admin
+    match /account_registry/{emailKey} {
+      allow get: if isValidId(emailKey);
+      allow list: if isSuperAdmin() || request.auth != null;
+      allow create, update: if isValidId(emailKey) && isValidPayload();
+      allow delete: if isSuperAdmin() && isValidId(emailKey);
+    }
+
+    // User Profiles: Blocks bulk scraping and non-admin deletion
+    match /users/{userId} {
+      allow get: if isValidId(userId);
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidId(userId) && isValidPayload();
+      allow delete: if isSuperAdmin() && isValidId(userId);
+    }
+
+    // Multi-Tenant Shops & Strictly Allowlisted Subcollections
+    // Preserves compatibility for Google Auth, Email/Password Owners, and Staff logins
+    // while blocking rogue collections, ID poisoning, bulk shop scraping, and shop deletion.
+    match /shops/{shopId} {
+      allow get: if isValidId(shopId);
+      allow list: if isSuperAdmin() || request.auth != null;
+      allow create, update: if isValidId(shopId) && isValidPayload();
+      allow delete: if isSuperAdmin() && isValidId(shopId);
+
+      match /{subcollection}/{docId} {
+        allow read: if isValidId(shopId)
+          && isAllowedShopSubcollection(subcollection);
+        allow create, update: if isValidId(shopId)
+          && isValidId(docId)
+          && isValidPayload()
+          && isAllowedShopSubcollection(subcollection);
+        allow delete: if isValidId(shopId)
+          && isValidId(docId)
+          && isAllowedShopSubcollection(subcollection);
+      }
+    }
+
+    // Default-Deny Catch-All: Block all unmatched paths completely
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }

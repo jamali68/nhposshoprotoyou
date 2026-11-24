@@ -22,6 +22,7 @@ import {
 import { usePOS } from '../context/POSContext';
 import { CustomerBill } from '../types/pos';
 import { PrintReceiptModal } from '../components/PrintReceiptModal';
+import { showAppAlert, showAppConfirm } from '../components/AppDialogHost';
 
 export const CustomerBillsView: React.FC = () => {
   const {
@@ -96,14 +97,14 @@ export const CustomerBillsView: React.FC = () => {
     e.preventDefault();
     const trimmedName = name.trim();
     if (!trimmedName) {
-      alert('Customer ka naam likhna zaroori hai!');
+      showAppAlert('Customer ka naam likhna zaroori hai!');
       return;
     }
 
     // Amount can be 0 or empty (defaults to 0 as requested)
     const val = amount.trim() === '' ? 0 : parseFloat(amount);
     if (isNaN(val) || val < 0) {
-      alert('Baraye meharbani durust raqam (0 ya us se zyada) darj karein!');
+      showAppAlert('Baraye meharbani durust raqam (0 ya us se zyada) darj karein!');
       return;
     }
 
@@ -127,18 +128,24 @@ export const CustomerBillsView: React.FC = () => {
     setShowAddForm(false);
   };
 
-  const handleReceive = (bill: CustomerBill) => {
+  const handleReceive = async (bill: CustomerBill) => {
     const inputVal = receiveInputs[bill.id] !== undefined ? parseFloat(receiveInputs[bill.id]) : bill.remaining_balance;
     if (isNaN(inputVal) || inputVal <= 0) {
-      alert('Please enter a valid payment amount!');
+      showAppAlert('Please enter a valid payment amount!');
       return;
     }
     if (inputVal > bill.remaining_balance) {
-      alert('Payment cannot exceed remaining balance!');
+      showAppAlert('Payment cannot exceed remaining balance!');
       return;
     }
 
-    if (window.confirm(`Record receipt of Rs. ${inputVal.toLocaleString()} from ${bill.customer_name}?`)) {
+    const confirmed = await showAppConfirm({
+      title: 'Confirm Payment Receipt',
+      message: `Record receipt of Rs. ${inputVal.toLocaleString()} from ${bill.customer_name}?`,
+      confirmText: 'Record Receipt',
+      variant: 'primary'
+    });
+    if (confirmed) {
       receiveCustomerPayment(bill.id, inputVal);
       setReceiveInputs(prev => ({ ...prev, [bill.id]: '' }));
     }
@@ -147,7 +154,7 @@ export const CustomerBillsView: React.FC = () => {
   const handlePayMore = (bill: CustomerBill) => {
     const inputVal = parseFloat(payMoreInputs[bill.id]);
     if (isNaN(inputVal) || inputVal <= 0) {
-      alert('Please enter credit amount!');
+      showAppAlert('Please enter credit amount!');
       return;
     }
 
@@ -155,8 +162,14 @@ export const CustomerBillsView: React.FC = () => {
     setPayMoreInputs(prev => ({ ...prev, [bill.id]: '' }));
   };
 
-  const handleDelete = (id: string) => {
-    if (window.confirm('Are you sure you want to delete this customer record?')) {
+  const handleDelete = async (id: string) => {
+    const confirmed = await showAppConfirm({
+      title: 'Delete Customer Record',
+      message: 'Are you sure you want to delete this customer record?',
+      confirmText: 'Delete',
+      variant: 'danger'
+    });
+    if (confirmed) {
       deleteCustomer(id);
     }
   };
@@ -167,7 +180,7 @@ export const CustomerBillsView: React.FC = () => {
 
     const trimmedName = editItem.customer_name?.trim();
     if (!trimmedName) {
-      alert('Customer ka naam zaroori hai!');
+      showAppAlert('Customer ka naam zaroori hai!');
       return;
     }
 
@@ -175,7 +188,7 @@ export const CustomerBillsView: React.FC = () => {
     const remainingVal = editRemainingStr.trim() === '' ? 0 : parseFloat(editRemainingStr);
 
     if (isNaN(totalBillVal) || totalBillVal < 0 || isNaN(remainingVal) || remainingVal < 0) {
-      alert('Baraye meharbani durust raqam (0 ya us se zyada) darj karein!');
+      showAppAlert('Baraye meharbani durust raqam (0 ya us se zyada) darj karein!');
       return;
     }
 
@@ -266,6 +279,9 @@ export const CustomerBillsView: React.FC = () => {
           <form onSubmit={handleAddCustomer} className="space-y-2.5 text-xs">
             <input
               type="text"
+              name="customer_name"
+              list="nh-customer-suggestions"
+              autoComplete="on"
               value={name}
               onChange={e => setName(e.target.value)}
               placeholder="Customer Name *"
@@ -495,6 +511,9 @@ export const CustomerBillsView: React.FC = () => {
                 <label className="block text-[11px] font-bold text-slate-500 mb-1">Customer Name</label>
                 <input
                   type="text"
+                  name="edit_customer_name"
+                  list="nh-customer-suggestions"
+                  autoComplete="on"
                   value={editItem.customer_name}
                   onChange={e => setEditItem({ ...editItem, customer_name: e.target.value })}
                   required

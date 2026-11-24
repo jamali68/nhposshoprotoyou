@@ -7,6 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Save, CheckCircle2, Bolt, Circle, Leaf, Radio } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
 import { EasyloadRecord } from '../types/pos';
+import { DateNavigator } from '../components/DateNavigator';
 
 export const EasyloadLedgerView: React.FC = () => {
   const {
@@ -134,14 +135,11 @@ export const EasyloadLedgerView: React.FC = () => {
       )}
 
       {/* Date Filter */}
-      <div className="bg-white p-3 rounded-2xl text-center shadow-xs border border-slate-200/80">
-        <input
-          type="date"
-          value={filterDate}
-          onChange={e => setFilterDate(e.target.value)}
-          className="py-1.5 px-4 bg-slate-50 border border-slate-300 font-bold text-xs rounded-full shadow-xs cursor-pointer focus:outline-none"
-        />
-      </div>
+      <DateNavigator
+        value={filterDate}
+        onChange={setFilterDate}
+        accentColor="blue"
+      />
 
       {/* Toggle Slider (Matching PHP: Closing vs Opening) */}
       <div className="bg-slate-200 p-1.5 rounded-full flex relative select-none cursor-pointer">

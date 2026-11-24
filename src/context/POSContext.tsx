@@ -4,8 +4,34 @@
  */
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
-import { doc, getDoc, setDoc, deleteDoc, collection, getDocs, onSnapshot, query, where } from 'firebase/firestore';
-import { db, auth, googleProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut } from '../firebase';
+import {
+  db,
+  auth,
+  googleProvider,
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  signOut,
+  doc,
+  getDoc,
+  setDoc,
+  deleteDoc,
+  collection,
+  getDocs,
+  onSnapshot,
+  query,
+  where
+} from '../firebase';
+import {
+  setActiveTelemetryShopId,
+  loadShopTelemetry,
+  mergeShopUsageTelemetry,
+  trackNetlifyFunctionCall
+} from '../utils/usageTracker';
+import {
+  rememberTextSuggestion,
+  getCombinedSuggestions
+} from '../utils/suggestionMemory';
 import { handleFirestoreError, OperationType } from '../firestoreErrorHandler';
 import {
   User,
@@ -209,7 +235,7 @@ interface POSContextType {
   updateCartQty: (id: string, qty: number) => void;
   removeFromCart: (id: string) => void;
   clearCart: () => void;
-  completeSale: () => { success: boolean; saleId?: string; total?: number };
+  completeSale: () => { success: boolean; saleId?: string; total?: number; error?: string };
 
   // CRUD Actions
   addDailyTransaction: (tx: Omit<DailyTransaction, 'id' | 'created_by'>) => void;
@@ -1043,7 +1069,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ]);
 
         if (shopSnap && shopSnap.exists()) {
-          const sData = shopSnap.data() as ShopProfile;
+          const sData = shopSnap.data() as any;
+          if (sData.usage_telemetry) {
+            mergeShopUsageTelemetry(shopId, sData.usage_telemetry);
+          }
           setCurrentShop(prev => (prev ? { ...prev, ...sData } : sData));
           pulledColsCount++;
         }
@@ -1160,12 +1189,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   useEffect(() => {
     if (!currentShopId || isDemoMode) return;
 
+    setActiveTelemetryShopId(currentShopId, currentShop?.shop_name);
     const shopDocRef = doc(db, 'shops', currentShopId);
     const unsubscribe = onSnapshot(
       shopDocRef,
       async snap => {
         if (!snap.exists()) return;
         const sData = snap.data() as any;
+        if (sData.usage_telemetry) {
+          mergeShopUsageTelemetry(currentShopId, sData.usage_telemetry);
+        }
 
         // Sync Store Admin's Staff/Manager Lock/Unlock Permissions in real time across devices
         if (sData.staff_permissions_config && typeof sData.staff_permissions_config === 'object') {
@@ -1445,7 +1478,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           sanitizeForFirestore({
             last_data_sync_at: pulseTs,
             last_data_sync_by: currentUser?.name || currentUser?.username || currentUser?.role || 'user',
-            collection_sync_at: nextColMap
+            collection_sync_at: nextColMap,
+            usage_telemetry: loadShopTelemetry(currentShopId)
           }),
           { merge: true }
         );
@@ -2474,6 +2508,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setPendingOtpCode(newOtp);
 
     // Dispatch re-sent verification email to customer's Gmail inbox & capture server HMAC challengeToken
+    trackNetlifyFunctionCall(850);
     fetch('/.netlify/functions/send-otp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -4763,8 +4798,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const getTotalPendingMarketBalance = () => {
-    // Total bottle sales minus total payment received
-    return 15600; // Calculated pending metric
+    return getTotalCustomerReceivable();
   };
 
   const getTotalWholesalerPayable = () => {
@@ -4781,6 +4815,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Daily Cash (Shop Galla)
   const addDailyTransaction = (tx: Omit<DailyTransaction, 'id' | 'created_by'>) => {
+    rememberTextSuggestion(tx.description, 'note');
     const newTx: DailyTransaction = {
       ...tx,
       id: `dt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -4800,6 +4835,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateDailyTransaction = (id: string, newAmount: number, newDesc: string, newType?: string) => {
+    rememberTextSuggestion(newDesc, 'note');
     scheduleDataMutation(
       'edit',
       'کیش ریکارڈ اپڈیٹ کیا جا رہا ہے...',
@@ -4918,6 +4954,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Back Cash
   const addBackCash = (tx: Omit<BackCashTransaction, 'id' | 'created_by'>) => {
+    rememberTextSuggestion(tx.note, 'note');
     const role = currentUser?.role || 'user';
     const name = currentUser?.name || currentUser?.username || (role.charAt(0).toUpperCase() + role.slice(1));
     const designation = role.charAt(0).toUpperCase() + role.slice(1);
@@ -4943,6 +4980,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateBackCash = (id: string, newAmount: number, newNote: string, newType?: BackCashTransaction['type']) => {
+    rememberTextSuggestion(newNote, 'note');
     const editorRole = currentUser?.role || 'user';
     const editorName = currentUser?.name || currentUser?.username || (editorRole.charAt(0).toUpperCase() + editorRole.slice(1));
 
@@ -5052,6 +5090,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const dtId = `dt-${ts}`;
     const bcId = `bc-${ts}`;
     const userNote = params.note?.trim();
+    if (userNote) {
+      rememberTextSuggestion(userNote, 'note');
+    }
 
     scheduleDataMutation(
       'add',
@@ -5133,6 +5174,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Wholesalers Khata
   const addWholesaler = (bill: Omit<WholesalerBill, 'id' | 'remaining_balance' | 'created_date' | 'status'>) => {
+    rememberTextSuggestion(bill.customer_name, 'wholesaler');
+    rememberTextSuggestion(bill.customer_name, 'note');
     const isZero = (bill.total_bill || 0) <= 0;
     const newBill: WholesalerBill = {
       ...bill,
@@ -5226,6 +5269,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateWholesaler = (bill: WholesalerBill) => {
+    rememberTextSuggestion(bill.customer_name, 'wholesaler');
+    rememberTextSuggestion(bill.customer_name, 'note');
     scheduleDataMutation(
       'edit',
       'ہول سیلر کھاتہ اپڈیٹ کیا جا رہا ہے...',
@@ -5251,6 +5296,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Customers Khata (Udhaar)
   const addCustomer = (bill: Omit<CustomerBill, 'id' | 'remaining_balance' | 'created_date' | 'status'>) => {
+    rememberTextSuggestion(bill.customer_name, 'customer');
+    rememberTextSuggestion(bill.customer_name, 'note');
     const isZero = (bill.total_bill || 0) <= 0;
     const newBill: CustomerBill = {
       ...bill,
@@ -5355,6 +5402,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateCustomer = (bill: CustomerBill) => {
+    rememberTextSuggestion(bill.customer_name, 'customer');
+    rememberTextSuggestion(bill.customer_name, 'note');
     scheduleDataMutation(
       'edit',
       'کسٹمر کھاتہ اپڈیٹ کیا جا رہا ہے...',
@@ -5422,6 +5471,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     note?: string
   ) => {
     if (amount <= 0) return;
+    if (note) {
+      rememberTextSuggestion(note, 'note');
+    }
     const commissionPercent = 2.4; // 2.4%
     const commissionEarned = amount * (commissionPercent / 100);
     const totalSimBalanceAdded = amount + commissionEarned;
@@ -5475,6 +5527,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const addBottleItem = (item: Omit<BottleItem, 'id' | 'total_stock'>) => {
     const exists = bottleItems.some(b => b.item_name.toLowerCase().trim() === item.item_name.toLowerCase().trim());
     if (exists) return false;
+    rememberTextSuggestion(item.item_name, 'item');
 
     const newItem: BottleItem = {
       ...item,
@@ -5496,6 +5549,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const updateBottleItem = (item: BottleItem) => {
     const dup = bottleItems.some(b => b.id !== item.id && b.item_name.toLowerCase().trim() === item.item_name.toLowerCase().trim());
     if (dup) return false;
+    rememberTextSuggestion(item.item_name, 'item');
 
     scheduleDataMutation(
       'edit',
@@ -5524,6 +5578,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const updateItemStock = (itemId: string, qty: number, type: 'add' | 'remove', note?: string) => {
     const item = bottleItems.find(b => b.id === itemId);
     if (!item) return false;
+    if (note) {
+      rememberTextSuggestion(note, 'note');
+    }
 
     if (type === 'remove' && qty > item.total_stock) {
       return false; // Insufficient stock
@@ -5584,6 +5641,52 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             note: item.note,
             transaction_date: item.transaction_date
           });
+        } else if (item.source === 'customer_khata') {
+          addDailyTransaction({
+            type: item.type as any,
+            amount: item.amount,
+            description: item.note,
+            transaction_date: item.transaction_date,
+            bill_id: item.bill_id,
+            party_type: item.party_type || 'customer'
+          });
+          if (item.bill_id && item.type === 'in') {
+            setCustomers(prev =>
+              prev.map(c => {
+                if (c.id === item.bill_id) {
+                  const newRem = Math.max(0, (c.remaining_balance || 0) - item.amount);
+                  const newStatus = newRem <= 0 ? ('paid' as const) : ('pending' as const);
+                  const updated = { ...c, remaining_balance: newRem, status: newStatus };
+                  saveDocToShop('customer_bills', updated.id, updated);
+                  return updated;
+                }
+                return c;
+              })
+            );
+          }
+        } else if (item.source === 'wholesaler_khata') {
+          addDailyTransaction({
+            type: item.type as any,
+            amount: item.amount,
+            description: item.note,
+            transaction_date: item.transaction_date,
+            bill_id: item.bill_id,
+            party_type: item.party_type || 'wholesaler'
+          });
+          if (item.bill_id && item.type === 'out') {
+            setWholesalers(prev =>
+              prev.map(w => {
+                if (w.id === item.bill_id) {
+                  const newRem = Math.max(0, (w.remaining_balance || 0) - item.amount);
+                  const newStatus = newRem <= 0 ? ('paid' as const) : ('pending' as const);
+                  const updated = { ...w, remaining_balance: newRem, status: newStatus };
+                  saveDocToShop('wholesaler_bills', updated.id, updated);
+                  return updated;
+                }
+                return w;
+              })
+            );
+          }
         }
 
         setDeletedHistory(prev => prev.filter(d => d.id !== id));
@@ -5610,9 +5713,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Cart / POS billing
   const addToCart = (item: BottleItem) => {
+    const liveProduct = bottleItems.find(b => b.id === item.id);
+    const availableStock = liveProduct ? liveProduct.total_stock : item.total_stock;
+    if (availableStock <= 0) return;
+
     setCart(prev => {
       const existing = prev.find(i => i.id === item.id);
       if (existing) {
+        if (existing.qty >= availableStock) {
+          return prev;
+        }
         return prev.map(i => (i.id === item.id ? { ...i, qty: i.qty + 1 } : i));
       }
       return [...prev, { id: item.id, name: item.item_name, price: item.unit_price, qty: 1 }];
@@ -5624,7 +5734,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       removeFromCart(id);
       return;
     }
-    setCart(prev => prev.map(i => (i.id === id ? { ...i, qty } : i)));
+    const liveProduct = bottleItems.find(b => b.id === id);
+    const maxStock = liveProduct ? liveProduct.total_stock : Infinity;
+    if (maxStock <= 0) {
+      removeFromCart(id);
+      return;
+    }
+    const safeQty = Math.min(qty, maxStock);
+    setCart(prev => prev.map(i => (i.id === id ? { ...i, qty: safeQty } : i)));
   };
 
   const removeFromCart = (id: string) => {
@@ -5634,7 +5751,26 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const clearCart = () => setCart([]);
 
   const completeSale = () => {
-    if (cart.length === 0) return { success: false };
+    if (cart.length === 0) {
+      return { success: false, error: 'Cart khali hai! Pehle items add karein.' };
+    }
+
+    // Strict stock verification before touching inventory or Shop Cash
+    for (const cartItem of cart) {
+      const product = bottleItems.find(b => b.id === cartItem.id);
+      if (!product) {
+        return {
+          success: false,
+          error: `"${cartItem.name}" inventory mein maujood nahi hai.`
+        };
+      }
+      if (cartItem.qty > product.total_stock) {
+        return {
+          success: false,
+          error: `"${cartItem.name}" ka sirf ${product.total_stock} stock maujood hai (Cart mein ${cartItem.qty} hain).`
+        };
+      }
+    }
 
     const cartSnapshot = [...cart];
     const total = cartSnapshot.reduce((acc, item) => acc + item.price * item.qty, 0);
@@ -5744,7 +5880,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           return updated;
         });
         newCusts.forEach(c => {
-          saveDocToShop('customers', c.id, c);
+          saveDocToShop('customer_bills', c.id, c);
         });
         return { success: true, count: newCusts.length };
       }
@@ -5759,7 +5895,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           return updated;
         });
         newWholesale.forEach(w => {
-          saveDocToShop('wholesalers', w.id, w);
+          saveDocToShop('wholesaler_bills', w.id, w);
         });
         return { success: true, count: newWholesale.length };
       }
@@ -5796,6 +5932,25 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setEditHistory([]);
     setDeletedHistory([]);
   };
+
+  // Local Word/Phrase Suggestion Memory (HTML5 <datalist> for Native Keyboard Suggestions)
+  const [, setSuggestionTick] = useState(0);
+  useEffect(() => {
+    const handleSuggestionsUpdated = () => setSuggestionTick(t => t + 1);
+    window.addEventListener('taj_suggestions_updated', handleSuggestionsUpdated);
+    return () => window.removeEventListener('taj_suggestions_updated', handleSuggestionsUpdated);
+  }, []);
+
+  const noteSuggestions = getCombinedSuggestions('note', [
+    ...backCashTransactions.map(t => t.note),
+    ...dailyTransactions.map(t => t.description),
+    ...stockTransactions.map(t => t.note),
+    ...customers.map(c => c.customer_name),
+    ...wholesalers.map(w => w.customer_name)
+  ]);
+  const customerSuggestions = getCombinedSuggestions('customer', customers.map(c => c.customer_name));
+  const wholesalerSuggestions = getCombinedSuggestions('wholesaler', wholesalers.map(w => w.customer_name));
+  const itemSuggestions = getCombinedSuggestions('item', bottleItems.map(b => b.item_name));
 
   return (
     <POSContext.Provider
@@ -5938,6 +6093,26 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }}
     >
       {children}
+      <datalist id="nh-note-suggestions">
+        {noteSuggestions.map(item => (
+          <option key={item} value={item} />
+        ))}
+      </datalist>
+      <datalist id="nh-customer-suggestions">
+        {customerSuggestions.map(item => (
+          <option key={item} value={item} />
+        ))}
+      </datalist>
+      <datalist id="nh-wholesaler-suggestions">
+        {wholesalerSuggestions.map(item => (
+          <option key={item} value={item} />
+        ))}
+      </datalist>
+      <datalist id="nh-item-suggestions">
+        {itemSuggestions.map(item => (
+          <option key={item} value={item} />
+        ))}
+      </datalist>
     </POSContext.Provider>
   );
 };

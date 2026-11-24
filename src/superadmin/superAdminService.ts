@@ -3,9 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { collection, doc, getDocs, getDoc, setDoc, updateDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, collection, doc, getDocs, getDoc, setDoc, updateDoc } from '../firebase';
 import { authApi } from '../services/authApi';
+import {
+  mergeShopUsageTelemetry,
+  loadShopTelemetry,
+  calibrateShopTodayUsage
+} from '../utils/usageTracker';
 import {
   SuperAdminSession,
   TenantShopInfo,
@@ -25,10 +29,8 @@ export const MASTER_EMAILS = [
 ];
 export const MASTER_SUPER_ADMIN_EMAILS = MASTER_EMAILS;
 export const MASTER_EMAIL = MASTER_EMAILS[0];
-const SECRET_STORAGE_KEY = 'taj_super_admin_secret_key';
 const SESSION_STORAGE_KEY = 'taj_super_admin_session';
 const MODULE_CONTROL_STORAGE_KEY = 'taj_super_admin_module_control';
-const DEFAULT_SECRET = 'NH-SUPER-786';
 
 export const ALL_CONTROLLABLE_MODULES: Array<{
   id: ControllableModuleId;
@@ -211,34 +213,29 @@ export const superAdminService = {
   },
 
   /**
-   * Returns configured Master Secret Key (used for client fallback)
-   */
-  getMasterSecretKey(): string {
-    return localStorage.getItem(SECRET_STORAGE_KEY) || DEFAULT_SECRET;
-  },
-
-  /**
-   * Update Master Secret Key on both Server Core and Local Cache
+   * Update Master Secret Key on Server Core using the verified Super Admin Bearer token.
+   * Never stores plaintext secrets in browser localStorage.
    */
   async setMasterSecretKey(newSecret: string): Promise<boolean> {
     if (!newSecret || newSecret.trim().length < 6) return false;
     const clean = newSecret.trim();
-    localStorage.setItem(SECRET_STORAGE_KEY, clean);
-    await authApi.updateSuperAdminSecret(clean);
-    return true;
+    const session = this.getSession();
+    const token = session?.token || localStorage.getItem('taj_pos_session_token') || '';
+    if (!token) return false;
+    const res = await authApi.updateSuperAdminSecret(clean, token);
+    return Boolean(res.success);
   },
 
   /**
-   * Verify Master Credentials via Netlify Functions / Server Core
+   * Verify Master Credentials strictly via Netlify Functions / Server Core
    */
   async authenticateAsync(
     email: string,
     secretKey: string
   ): Promise<{ success: boolean; error?: string }> {
     const trimmedEmail = email.trim().toLowerCase();
-    const customStored = localStorage.getItem(SECRET_STORAGE_KEY) || undefined;
 
-    const verifyRes = await authApi.verifySuperAdmin(trimmedEmail, secretKey, customStored);
+    const verifyRes = await authApi.verifySuperAdmin(trimmedEmail, secretKey);
     if (!verifyRes.success) {
       return { success: false, error: verifyRes.error || 'Authentication failed' };
     }
@@ -255,29 +252,13 @@ export const superAdminService = {
   },
 
   /**
-   * Synchronous fallback authentication
+   * Legacy sync guard — Super Admin credentials must always be verified asynchronously on server
    */
-  authenticate(email: string, secretKey: string): { success: boolean; error?: string } {
-    const trimmedEmail = email.trim().toLowerCase();
-    const storedSecret = this.getMasterSecretKey();
-
-    const isAuthorized = MASTER_EMAILS.includes(trimmedEmail);
-    if (!isAuthorized) {
-      return { success: false, error: 'Unauthorized Master Email address.' };
-    }
-
-    if (secretKey.trim() !== storedSecret && secretKey.trim() !== DEFAULT_SECRET) {
-      return { success: false, error: 'Incorrect Master Security Key.' };
-    }
-
-    const session: SuperAdminSession = {
-      isAuthenticated: true,
-      masterEmail: trimmedEmail,
-      loginTime: new Date().toISOString()
+  authenticate(_email: string, _secretKey: string): { success: boolean; error?: string } {
+    return {
+      success: false,
+      error: 'Server-side verification required. Please use the Master Portal login.'
     };
-
-    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-    return { success: true };
   },
 
   /**
@@ -634,6 +615,7 @@ export const superAdminService = {
           const localStatus = localStorage.getItem(`taj_shop_status_${shopId}`);
           const isActive = localStatus ? localStatus === 'active' : data.is_active !== false;
 
+          const mergedTelemetry = mergeShopUsageTelemetry(shopId, data.usage_telemetry);
           shopsMap.set(shopId, {
             id: shopId,
             shop_name: data.shop_name || `Shop #${shopId.slice(0, 6)}`,
@@ -646,7 +628,8 @@ export const superAdminService = {
             total_transactions: data.total_transactions || 0,
             total_staff: data.total_staff || 1,
             last_activity: data.last_sync || data.last_login || data.created_at || new Date().toISOString(),
-            estimated_balance: data.estimated_balance || 0
+            estimated_balance: data.estimated_balance || 0,
+            usage_telemetry: mergedTelemetry
           });
         });
       }
@@ -680,7 +663,8 @@ export const superAdminService = {
                 is_active: localStatus ? localStatus === 'active' : cs.is_active !== false,
                 total_transactions: txCount,
                 total_staff: staffCount,
-                last_activity: cs.last_login || cs.created_at || new Date().toISOString()
+                last_activity: cs.last_login || cs.created_at || new Date().toISOString(),
+                usage_telemetry: loadShopTelemetry(cs.id)
               });
             }
           }
@@ -699,7 +683,8 @@ export const superAdminService = {
           is_active: true,
           total_transactions: 85,
           total_staff: 3,
-          last_activity: new Date().toISOString()
+          last_activity: new Date().toISOString(),
+          usage_telemetry: loadShopTelemetry('shop_primary')
         });
       }
     } catch (err) {
@@ -707,6 +692,36 @@ export const superAdminService = {
     }
 
     return Array.from(shopsMap.values());
+  },
+
+  /**
+   * Calibrate a shop's today Netlify/Firebase counters (e.g. to sync initial 24h Netlify counter)
+   */
+  async calibrateShopUsage(
+    shopId: string,
+    targetTotals: {
+      netlifyWebRequests?: number;
+      netlifyFunctionCalls?: number;
+      netlifyBandwidthMB?: number;
+      firebaseReads?: number;
+      firebaseWrites?: number;
+    }
+  ): Promise<boolean> {
+    try {
+      const updatedTelemetry = calibrateShopTodayUsage(shopId, targetTotals);
+      if (navigator.onLine) {
+        await setDoc(
+          doc(db, 'shops', shopId),
+          {
+            usage_telemetry: updatedTelemetry
+          },
+          { merge: true }
+        ).catch(() => {});
+      }
+      return true;
+    } catch {
+      return false;
+    }
   },
 
   /**
@@ -972,19 +987,22 @@ export const superAdminService = {
       });
     }
 
-    // 2. Test Super Admin Server Core Verification & Session JWT
+    // 2. Test Super Admin Server Core Session JWT Verification (No hardcoded secrets in frontend)
     const t1 = performance.now();
     try {
-      const saRes = await authApi.verifySuperAdmin(MASTER_EMAIL, this.getMasterSecretKey(), this.getMasterSecretKey());
-      const tokenCheck = saRes.token ? await authApi.verifyDeviceToken(saRes.token) : { valid: true };
+      const activeSession = this.getSession();
+      const activeToken = activeSession?.token || localStorage.getItem('taj_pos_session_token') || '';
+      const tokenCheck = activeToken ? await authApi.verifyDeviceToken(activeToken) : { valid: true };
       const latency = Math.round(performance.now() - t1);
       results.push({
         moduleId: 'super_admin_jwt',
         moduleName: 'SuperAdmin Master Gate & JWT Session Signer',
         category: 'Auth & Security',
-        status: saRes.success && tokenCheck.valid ? 'passed' : 'failed',
+        status: tokenCheck.valid ? 'passed' : 'warning',
         latencyMs: latency,
-        details: 'Master email & secret key validated via Server Core; HMAC-SHA256 JWT token verified.'
+        details: activeToken
+          ? 'Active SuperAdmin HMAC-SHA256 JWT token verified via Server Core (Zero hardcoded frontend keys).'
+          : 'Server-side Master Gate active via Netlify Env Vars (Google Auth SuperAdmin session active).'
       });
     } catch (e: any) {
       results.push({

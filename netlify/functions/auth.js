@@ -25,14 +25,18 @@ import {
   MASTER_SUPER_ADMIN_EMAILS
 } from './core/authCore.js';
 
-const CORS_HEADERS = {
-  'Content-Type': 'application/json',
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-};
+function buildCorsHeaders(event) {
+  const origin = event?.headers?.origin || event?.headers?.Origin || '';
+  return {
+    'Content-Type': 'application/json',
+    ...(origin ? { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' } : {}),
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+  };
+}
 
 export async function handler(event) {
+  const CORS_HEADERS = buildCorsHeaders(event);
   const method = (event.httpMethod || 'POST').toUpperCase();
 
   // 1. CORS Preflight
@@ -198,7 +202,7 @@ export async function handler(event) {
 
       // ACTION: Verify Super Admin Master Credentials on Server
       case 'verify-super-admin': {
-        const { email, secretKey, customStoredKey } = payload;
+        const { email, secretKey } = payload;
         const rateKey = `superadmin:${clientIp}:${(email || '').toLowerCase().trim()}`;
 
         const rateCheck = checkRateLimit(rateKey, 5);
@@ -210,7 +214,7 @@ export async function handler(event) {
           };
         }
 
-        const verifyRes = verifySuperAdminCredentials(email, secretKey, customStoredKey);
+        const verifyRes = verifySuperAdminCredentials(email, secretKey);
         if (!verifyRes.valid) {
           recordFailedAttempt(rateKey);
           return {
@@ -232,8 +236,33 @@ export async function handler(event) {
         };
       }
 
-      // ACTION: Update Super Admin Secret Key on Server
+      // ACTION: Update Super Admin Secret Key on Server (Requires verified Super Admin Bearer token)
       case 'update-super-admin-secret': {
+        const authHeader =
+          event.headers?.authorization ||
+          event.headers?.Authorization ||
+          '';
+        const bearerToken = authHeader.toLowerCase().startsWith('bearer ')
+          ? authHeader.slice(7).trim()
+          : (payload.sessionToken || '');
+
+        const tokenCheck = verifySessionToken(bearerToken);
+        if (
+          !tokenCheck.valid ||
+          !tokenCheck.claims ||
+          tokenCheck.claims.role !== 'super_admin' ||
+          !MASTER_SUPER_ADMIN_EMAILS.includes(String(tokenCheck.claims.email || '').toLowerCase())
+        ) {
+          return {
+            statusCode: 403,
+            headers: CORS_HEADERS,
+            body: JSON.stringify({
+              success: false,
+              error: 'Unauthorized: Valid Super Admin session token required.'
+            })
+          };
+        }
+
         const { newSecretKey } = payload;
         const res = updateSuperAdminSecret(newSecretKey);
         return {

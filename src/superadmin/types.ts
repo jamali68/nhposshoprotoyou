@@ -41,6 +41,8 @@ export interface PlatformModuleControlConfig {
   updatedBy: string;
 }
 
+import { ShopUsageTelemetry } from '../utils/usageTracker';
+
 export interface TenantShopInfo {
   id: string; // shop ID (usually owner UID)
   shop_name: string;
@@ -55,6 +57,7 @@ export interface TenantShopInfo {
   last_activity?: string;
   estimated_balance?: number;
   disabled_modules?: string[];
+  usage_telemetry?: ShopUsageTelemetry;
 }
 
 export type AuditSeverity = 'info' | 'warn' | 'alert';

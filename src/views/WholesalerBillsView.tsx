@@ -20,6 +20,7 @@ import {
 import { usePOS } from '../context/POSContext';
 import { WholesalerBill } from '../types/pos';
 import { PrintReceiptModal } from '../components/PrintReceiptModal';
+import { showAppAlert, showAppConfirm } from '../components/AppDialogHost';
 
 export const WholesalerBillsView: React.FC = () => {
   const {
@@ -93,12 +94,12 @@ export const WholesalerBillsView: React.FC = () => {
     e.preventDefault();
     const trimmedName = name.trim();
     if (!trimmedName) {
-      alert('Wholesaler ka naam zaroori hai!');
+      showAppAlert('Wholesaler ka naam zaroori hai!');
       return;
     }
     const billVal = totalBill.trim() === '' ? 0 : parseFloat(totalBill);
     if (isNaN(billVal) || billVal < 0) {
-      alert('Baraye meharbani durust bill amount (0 ya us se zyada) darj karein!');
+      showAppAlert('Baraye meharbani durust bill amount (0 ya us se zyada) darj karein!');
       return;
     }
 
@@ -122,18 +123,24 @@ export const WholesalerBillsView: React.FC = () => {
     setShowAddForm(false);
   };
 
-  const handlePay = (bill: WholesalerBill) => {
+  const handlePay = async (bill: WholesalerBill) => {
     const inputVal = payInputs[bill.id] !== undefined ? parseFloat(payInputs[bill.id]) : bill.remaining_balance;
     if (isNaN(inputVal) || inputVal <= 0) {
-      alert('Sahi payment amount likhein!');
+      showAppAlert('Sahi payment amount likhein!');
       return;
     }
     if (inputVal > bill.remaining_balance) {
-      alert('Payment cannot exceed remaining balance!');
+      showAppAlert('Payment cannot exceed remaining balance!');
       return;
     }
 
-    if (window.confirm(`Record payment of Rs. ${inputVal.toLocaleString()} to ${bill.customer_name}?`)) {
+    const confirmed = await showAppConfirm({
+      title: 'Confirm Wholesaler Payment',
+      message: `Record payment of Rs. ${inputVal.toLocaleString()} to ${bill.customer_name}?`,
+      confirmText: 'Record Payment',
+      variant: 'primary'
+    });
+    if (confirmed) {
       payWholesaler(bill.id, inputVal);
       setPayInputs(prev => ({ ...prev, [bill.id]: '' }));
     }
@@ -142,7 +149,7 @@ export const WholesalerBillsView: React.FC = () => {
   const handleAddNewBill = (bill: WholesalerBill) => {
     const inputVal = parseFloat(addBillInputs[bill.id]);
     if (isNaN(inputVal) || inputVal <= 0) {
-      alert('Please enter new bill amount!');
+      showAppAlert('Please enter new bill amount!');
       return;
     }
 
@@ -150,8 +157,14 @@ export const WholesalerBillsView: React.FC = () => {
     setAddBillInputs(prev => ({ ...prev, [bill.id]: '' }));
   };
 
-  const handleDelete = (id: string) => {
-    if (window.confirm('Are you sure you want to delete this wholesaler record?')) {
+  const handleDelete = async (id: string) => {
+    const confirmed = await showAppConfirm({
+      title: 'Delete Wholesaler Record',
+      message: 'Are you sure you want to delete this wholesaler record?',
+      confirmText: 'Delete',
+      variant: 'danger'
+    });
+    if (confirmed) {
       deleteWholesaler(id);
     }
   };
@@ -162,7 +175,7 @@ export const WholesalerBillsView: React.FC = () => {
 
     const trimmedName = editItem.customer_name?.trim();
     if (!trimmedName) {
-      alert('Wholesaler ka naam zaroori hai!');
+      showAppAlert('Wholesaler ka naam zaroori hai!');
       return;
     }
 
@@ -170,7 +183,7 @@ export const WholesalerBillsView: React.FC = () => {
     const remainingVal = editRemainingStr.trim() === '' ? 0 : parseFloat(editRemainingStr);
 
     if (isNaN(totalBillVal) || totalBillVal < 0 || isNaN(remainingVal) || remainingVal < 0) {
-      alert('Baraye meharbani durust raqam (0 ya us se zyada) darj karein!');
+      showAppAlert('Baraye meharbani durust raqam (0 ya us se zyada) darj karein!');
       return;
     }
 
@@ -261,6 +274,9 @@ export const WholesalerBillsView: React.FC = () => {
           <form onSubmit={handleAddWholesaler} className="space-y-2.5 text-xs">
             <input
               type="text"
+              name="wholesaler_name"
+              list="nh-wholesaler-suggestions"
+              autoComplete="on"
               value={name}
               onChange={e => setName(e.target.value)}
               placeholder="Wholesaler / Company Name *"
@@ -478,6 +494,9 @@ export const WholesalerBillsView: React.FC = () => {
                 <label className="block text-[11px] font-bold text-slate-500 mb-1">Wholesaler Name</label>
                 <input
                   type="text"
+                  name="edit_wholesaler_name"
+                  list="nh-wholesaler-suggestions"
+                  autoComplete="on"
                   value={editItem.customer_name}
                   onChange={e => setEditItem({ ...editItem, customer_name: e.target.value })}
                   required

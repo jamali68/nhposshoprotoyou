@@ -1,7 +1,7 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * 
+ *
  * Independent Core Authentication, OTP, & Super Admin Security Service (Provider-Agnostic)
  * 100% Decoupled Business Logic — Compatible with Netlify Serverless Functions & Firebase Cloud Functions.
  * All secrets, cryptographic salts, and master tokens stay strictly on the server.
@@ -9,26 +9,51 @@
 
 import crypto from 'crypto';
 
-// Secret key for signing sessions, OTP challenges, and Super Admin tokens
-// Uses Netlify / Server Environment Variables first, with secure fallback
-const TOKEN_SECRET =
-  process.env.AUTH_TOKEN_SECRET ||
-  process.env.JWT_SECRET ||
-  process.env.SUPER_ADMIN_TOKEN_SECRET ||
-  'nh-pos-production-secure-token-salt-98234710';
+// Secret key for signing sessions, OTP challenges, and Super Admin tokens.
+// Always read from server environment variables; falls back to an ephemeral 256-bit key in memory.
+const EPHEMERAL_FALLBACK_SECRET = crypto.randomBytes(32).toString('hex');
+function getTokenSecret() {
+  return (
+    process.env.AUTH_TOKEN_SECRET ||
+    process.env.JWT_SECRET ||
+    process.env.SUPER_ADMIN_TOKEN_SECRET ||
+    EPHEMERAL_FALLBACK_SECRET
+  );
+}
 
-// Master Super Admin Emails (Strictly restricted to the 2 authorized owner emails)
-export const MASTER_SUPER_ADMIN_EMAILS = [
+// Master Super Admin Emails (Read from env var if configured, otherwise restricted to authorized owner emails)
+const DEFAULT_MASTER_EMAILS = [
   'helpgoodforyouofficial@gmail.com',
   'aliimtiaz1126@gmail.com'
 ];
 
-// Master Secret Passkey (Read from server env var SUPER_ADMIN_SECRET_KEY)
-let runtimeMasterSecret = process.env.SUPER_ADMIN_SECRET_KEY || 'NH-SUPER-786';
+export const MASTER_SUPER_ADMIN_EMAILS = process.env.SUPER_ADMIN_EMAILS
+  ? process.env.SUPER_ADMIN_EMAILS.split(',')
+      .map(e => e.trim().toLowerCase())
+      .filter(Boolean)
+  : DEFAULT_MASTER_EMAILS;
+
+// Master Secret Passkey — strictly read from server environment variable (never hardcoded in source)
+let runtimeMasterSecret = (process.env.SUPER_ADMIN_SECRET_KEY || '').trim();
+
+// Cached Google Firebase SecureToken public x509 certificates for RS256 signature verification
+const FIREBASE_CERTS_URL =
+  'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
+let cachedFirebaseCerts = null;
+let cachedFirebaseCertsExpiry = 0;
 
 // In-memory rate limiter for brute-force protection
 // Map: key (e.g. `ip:email`) -> { attempts: number, lockUntil: number, firstAttempt: number }
 const rateLimitStore = new Map();
+
+/**
+ * Constant-time string comparison using SHA-256 digests so lengths never leak.
+ */
+function timingSafeStringEqual(a, b) {
+  const hashA = crypto.createHash('sha256').update(String(a)).digest();
+  const hashB = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(hashA, hashB);
+}
 
 /**
  * Check and record an authentication attempt to prevent brute-force attacks.
@@ -114,7 +139,7 @@ export function verifyPassword(password, storedHash, salt) {
   }
 
   if (!storedHash || !salt) {
-    if (storedHash && cleanPass === storedHash) {
+    if (storedHash && timingSafeStringEqual(cleanPass, storedHash)) {
       return { valid: true, mustChangePassword: cleanPass === '123456', isLegacy: true };
     }
     return { valid: false, mustChangePassword: false, isLegacy: false };
@@ -126,7 +151,7 @@ export function verifyPassword(password, storedHash, salt) {
     const derivedBuffer = Buffer.from(derived, 'hex');
 
     if (hashBuffer.length !== derivedBuffer.length) {
-      if (cleanPass === storedHash) {
+      if (timingSafeStringEqual(cleanPass, storedHash)) {
         return { valid: true, mustChangePassword: cleanPass === '123456', isLegacy: true };
       }
       return { valid: false, mustChangePassword: false, isLegacy: false };
@@ -141,7 +166,7 @@ export function verifyPassword(password, storedHash, salt) {
       isLegacy: false
     };
   } catch {
-    if (storedHash && cleanPass === storedHash) {
+    if (storedHash && timingSafeStringEqual(cleanPass, storedHash)) {
       return { valid: true, mustChangePassword: cleanPass === '123456', isLegacy: true };
     }
     return { valid: false, mustChangePassword: false, isLegacy: false };
@@ -149,9 +174,10 @@ export function verifyPassword(password, storedHash, salt) {
 }
 
 /**
- * Verifies Super Admin Master Credentials on the server.
+ * Verifies Super Admin Master Credentials strictly against server-side environment secret.
+ * Never trusts client-supplied stored keys.
  */
-export function verifySuperAdminCredentials(email, secretKey, customStoredKey = null) {
+export function verifySuperAdminCredentials(email, secretKey) {
   const cleanEmail = String(email || '').trim().toLowerCase();
   const cleanKey = String(secretKey || '').trim();
 
@@ -162,8 +188,15 @@ export function verifySuperAdminCredentials(email, secretKey, customStoredKey = 
     };
   }
 
-  const effectiveMasterKey = customStoredKey || runtimeMasterSecret;
-  if (!cleanKey || (cleanKey !== effectiveMasterKey && cleanKey !== runtimeMasterSecret)) {
+  const effectiveMasterKey = (runtimeMasterSecret || process.env.SUPER_ADMIN_SECRET_KEY || '').trim();
+  if (!effectiveMasterKey) {
+    return {
+      valid: false,
+      error: 'Server par SUPER_ADMIN_SECRET_KEY configure nahi hai. Netlify Environment Variables mein key set karein.'
+    };
+  }
+
+  if (!cleanKey || !timingSafeStringEqual(cleanKey, effectiveMasterKey)) {
     return {
       valid: false,
       error: 'ماسٹر سیکیورٹی کی (Master Secret Key) غلط ہے۔'
@@ -188,7 +221,7 @@ export function verifySuperAdminCredentials(email, secretKey, customStoredKey = 
 }
 
 /**
- * Updates runtime Super Admin Secret Key on server (if authenticated)
+ * Updates runtime Super Admin Secret Key on server (caller MUST verify Super Admin token first).
  */
 export function updateSuperAdminSecret(newSecretKey) {
   if (!newSecretKey || typeof newSecretKey !== 'string' || newSecretKey.trim().length < 6) {
@@ -208,7 +241,7 @@ export function createOtpChallenge(email, otpCode, expiresInMs = 10 * 60 * 1000)
   const exp = Date.now() + expiresInMs;
 
   const otpDigest = crypto
-    .createHmac('sha256', TOKEN_SECRET)
+    .createHmac('sha256', getTokenSecret())
     .update(`${cleanEmail}:${cleanOtp}:${exp}`)
     .digest('hex');
 
@@ -243,7 +276,7 @@ export function verifyOtpChallenge(email, enteredOtp, challengeToken) {
     }
 
     const expectedDigest = crypto
-      .createHmac('sha256', TOKEN_SECRET)
+      .createHmac('sha256', getTokenSecret())
       .update(`${cleanEmail}:${cleanOtp}:${decoded.exp}`)
       .digest('hex');
 
@@ -260,7 +293,110 @@ export function verifyOtpChallenge(email, enteredOtp, challengeToken) {
 }
 
 /**
- * Verifies a Google ID token or Firebase Auth Google ID token.
+ * Fetches and caches Google's official public x509 certificates for Firebase Auth ID tokens.
+ */
+async function getFirebasePublicCerts() {
+  const now = Date.now();
+  if (cachedFirebaseCerts && now < cachedFirebaseCertsExpiry) {
+    return cachedFirebaseCerts;
+  }
+
+  const res = await fetch(FIREBASE_CERTS_URL, { method: 'GET' });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch Firebase public keys (HTTP ${res.status})`);
+  }
+
+  const certs = await res.json();
+  const cacheControl = res.headers.get('cache-control') || '';
+  const maxAgeMatch = cacheControl.match(/max-age=(\d+)/i);
+  const ttlSeconds = maxAgeMatch ? Math.max(60, parseInt(maxAgeMatch[1], 10)) : 3600;
+
+  cachedFirebaseCerts = certs;
+  cachedFirebaseCertsExpiry = now + ttlSeconds * 1000;
+  return certs;
+}
+
+/**
+ * Cryptographically verifies a Firebase Auth ID token (RS256) using Google's official public certs.
+ */
+async function verifyFirebaseAuthJwt(trimmedToken) {
+  const parts = trimmedToken.split('.');
+  if (parts.length !== 3) {
+    return { valid: false, error: 'Malformed Firebase ID token' };
+  }
+
+  let header;
+  let data;
+  try {
+    header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+    data = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch {
+    return { valid: false, error: 'Invalid JWT encoding' };
+  }
+
+  if (header.alg !== 'RS256' || !header.kid) {
+    return { valid: false, error: 'Unsupported token algorithm or missing key ID' };
+  }
+
+  const certs = await getFirebasePublicCerts();
+  const publicCert = certs[header.kid];
+  if (!publicCert) {
+    return { valid: false, error: 'Unrecognized Firebase signing key ID' };
+  }
+
+  // Cryptographic RS256 signature verification
+  const verifier = crypto.createVerify('RSA-SHA256');
+  verifier.update(`${parts[0]}.${parts[1]}`);
+  verifier.end();
+  const signatureValid = verifier.verify(publicCert, parts[2], 'base64url');
+  if (!signatureValid) {
+    return { valid: false, error: 'Invalid Firebase token cryptographic signature' };
+  }
+
+  const nowInSeconds = Math.floor(Date.now() / 1000);
+  const exp = Number(data.exp || 0);
+  const iat = Number(data.iat || 0);
+  if (!exp || exp <= nowInSeconds) {
+    return { valid: false, error: 'Google token has expired. Please sign in again.' };
+  }
+  if (iat && iat > nowInSeconds + 300) {
+    return { valid: false, error: 'Token issued-at timestamp is invalid.' };
+  }
+
+  const expectedProjectId = (process.env.FIREBASE_PROJECT_ID || '').trim();
+  const aud = String(data.aud || '').trim();
+  const iss = String(data.iss || '').trim();
+  if (!aud || iss !== `https://securetoken.google.com/${aud}`) {
+    return { valid: false, error: 'Firebase token issuer/audience mismatch.' };
+  }
+  if (expectedProjectId && aud !== expectedProjectId) {
+    return { valid: false, error: 'Firebase token project audience mismatch.' };
+  }
+
+  const sub = String(data.user_id || data.sub || '').trim();
+  const email = String(data.email || '').toLowerCase().trim();
+  const emailVerified = data.email_verified === 'true' || data.email_verified === true;
+
+  if (!sub || !email) {
+    return { valid: false, error: 'No verified user identity found in token.' };
+  }
+  if (!emailVerified) {
+    return { valid: false, error: 'Google email is not verified by Google.' };
+  }
+
+  return {
+    valid: true,
+    email,
+    googleId: sub,
+    name: data.name || '',
+    picture: data.picture || '',
+    emailVerified: true
+  };
+}
+
+/**
+ * Cryptographically verifies a Google OAuth ID token or Firebase Auth Google ID token.
+ * NEVER trusts unverified/unsigned JWT payloads.
  */
 export async function verifyGoogleIdToken(idToken) {
   if (!idToken || typeof idToken !== 'string') {
@@ -268,63 +404,44 @@ export async function verifyGoogleIdToken(idToken) {
   }
 
   const trimmedToken = idToken.trim();
-
-  // Helper to decode and verify a 3-part Firebase Auth / Google JWT payload
-  const verifyJwtClaims = (tokenStr) => {
-    try {
-      const parts = tokenStr.split('.');
-      if (parts.length !== 3) return null;
-      const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
-      const data = JSON.parse(payloadJson);
-      const nowInSeconds = Math.floor(Date.now() / 1000);
-      const exp = Number(data.exp || 0);
-      if (exp && exp <= nowInSeconds) {
-        return { valid: false, error: 'Google token has expired. Please sign in again.' };
-      }
-      const iss = String(data.iss || '');
-      const isTrustedIssuer =
-        iss.includes('securetoken.google.com') ||
-        iss.includes('accounts.google.com');
-      const email = String(data.email || '').toLowerCase().trim();
-      const emailVerified = data.email_verified === 'true' || data.email_verified === true;
-      if (isTrustedIssuer && email && emailVerified) {
-        return {
-          valid: true,
-          email,
-          googleId: data.user_id || data.sub || '',
-          name: data.name || '',
-          picture: data.picture || '',
-          emailVerified: true
-        };
-      }
-    } catch {
-      // Fall through
-    }
-    return null;
-  };
+  const parts = trimmedToken.split('.');
+  if (parts.length !== 3) {
+    return { valid: false, error: 'Malformed Google ID token' };
+  }
 
   try {
-    // 1. First check if it's a valid Firebase Auth Google JWT (securetoken.google.com)
-    const jwtCheck = verifyJwtClaims(trimmedToken);
-    if (jwtCheck && jwtCheck.valid) {
-      return jwtCheck;
+    // Inspect issuer ONLY to route to the right cryptographic verifier (never trust claims yet)
+    let iss = '';
+    try {
+      const unverifiedPayload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+      iss = String(unverifiedPayload?.iss || '');
+    } catch {
+      return { valid: false, error: 'Invalid token payload encoding' };
     }
 
-    // 2. Otherwise verify against Google's official OAuth tokeninfo endpoint
+    // 1. Firebase Auth ID Token -> Cryptographic RS256 verification against Google's official certs
+    if (iss.startsWith('https://securetoken.google.com/')) {
+      return await verifyFirebaseAuthJwt(trimmedToken);
+    }
+
+    // 2. Standard Google OAuth ID Token -> Official Google tokeninfo endpoint verification
     const url = `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(trimmedToken)}`;
     const res = await fetch(url, { method: 'GET' });
 
     if (!res.ok) {
-      if (jwtCheck) return jwtCheck;
-      const errorText = await res.text();
-      return { valid: false, error: `Google token verification failed: ${errorText}` };
+      return { valid: false, error: 'Google token verification failed.' };
     }
 
     const data = await res.json();
 
+    const expectedClientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
+    if (expectedClientId && data.aud !== expectedClientId) {
+      return { valid: false, error: 'Google token audience mismatch.' };
+    }
+
     const nowInSeconds = Math.floor(Date.now() / 1000);
     const exp = Number(data.exp || 0);
-    if (exp <= nowInSeconds) {
+    if (!exp || exp <= nowInSeconds) {
       return { valid: false, error: 'Google token has expired. Please sign in again.' };
     }
 
@@ -347,8 +464,6 @@ export async function verifyGoogleIdToken(idToken) {
       emailVerified: true
     };
   } catch (err) {
-    const fallbackJwt = verifyJwtClaims(trimmedToken);
-    if (fallbackJwt && fallbackJwt.valid) return fallbackJwt;
     return { valid: false, error: err.message || 'Network error verifying Google ID token' };
   }
 }
@@ -365,12 +480,12 @@ export function createSessionToken(payload, expiresInMs = 30 * 24 * 60 * 60 * 10
   const b64Claims = Buffer.from(JSON.stringify(claims)).toString('base64url');
   const message = `${b64Header}.${b64Claims}`;
 
-  const signature = crypto.createHmac('sha256', TOKEN_SECRET).update(message).digest('base64url');
+  const signature = crypto.createHmac('sha256', getTokenSecret()).update(message).digest('base64url');
   return `${message}.${signature}`;
 }
 
 /**
- * Validates a signed session / device token.
+ * Validates a signed session / device token using constant-time comparison.
  */
 export function verifySessionToken(token) {
   if (!token || typeof token !== 'string') {
@@ -384,9 +499,9 @@ export function verifySessionToken(token) {
 
   const [b64Header, b64Claims, signature] = parts;
   const message = `${b64Header}.${b64Claims}`;
-  const expectedSig = crypto.createHmac('sha256', TOKEN_SECRET).update(message).digest('base64url');
+  const expectedSig = crypto.createHmac('sha256', getTokenSecret()).update(message).digest('base64url');
 
-  if (signature !== expectedSig) {
+  if (!timingSafeStringEqual(signature, expectedSig)) {
     return { valid: false, error: 'Invalid token signature' };
   }
 

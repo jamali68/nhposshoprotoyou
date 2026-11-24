@@ -128,13 +128,6 @@ export const SuperAdminAuthModal: React.FC<SuperAdminAuthModalProps> = ({
                 <KeyRound className="w-3.5 h-3.5 text-indigo-400" />
                 <span>Master Secret Security Key</span>
               </label>
-              <button
-                type="button"
-                onClick={() => setSecretKey(superAdminService.getMasterSecretKey())}
-                className="text-[10px] text-indigo-400 hover:text-indigo-300 font-semibold"
-              >
-                Auto-fill Default Key
-              </button>
             </div>
             <div className="relative">
               <input
@@ -142,7 +135,7 @@ export const SuperAdminAuthModal: React.FC<SuperAdminAuthModalProps> = ({
                 value={secretKey}
                 onChange={(e) => setSecretKey(e.target.value)}
                 required
-                placeholder="Enter master key..."
+                placeholder="Enter server-configured master key..."
                 className="w-full px-3.5 py-2.5 pr-10 bg-slate-800/90 border border-slate-700 rounded-xl text-white text-xs font-mono font-bold tracking-wider focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
               />
               <button
@@ -155,7 +148,7 @@ export const SuperAdminAuthModal: React.FC<SuperAdminAuthModalProps> = ({
               </button>
             </div>
             <p className="text-[10px] text-slate-500 mt-1">
-              Default Key: <span className="font-mono text-slate-400">NH-SUPER-786</span> (Verified via Netlify Function / Server Core)
+              Verified strictly on Server Core via Netlify Environment Variables (<span className="font-mono text-slate-400">SUPER_ADMIN_SECRET_KEY</span>).
             </p>
           </div>
 

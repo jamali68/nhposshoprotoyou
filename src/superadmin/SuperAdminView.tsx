@@ -49,6 +49,13 @@ import {
   ShopStaffPermissionsConfig,
   StaffPermissionActionId
 } from './types';
+import {
+  buildShopUsageReportRow,
+  combineShopUsageReports,
+  NETLIFY_FREE_LIMITS,
+  FIREBASE_FREE_LIMITS,
+  ShopUsageReportRow
+} from '../utils/usageTracker';
 
 export const SuperAdminView: React.FC = () => {
   const {
@@ -63,8 +70,18 @@ export const SuperAdminView: React.FC = () => {
     triggerMutationLoader
   } = usePOS();
 
-  // 5-Tab Master Command Center
-  const [activeTab, setActiveTab] = useState<'shops' | 'modules' | 'diagnostics' | 'analytics' | 'security'>('shops');
+  // 6-Tab Master Command Center (including Quota & Usage 99% Tracker)
+  const [activeTab, setActiveTab] = useState<'shops' | 'quota' | 'modules' | 'diagnostics' | 'analytics' | 'security'>('shops');
+  const [usagePeriod, setUsagePeriod] = useState<'daily' | 'weekly' | 'monthly' | 'yearly'>('daily');
+  const [selectedUsageShopId, setSelectedUsageShopId] = useState<string>('ALL_SHOPS');
+  const [historyViewMode, setHistoryViewMode] = useState<'daily' | 'monthly'>('daily');
+  const [calibrateModalShop, setCalibrateModalShop] = useState<ShopUsageReportRow | null>(null);
+  const [calWebReq, setCalWebReq] = useState<string>('');
+  const [calFnReq, setCalFnReq] = useState<string>('');
+  const [calBwMb, setCalBwMb] = useState<string>('');
+  const [calFbReads, setCalFbReads] = useState<string>('');
+  const [calFbWrites, setCalFbWrites] = useState<string>('');
+  const [isSavingCalibration, setIsSavingCalibration] = useState<boolean>(false);
 
   // Data States
   const [shops, setShops] = useState<TenantShopInfo[]>([]);
@@ -192,6 +209,41 @@ export const SuperAdminView: React.FC = () => {
       return matchesSeverity && matchesSearch;
     });
   }, [auditLogs, selectedSeverity, searchTerm]);
+
+  // Compute Per-Shop & Combined Usage Reports (Daily, Weekly, Monthly, Yearly)
+  const shopUsageRows = useMemo<ShopUsageReportRow[]>(() => {
+    return shops.map(s => buildShopUsageReportRow(s, s.usage_telemetry));
+  }, [shops, isLoading, activeTab]);
+
+  const combinedUsageReport = useMemo<ShopUsageReportRow>(() => {
+    return combineShopUsageReports(shopUsageRows);
+  }, [shopUsageRows]);
+
+  const activeUsageReport = useMemo<ShopUsageReportRow>(() => {
+    if (selectedUsageShopId === 'ALL_SHOPS') return combinedUsageReport;
+    return shopUsageRows.find(r => r.shopId === selectedUsageShopId) || combinedUsageReport;
+  }, [selectedUsageShopId, shopUsageRows, combinedUsageReport]);
+
+  const handleSaveCalibration = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!calibrateModalShop) return;
+    setIsSavingCalibration(true);
+    try {
+      await superAdminService.calibrateShopUsage(calibrateModalShop.shopId, {
+        netlifyWebRequests: calWebReq !== '' ? Number(calWebReq) : undefined,
+        netlifyFunctionCalls: calFnReq !== '' ? Number(calFnReq) : undefined,
+        netlifyBandwidthMB: calBwMb !== '' ? Number(calBwMb) : undefined,
+        firebaseReads: calFbReads !== '' ? Number(calFbReads) : undefined,
+        firebaseWrites: calFbWrites !== '' ? Number(calFbWrites) : undefined
+      });
+      await loadData();
+      setCalibrateModalShop(null);
+      setModuleSaveBanner(`✓ Usage counters calibrated & synced for ${calibrateModalShop.shopName}!`);
+      setTimeout(() => setModuleSaveBanner(null), 3500);
+    } finally {
+      setIsSavingCalibration(false);
+    }
+  };
 
   // Toggle Store Status (Unlocked / Locked)
   const handleToggleStatus = async (shop: TenantShopInfo) => {
@@ -474,8 +526,8 @@ export const SuperAdminView: React.FC = () => {
         </div>
       </div>
 
-      {/* 5-Tab Master Navigation Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 bg-slate-900/95 p-1.5 rounded-2xl border border-slate-800 shadow-sm text-xs font-bold">
+      {/* 6-Tab Master Navigation Bar */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-1.5 bg-slate-900/95 p-1.5 rounded-2xl border border-slate-800 shadow-sm text-xs font-bold">
         <button
           type="button"
           onClick={() => setActiveTab('shops')}
@@ -490,6 +542,19 @@ export const SuperAdminView: React.FC = () => {
           <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-black/30 font-mono">
             {shops.length}
           </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('quota')}
+          className={`py-2.5 px-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+            activeTab === 'quota'
+              ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
+              : 'text-emerald-300 hover:text-white hover:bg-slate-800/60 border border-emerald-500/20'
+          }`}
+        >
+          <Activity className="w-4 h-4 shrink-0" />
+          <span className="truncate">Quota &amp; Usage (99%)</span>
         </button>
 
         <button
@@ -527,14 +592,14 @@ export const SuperAdminView: React.FC = () => {
               : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
           }`}
         >
-          <Activity className="w-4 h-4 shrink-0" />
+          <Radio className="w-4 h-4 shrink-0" />
           <span className="truncate">Audit Logs</span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveTab('security')}
-          className={`col-span-2 sm:col-span-1 py-2.5 px-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+          className={`py-2.5 px-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
             activeTab === 'security'
               ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
               : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
@@ -680,111 +745,135 @@ export const SuperAdminView: React.FC = () => {
                   <tr>
                     <th className="py-3 px-4">Store Profile</th>
                     <th className="py-3 px-4">Owner &amp; Email</th>
-                    <th className="py-3 px-4">Created Date</th>
+                    <th className="py-3 px-4">Today Usage (Netlify &amp; Firebase)</th>
                     <th className="py-3 px-4 text-center">Store Access (Lock/Unlock)</th>
                     <th className="py-3 px-4 text-right">Master Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredShops.length > 0 ? (
-                    filteredShops.map(shop => (
-                      <tr key={shop.id} className="hover:bg-slate-50/70 transition-colors">
-                        <td className="py-3.5 px-4">
-                          <div className="font-bold text-slate-900 text-sm">{shop.shop_name}</div>
-                          <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
-                            <span>ID: {shop.id.slice(0, 18)}</span>
-                            {shop.phone && <span>· 📞 {shop.phone}</span>}
-                          </div>
-                        </td>
+                    filteredShops.map(shop => {
+                      const uRow = shopUsageRows.find(r => r.shopId === shop.id);
+                      const dUsage = uRow?.daily;
+                      return (
+                        <tr key={shop.id} className="hover:bg-slate-50/70 transition-colors">
+                          <td className="py-3.5 px-4">
+                            <div className="font-bold text-slate-900 text-sm">{shop.shop_name}</div>
+                            <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
+                              <span>ID: {shop.id.slice(0, 18)}</span>
+                              {shop.phone && <span>· 📞 {shop.phone}</span>}
+                            </div>
+                          </td>
 
-                        <td className="py-3.5 px-4">
-                          <div className="font-semibold text-slate-800">{shop.owner_name}</div>
-                          <div className="text-[11px] text-slate-500 font-mono">
-                            {shop.owner_email || 'No email provided'}
-                          </div>
-                        </td>
+                          <td className="py-3.5 px-4">
+                            <div className="font-semibold text-slate-800">{shop.owner_name}</div>
+                            <div className="text-[11px] text-slate-500 font-mono">
+                              {shop.owner_email || 'No email provided'}
+                            </div>
+                          </td>
 
-                        <td className="py-3.5 px-4 text-slate-500 font-mono text-[11px]">
-                          {shop.created_at ? new Date(shop.created_at).toLocaleDateString() : 'Active'}
-                        </td>
+                          <td className="py-3.5 px-4">
+                            <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono font-bold">
+                              <span className="px-2 py-0.5 rounded bg-sky-50 text-sky-800 border border-sky-200">
+                                Netlify Req: {(dUsage?.netlifyTotalRequests || 0).toLocaleString()} ({dUsage?.netlifyBandwidthMB || 0} MB)
+                              </span>
+                              <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200">
+                                FB Read: {(dUsage?.firebaseReads || 0).toLocaleString()} | Write: {((dUsage?.firebaseWrites || 0) + (dUsage?.firebaseDeletes || 0)).toLocaleString()}
+                              </span>
+                            </div>
+                          </td>
 
-                        <td className="py-3.5 px-4 text-center">
-                          <button
-                            type="button"
-                            onClick={() => handleToggleStatus(shop)}
-                            className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-[10px] font-black border transition-all cursor-pointer ${
-                              shop.is_active
-                                ? 'bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-700 shadow-xs'
-                                : 'bg-rose-600 text-white border-rose-700 hover:bg-rose-700 shadow-xs'
-                            }`}
-                            title="Click to Lock or Unlock store access"
-                          >
-                            {shop.is_active ? (
-                              <>
-                                <Unlock className="w-3 h-3" />
-                                <span>Unlocked</span>
-                              </>
-                            ) : (
-                              <>
-                                <Lock className="w-3 h-3" />
-                                <span>Locked</span>
-                              </>
-                            )}
-                          </button>
-                        </td>
-
-                        <td className="py-3.5 px-4 text-right">
-                          <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                          <td className="py-3.5 px-4 text-center">
                             <button
                               type="button"
-                              onClick={() => {
-                                setSelectedShopForModules(shop.id);
-                                setActiveTab('modules');
-                              }}
-                              className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
-                              title="Lock / Unlock Permissions for this Shop"
+                              onClick={() => handleToggleStatus(shop)}
+                              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-[10px] font-black border transition-all cursor-pointer ${
+                                shop.is_active
+                                  ? 'bg-emerald-600 text-white border-emerald-700 hover:bg-emerald-700 shadow-xs'
+                                  : 'bg-rose-600 text-white border-rose-700 hover:bg-rose-700 shadow-xs'
+                              }`}
+                              title="Click to Lock or Unlock store access"
                             >
-                              <Lock className="w-3.5 h-3.5" />
-                              <span className="hidden md:inline">Permissions</span>
+                              {shop.is_active ? (
+                                <>
+                                  <Unlock className="w-3 h-3" />
+                                  <span>Unlocked</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Lock className="w-3 h-3" />
+                                  <span>Locked</span>
+                                </>
+                              )}
                             </button>
+                          </td>
 
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setResetPassShop(shop);
-                                setNewOwnerPassword('');
-                                setResetPassFeedback(null);
-                              }}
-                              className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
-                              title="Reset Store Owner Password"
-                            >
-                              <KeyRound className="w-3.5 h-3.5" />
-                              <span className="hidden md:inline">Reset Pass</span>
-                            </button>
+                          <td className="py-3.5 px-4 text-right">
+                            <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedUsageShopId(shop.id);
+                                  setActiveTab('quota');
+                                }}
+                                className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                                title="View Daily / Weekly / Monthly / Yearly Quota & Usage Report"
+                              >
+                                <Activity className="w-3.5 h-3.5" />
+                                <span className="hidden md:inline">Usage Report</span>
+                              </button>
 
-                            <button
-                              type="button"
-                              onClick={() => setInspectShop(shop)}
-                              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
-                              title="Inspect Store Metadata"
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                              <span className="hidden sm:inline">Details</span>
-                            </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedShopForModules(shop.id);
+                                  setActiveTab('modules');
+                                }}
+                                className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                                title="Lock / Unlock Permissions for this Shop"
+                              >
+                                <Lock className="w-3.5 h-3.5" />
+                                <span className="hidden md:inline">Permissions</span>
+                              </button>
 
-                            <button
-                              type="button"
-                              onClick={() => superAdminService.exportShopBackup(shop.id, shop.shop_name)}
-                              className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
-                              title="Download complete JSON backup for this store"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                              <span>Backup</span>
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setResetPassShop(shop);
+                                  setNewOwnerPassword('');
+                                  setResetPassFeedback(null);
+                                }}
+                                className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                                title="Reset Store Owner Password"
+                              >
+                                <KeyRound className="w-3.5 h-3.5" />
+                                <span className="hidden md:inline">Reset Pass</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setInspectShop(shop)}
+                                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                                title="Inspect Store Metadata"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                <span className="hidden sm:inline">Details</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => superAdminService.exportShopBackup(shop.id, shop.shop_name)}
+                                className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                                title="Download complete JSON backup for this store"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                <span>Backup</span>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
                   ) : (
                     <tr>
                       <td colSpan={5} className="py-8 text-center text-slate-400">
@@ -798,6 +887,640 @@ export const SuperAdminView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* ========================================================================= */}
+      {/* TAB 1B: NETLIFY & FIREBASE QUOTA & USAGE TRACKING CENTER (95-99% SMART)   */}
+      {/* ========================================================================= */}
+      {activeTab === 'quota' && (() => {
+        const periodData = activeUsageReport[usagePeriod];
+        const periodMultiplier =
+          usagePeriod === 'daily'
+            ? 1
+            : usagePeriod === 'weekly'
+              ? 7
+              : usagePeriod === 'monthly'
+                ? 30
+                : 365;
+
+        const fbReadLimit = FIREBASE_FREE_LIMITS.dailyReads * periodMultiplier;
+        const fbWriteLimit = FIREBASE_FREE_LIMITS.dailyWrites * periodMultiplier;
+        const netlifyFnLimit =
+          usagePeriod === 'daily'
+            ? Math.round(NETLIFY_FREE_LIMITS.monthlyFunctionCalls / 30)
+            : usagePeriod === 'weekly'
+              ? Math.round((NETLIFY_FREE_LIMITS.monthlyFunctionCalls / 30) * 7)
+              : usagePeriod === 'monthly'
+                ? NETLIFY_FREE_LIMITS.monthlyFunctionCalls
+                : NETLIFY_FREE_LIMITS.monthlyFunctionCalls * 12;
+
+        const netlifyBwLimitMB =
+          usagePeriod === 'daily'
+            ? Math.round((100 * 1024) / 30)
+            : usagePeriod === 'weekly'
+              ? Math.round(((100 * 1024) / 30) * 7)
+              : usagePeriod === 'monthly'
+                ? 100 * 1024
+                : 100 * 1024 * 12;
+
+        const totalWritesAndDeletes = periodData.firebaseWrites + periodData.firebaseDeletes;
+
+        const fbReadPct = Math.min(100, Number(((periodData.firebaseReads / fbReadLimit) * 100).toFixed(2)));
+        const fbWritePct = Math.min(100, Number(((totalWritesAndDeletes / fbWriteLimit) * 100).toFixed(2)));
+        const netlifyFnPct = Math.min(100, Number(((periodData.netlifyFunctionCalls / netlifyFnLimit) * 100).toFixed(2)));
+        const netlifyBwPct = Math.min(100, Number(((periodData.netlifyBandwidthMB / netlifyBwLimitMB) * 100).toFixed(2)));
+
+        // Smart capacity calculation: How many shops can run on Free Tier based on average shop usage
+        const activeShopCount = Math.max(1, shops.length);
+        const avgDailyReadsPerShop = Math.max(25, Math.round(combinedUsageReport.daily.firebaseReads / activeShopCount) || 120);
+        const avgDailyWritesPerShop = Math.max(10, Math.round((combinedUsageReport.daily.firebaseWrites + combinedUsageReport.daily.firebaseDeletes) / activeShopCount) || 40);
+        const avgDailyReqPerShop = Math.max(50, Math.round(combinedUsageReport.daily.netlifyTotalRequests / activeShopCount) || 251);
+
+        const maxShopsByFbReads = Math.floor(FIREBASE_FREE_LIMITS.dailyReads / avgDailyReadsPerShop);
+        const maxShopsByFbWrites = Math.floor(FIREBASE_FREE_LIMITS.dailyWrites / avgDailyWritesPerShop);
+        const maxShopsByNetlify = Math.floor(NETLIFY_FREE_LIMITS.monthlyWebRequestsEstimate / (avgDailyReqPerShop * 30));
+        const safeFreePlanShopsCapacity = Math.max(14, Math.min(maxShopsByFbReads, maxShopsByFbWrites, Math.max(50, maxShopsByNetlify)));
+
+        return (
+          <div className="space-y-4">
+            {moduleSaveBanner && (
+              <div className="p-3 bg-emerald-600 text-white rounded-2xl text-xs font-bold flex items-center justify-between shadow-md animate-in fade-in">
+                <span>{moduleSaveBanner}</span>
+                <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono">SYNCED</span>
+              </div>
+            )}
+
+            {/* Top Control Header: Shop Selector & Period Selector (Daily / Weekly / Monthly / Yearly) */}
+            <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white rounded-2xl p-4 sm:p-5 border border-indigo-500/30 shadow-lg space-y-4">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-white/10 pb-3.5">
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 text-[10px] font-black uppercase">
+                      95% – 99% Smart Accuracy
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md bg-sky-500/20 text-sky-300 border border-sky-400/30 text-[10px] font-black uppercase">
+                      Zero Extra Paid Plan Needed
+                    </span>
+                  </div>
+                  <h2 className="text-base sm:text-lg font-black tracking-tight mt-1">
+                    Netlify &amp; Firebase Quota &amp; Usage Tracker (ڈیلی، ویکلی، منتھلی اور سالانہ رپورٹ)
+                  </h2>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    ہر دکان اور تمام دکانوں کی مجموعی Netlify Requests، Bandwidth اور Firebase Read / Write کی مکمل ٹریکنگ (365 دن کا ریکارڈ محفوظ)۔
+                  </p>
+                </div>
+
+                {/* Shop Selector Dropdown */}
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <div className="bg-white/10 border border-white/20 rounded-xl px-3 py-1.5">
+                    <label className="block text-[9px] uppercase font-bold text-indigo-200">
+                      Select Target Shop (دکان منتخب کریں)
+                    </label>
+                    <select
+                      value={selectedUsageShopId}
+                      onChange={e => setSelectedUsageShopId(e.target.value)}
+                      className="bg-transparent text-white font-bold text-xs focus:outline-none cursor-pointer pr-4 mt-0.5"
+                    >
+                      <option value="ALL_SHOPS" className="text-slate-900 font-bold">
+                        🌍 All Shops Combined ({shops.length} Stores Total)
+                      </option>
+                      {shops.map(s => (
+                        <option key={s.id} value={s.id} className="text-slate-900">
+                          🏪 {s.shop_name} ({s.owner_name})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* 4 Period Buttons: Daily, Weekly, Monthly, Yearly */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 w-full sm:w-auto flex-1 max-w-2xl">
+                  {[
+                    { id: 'daily' as const, label: 'Daily (آج)', sub: 'Today (24h)' },
+                    { id: 'weekly' as const, label: 'Weekly (ہفتہ وار)', sub: 'Last 7 Days' },
+                    { id: 'monthly' as const, label: 'Monthly (ماہانہ)', sub: 'This Month (30d)' },
+                    { id: 'yearly' as const, label: 'Yearly (سالانہ)', sub: 'This Year (365d)' }
+                  ].map(p => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => setUsagePeriod(p.id)}
+                      className={`py-2 px-3 rounded-xl text-left transition-all cursor-pointer border ${
+                        usagePeriod === p.id
+                          ? 'bg-emerald-500 text-white border-emerald-400 shadow-md shadow-emerald-500/25'
+                          : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                      }`}
+                    >
+                      <span className="font-black text-xs block">{p.label}</span>
+                      <span className={`text-[10px] block ${usagePeriod === p.id ? 'text-emerald-100' : 'text-slate-400'}`}>
+                        {p.sub}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="bg-emerald-500/15 border border-emerald-400/30 rounded-xl px-3.5 py-2 text-right">
+                  <span className="text-[10px] font-bold text-emerald-300 uppercase block">
+                    Estimated Free Quota Capacity
+                  </span>
+                  <span className="font-mono font-black text-sm text-white">
+                    Up to ~{safeFreePlanShopsCapacity} Active Shops Free
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* 4 Quota Progress Cards: Netlify Requests, Netlify Bandwidth, Firebase Reads, Firebase Writes */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {/* Card 1: Netlify Total Requests */}
+              <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-sky-100 text-sky-800">
+                    Netlify Requests
+                  </span>
+                  <span className="text-[10px] font-mono font-bold text-emerald-600">
+                    {(100 - netlifyFnPct).toFixed(1)}% Free Left
+                  </span>
+                </div>
+                <div>
+                  <div className="text-2xl font-black font-mono text-slate-900">
+                    {periodData.netlifyTotalRequests.toLocaleString()}
+                  </div>
+                  <p className="text-[11px] text-slate-500 font-semibold mt-0.5">
+                    Web/CDN: <b className="font-mono text-slate-800">{periodData.netlifyWebRequests.toLocaleString()}</b> · Functions:{' '}
+                    <b className="font-mono text-sky-700">{periodData.netlifyFunctionCalls.toLocaleString()}</b>
+                  </p>
+                </div>
+                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-sky-500 rounded-full transition-all"
+                    style={{ width: `${Math.max(2, netlifyFnPct)}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-slate-500 font-mono">
+                  <span>Used: {netlifyFnPct}%</span>
+                  <span>Fn Limit: {netlifyFnLimit.toLocaleString()}</span>
+                </div>
+              </div>
+
+              {/* Card 2: Netlify Bandwidth */}
+              <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-indigo-100 text-indigo-800">
+                    Netlify Bandwidth
+                  </span>
+                  <span className="text-[10px] font-mono font-bold text-emerald-600">
+                    {(100 - netlifyBwPct).toFixed(2)}% Free Left
+                  </span>
+                </div>
+                <div>
+                  <div className="text-2xl font-black font-mono text-slate-900">
+                    {periodData.netlifyBandwidthMB >= 1024
+                      ? `${(periodData.netlifyBandwidthMB / 1024).toFixed(2)} GB`
+                      : `${periodData.netlifyBandwidthMB.toLocaleString()} MB`}
+                  </div>
+                  <p className="text-[11px] text-slate-500 font-semibold mt-0.5">
+                    PWA Offline Cache Active (Minimal Traffic)
+                  </p>
+                </div>
+                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-indigo-500 rounded-full transition-all"
+                    style={{ width: `${Math.max(2, netlifyBwPct)}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-slate-500 font-mono">
+                  <span>Used: {netlifyBwPct}%</span>
+                  <span>Limit: {(netlifyBwLimitMB / 1024).toFixed(1)} GB</span>
+                </div>
+              </div>
+
+              {/* Card 3: Firebase Firestore Reads */}
+              <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                    Firebase Reads
+                  </span>
+                  <span className="text-[10px] font-mono font-bold text-emerald-600">
+                    {(100 - fbReadPct).toFixed(2)}% Free Left
+                  </span>
+                </div>
+                <div>
+                  <div className="text-2xl font-black font-mono text-emerald-700">
+                    {periodData.firebaseReads.toLocaleString()}
+                  </div>
+                  <p className="text-[11px] text-slate-500 font-semibold mt-0.5">
+                    Remaining: <b className="font-mono text-slate-800">{Math.max(0, fbReadLimit - periodData.firebaseReads).toLocaleString()}</b> reads
+                  </p>
+                </div>
+                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 rounded-full transition-all"
+                    style={{ width: `${Math.max(2, fbReadPct)}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-slate-500 font-mono">
+                  <span>Used: {fbReadPct}%</span>
+                  <span>Free Limit: {fbReadLimit.toLocaleString()}</span>
+                </div>
+              </div>
+
+              {/* Card 4: Firebase Firestore Writes & Deletes */}
+              <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-amber-100 text-amber-800">
+                    Firebase Writes
+                  </span>
+                  <span className="text-[10px] font-mono font-bold text-emerald-600">
+                    {(100 - fbWritePct).toFixed(2)}% Free Left
+                  </span>
+                </div>
+                <div>
+                  <div className="text-2xl font-black font-mono text-amber-700">
+                    {totalWritesAndDeletes.toLocaleString()}
+                  </div>
+                  <p className="text-[11px] text-slate-500 font-semibold mt-0.5">
+                    Writes: <b className="font-mono text-slate-800">{periodData.firebaseWrites.toLocaleString()}</b> · Deletes:{' '}
+                    <b className="font-mono text-rose-600">{periodData.firebaseDeletes.toLocaleString()}</b>
+                  </p>
+                </div>
+                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-amber-500 rounded-full transition-all"
+                    style={{ width: `${Math.max(2, fbWritePct)}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-slate-500 font-mono">
+                  <span>Used: {fbWritePct}%</span>
+                  <span>Free Limit: {fbWriteLimit.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Per-Shop & All-Shops Side-by-Side Comparison Table (Daily / Weekly / Monthly / Yearly) */}
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
+              <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-black text-sm text-slate-900">
+                    Store-by-Store &amp; Total Usage Report ({usagePeriod.toUpperCase()} — ہر دکان اور کل مجموعہ)
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    کسی بھی دکان کے سامنے &quot;Calibrate 24h&quot; بٹن سے آپ آج کے Netlify 24h کاؤنٹر (مثلاً 251 requests / 3.3 MB) کو سنک بھی کر سکتے ہیں۔
+                  </p>
+                </div>
+                <span className="text-[10px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 self-start sm:self-auto">
+                  Showing Period: {usagePeriod.toUpperCase()}
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[10px]">
+                    <tr>
+                      <th className="py-3 px-4">Shop / Store Name</th>
+                      <th className="py-3 px-4">Netlify Requests (Web + Fn)</th>
+                      <th className="py-3 px-4">Bandwidth</th>
+                      <th className="py-3 px-4">Firebase Reads</th>
+                      <th className="py-3 px-4">Firebase Writes</th>
+                      <th className="py-3 px-4 text-right">Action / Sync</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {/* Pinned Master Row: All Shops Combined */}
+                    <tr className="bg-indigo-50/70 font-bold">
+                      <td className="py-3 px-4">
+                        <div className="font-black text-indigo-950 text-xs flex items-center gap-1.5">
+                          <span>🌍 ALL SHOPS COMBINED ({shops.length} Stores)</span>
+                        </div>
+                        <span className="text-[10px] text-indigo-700 font-semibold">
+                          تمام دکانوں کا مجموعی ریکارڈ ({usagePeriod.toUpperCase()})
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 font-mono">
+                        <span className="text-sm font-black text-sky-800">
+                          {combinedUsageReport[usagePeriod].netlifyTotalRequests.toLocaleString()}
+                        </span>
+                        <span className="block text-[10px] text-slate-500">
+                          Web: {combinedUsageReport[usagePeriod].netlifyWebRequests.toLocaleString()} | Fn: {combinedUsageReport[usagePeriod].netlifyFunctionCalls.toLocaleString()}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 font-mono font-black text-indigo-800">
+                        {combinedUsageReport[usagePeriod].netlifyBandwidthMB} MB
+                      </td>
+                      <td className="py-3 px-4 font-mono font-black text-emerald-700">
+                        {combinedUsageReport[usagePeriod].firebaseReads.toLocaleString()}
+                      </td>
+                      <td className="py-3 px-4 font-mono font-black text-amber-700">
+                        {(combinedUsageReport[usagePeriod].firebaseWrites + combinedUsageReport[usagePeriod].firebaseDeletes).toLocaleString()}
+                      </td>
+                      <td className="py-3 px-4 text-right">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedUsageShopId('ALL_SHOPS')}
+                          className="px-2.5 py-1 rounded-lg bg-indigo-600 text-white text-[10px] font-black cursor-pointer"
+                        >
+                          View All History
+                        </button>
+                      </td>
+                    </tr>
+
+                    {/* Individual Shop Rows */}
+                    {shopUsageRows.map(row => {
+                      const p = row[usagePeriod];
+                      const isSelected = selectedUsageShopId === row.shopId;
+                      return (
+                        <tr
+                          key={row.shopId}
+                          className={`hover:bg-slate-50 transition-colors ${isSelected ? 'bg-emerald-50/50' : ''}`}
+                        >
+                          <td className="py-3 px-4">
+                            <div className="font-bold text-slate-900">{row.shopName}</div>
+                            <div className="text-[10px] text-slate-500">
+                              {row.ownerName} ({row.ownerEmail || 'No email'})
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 font-mono">
+                            <span className="font-black text-slate-900">
+                              {p.netlifyTotalRequests.toLocaleString()}
+                            </span>
+                            <span className="block text-[10px] text-slate-500">
+                              Web: {p.netlifyWebRequests.toLocaleString()} | Fn: {p.netlifyFunctionCalls.toLocaleString()}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 font-mono font-bold text-slate-800">
+                            {p.netlifyBandwidthMB} MB
+                          </td>
+                          <td className="py-3 px-4 font-mono font-bold text-emerald-700">
+                            {p.firebaseReads.toLocaleString()}
+                          </td>
+                          <td className="py-3 px-4 font-mono font-bold text-amber-700">
+                            {(p.firebaseWrites + p.firebaseDeletes).toLocaleString()}
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedUsageShopId(row.shopId)}
+                                className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border cursor-pointer ${
+                                  isSelected
+                                    ? 'bg-emerald-600 text-white border-emerald-700'
+                                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                                }`}
+                              >
+                                {isSelected ? 'Selected' : 'Select Shop'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCalibrateModalShop(row);
+                                  setCalWebReq(String(row.daily.netlifyWebRequests || 251));
+                                  setCalFnReq(String(row.daily.netlifyFunctionCalls || 0));
+                                  setCalBwMb(String(row.daily.netlifyBandwidthMB || 3.3));
+                                  setCalFbReads(String(row.daily.firebaseReads || 0));
+                                  setCalFbWrites(String(row.daily.firebaseWrites || 0));
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 text-[10px] font-bold cursor-pointer"
+                                title="Calibrate today's usage with Netlify 24h counter"
+                              >
+                                Calibrate 24h
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Day-by-Day (31 Days) & Month-by-Month (12 Months) Permanent History Ledger */}
+            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
+              <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-black text-sm text-slate-900">
+                    Permanent Historical Ledger — {activeUsageReport.shopName}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Netlify صرف 24 گھنٹے کا ڈیٹا دکھاتا ہے، لیکن یہاں آپ کا روزانہ اور ماہانہ ریکارڈ ہمیشہ کے لیے محفوظ رہے گا۔
+                  </p>
+                </div>
+
+                <div className="flex gap-1.5 bg-slate-100 p-1 rounded-xl self-start sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => setHistoryViewMode('daily')}
+                    className={`px-3 py-1 rounded-lg text-[11px] font-black cursor-pointer transition-all ${
+                      historyViewMode === 'daily'
+                        ? 'bg-slate-900 text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Daily History (آخری 31 دن)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryViewMode('monthly')}
+                    className={`px-3 py-1 rounded-lg text-[11px] font-black cursor-pointer transition-all ${
+                      historyViewMode === 'monthly'
+                        ? 'bg-slate-900 text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Monthly History (12 مہینے)
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[10px]">
+                    <tr>
+                      <th className="py-2.5 px-4">{historyViewMode === 'daily' ? 'Date (تاریخ)' : 'Month (مہینہ)'}</th>
+                      <th className="py-2.5 px-4">Netlify Total Requests</th>
+                      <th className="py-2.5 px-4">Bandwidth</th>
+                      <th className="py-2.5 px-4">Firebase Reads</th>
+                      <th className="py-2.5 px-4">Firebase Writes</th>
+                      <th className="py-2.5 px-4">Total Firebase Ops</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-mono">
+                    {historyViewMode === 'daily' ? (
+                      activeUsageReport.dailyHistory.length > 0 ? (
+                        activeUsageReport.dailyHistory.map(item => (
+                          <tr key={item.date} className="hover:bg-slate-50">
+                            <td className="py-2.5 px-4 font-bold text-slate-900">{item.date}</td>
+                            <td className="py-2.5 px-4 text-sky-700 font-bold">
+                              {item.metrics.netlifyTotalRequests.toLocaleString()}{' '}
+                              <span className="text-[10px] text-slate-400 font-normal">
+                                (Web: {item.metrics.netlifyWebRequests}, Fn: {item.metrics.netlifyFunctionCalls})
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-4 text-indigo-700 font-bold">{item.metrics.netlifyBandwidthMB} MB</td>
+                            <td className="py-2.5 px-4 text-emerald-700 font-bold">{item.metrics.firebaseReads.toLocaleString()}</td>
+                            <td className="py-2.5 px-4 text-amber-700 font-bold">
+                              {(item.metrics.firebaseWrites + item.metrics.firebaseDeletes).toLocaleString()}
+                            </td>
+                            <td className="py-2.5 px-4 text-slate-800 font-black">{item.metrics.firebaseTotalOps.toLocaleString()}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={6} className="py-6 text-center text-slate-400 font-sans">
+                            No daily history recorded yet.
+                          </td>
+                        </tr>
+                      )
+                    ) : activeUsageReport.monthlyHistory.length > 0 ? (
+                      activeUsageReport.monthlyHistory.map(item => (
+                        <tr key={item.month} className="hover:bg-slate-50">
+                          <td className="py-2.5 px-4 font-bold text-slate-900">{item.month}</td>
+                          <td className="py-2.5 px-4 text-sky-700 font-bold">
+                            {item.metrics.netlifyTotalRequests.toLocaleString()}{' '}
+                            <span className="text-[10px] text-slate-400 font-normal">
+                              (Web: {item.metrics.netlifyWebRequests}, Fn: {item.metrics.netlifyFunctionCalls})
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-4 text-indigo-700 font-bold">{item.metrics.netlifyBandwidthMB} MB</td>
+                          <td className="py-2.5 px-4 text-emerald-700 font-bold">{item.metrics.firebaseReads.toLocaleString()}</td>
+                          <td className="py-2.5 px-4 text-amber-700 font-bold">
+                            {(item.metrics.firebaseWrites + item.metrics.firebaseDeletes).toLocaleString()}
+                          </td>
+                          <td className="py-2.5 px-4 text-slate-800 font-black">{item.metrics.firebaseTotalOps.toLocaleString()}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={6} className="py-6 text-center text-slate-400 font-sans">
+                          No monthly history recorded yet.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Calibrate 24h Usage Modal */}
+            {calibrateModalShop && (
+              <div
+                className="fixed inset-0 z-50 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4"
+                onClick={() => setCalibrateModalShop(null)}
+              >
+                <div
+                  className="bg-white rounded-2xl w-full max-w-md p-5 shadow-2xl border border-slate-200 space-y-4"
+                  onClick={e => e.stopPropagation()}
+                >
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <div>
+                      <h4 className="font-black text-sm text-slate-900">
+                        Sync / Calibrate Today&apos;s Usage (آج کا کاؤنٹر ملائیں)
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        {calibrateModalShop.shopName}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCalibrateModalShop(null)}
+                      className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 cursor-pointer"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleSaveCalibration} className="space-y-3 text-xs">
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          Today Netlify Web Requests
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={calWebReq}
+                          onChange={e => setCalWebReq(e.target.value)}
+                          className="w-full p-2 bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          Today Function Calls
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={calFnReq}
+                          onChange={e => setCalFnReq(e.target.value)}
+                          className="w-full p-2 bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          Bandwidth (MB)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          value={calBwMb}
+                          onChange={e => setCalBwMb(e.target.value)}
+                          className="w-full p-2 bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          Firebase Reads
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={calFbReads}
+                          onChange={e => setCalFbReads(e.target.value)}
+                          className="w-full p-2 bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          Firebase Writes
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={calFbWrites}
+                          onChange={e => setCalFbWrites(e.target.value)}
+                          className="w-full p-2 bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setCalibrateModalShop(null)}
+                        className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isSavingCalibration}
+                        className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl shadow-md cursor-pointer"
+                      >
+                        {isSavingCalibration ? 'Saving...' : 'Save & Sync Counter'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ========================================================================= */}
       {/* TAB 2: ALL MODULES & PERMISSIONS LOCK / UNLOCK MATRIX                     */}

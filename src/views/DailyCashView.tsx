@@ -29,6 +29,7 @@ import { usePOS } from '../context/POSContext';
 import { HistoryModal } from '../components/HistoryModal';
 import { ReportModal } from '../components/ReportModal';
 import { DateNavigator } from '../components/DateNavigator';
+import { showAppAlert } from '../components/AppDialogHost';
 
 export const DailyCashView: React.FC = () => {
   const {
@@ -61,17 +62,76 @@ export const DailyCashView: React.FC = () => {
   const [amount, setAmount] = useState<string>('');
   const [description, setDescription] = useState<string>('');
   const formCardRef = useRef<HTMLDivElement>(null);
+  const amountInputRef = useRef<HTMLInputElement>(null);
+  const focusScrollTimersRef = useRef<number[]>([]);
   const [isFormFocused, setIsFormFocused] = useState<boolean>(false);
 
-  // Handle mobile keyboard open/close so the form and Save button remain comfortably in view
+  const clearFocusScrollTimers = () => {
+    focusScrollTimersRef.current.forEach(timerId => window.clearTimeout(timerId));
+    focusScrollTimersRef.current = [];
+  };
+
+  // Focus Amount input immediately (inside user gesture so mobile keyboard opens)
+  // and smoothly center it directly above the virtual keyboard.
+  const focusAndCenterAmountInput = () => {
+    clearFocusScrollTimers();
+
+    const centerAmount = () => {
+      const el = amountInputRef.current;
+      if (!el) return;
+      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    };
+
+    const focusInput = () => {
+      const el = amountInputRef.current;
+      if (!el) return;
+      try {
+        el.focus({ preventScroll: true });
+      } catch {
+        el.focus();
+      }
+    };
+
+    focusInput();
+
+    window.requestAnimationFrame(() => {
+      if (document.activeElement !== amountInputRef.current) {
+        focusInput();
+      }
+      centerAmount();
+    });
+
+    // Re-focus if triggered from native mobile <select> dismissal and re-center after keyboard/layout settle
+    const t1 = window.setTimeout(() => {
+      if (document.activeElement !== amountInputRef.current) {
+        focusInput();
+      }
+      centerAmount();
+    }, 100);
+    const t2 = window.setTimeout(centerAmount, 300);
+    const t3 = window.setTimeout(centerAmount, 480);
+
+    focusScrollTimersRef.current = [t1, t2, t3];
+  };
+
+  useEffect(() => {
+    return () => clearFocusScrollTimers();
+  }, []);
+
+  // Handle mobile keyboard open/close so Amount box, form and Save button remain comfortably in view
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
 
-    let initialHeight = vv.height;
+    const initialHeight = vv.height;
     const handleViewportResize = () => {
-      // When keyboard is dismissed (viewport height expands), keep the active form in full view
-      if (vv.height >= initialHeight - 60 && isFormFocused) {
+      if (vv.height < initialHeight - 100 && document.activeElement === amountInputRef.current) {
+        // Keyboard opened while Amount input is active: center Amount right above keyboard
+        window.requestAnimationFrame(() => {
+          amountInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+        });
+      } else if (vv.height >= initialHeight - 60 && isFormFocused) {
+        // When keyboard is dismissed (viewport height expands), keep the active form in full view
         setTimeout(() => {
           formCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }, 100);
@@ -338,13 +398,14 @@ export const DailyCashView: React.FC = () => {
     } else if (description === 'Subha Ka Opening Cash ⭐' || description === 'Back Cash se Cash Liya (Counter In)' || description === 'Back Cash ko Cash Diya (Counter Out)' || description.includes('Shift Closing')) {
       setDescription('');
     }
+    focusAndCenterAmountInput();
   };
 
   const handleSubmitNewEntry = (e: React.FormEvent) => {
     e.preventDefault();
     const val = parseFloat(amount);
     if (isNaN(val) || val <= 0) {
-      alert('Please enter a valid amount!');
+      showAppAlert('Please enter a valid amount!');
       return;
     }
 
@@ -497,7 +558,7 @@ export const DailyCashView: React.FC = () => {
     e.preventDefault();
     const val = parseFloat(loadAmount);
     if (isNaN(val) || val <= 0) {
-      alert('Please enter purchase amount!');
+      showAppAlert('Please enter purchase amount!');
       return;
     }
 
@@ -689,6 +750,9 @@ export const DailyCashView: React.FC = () => {
               <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Note (Optional)</label>
               <input
                 type="text"
+                name="load_note"
+                list="nh-note-suggestions"
+                autoComplete="on"
                 value={loadNote}
                 onChange={e => setLoadNote(e.target.value)}
                 placeholder="e.g. Paid from Cash Counter / Dealer Name"
@@ -1035,13 +1099,16 @@ export const DailyCashView: React.FC = () => {
               {entryType === 'shift_closing' ? 'Shift Closing Cash (دراز میں موجود گنتی کیا گیا کیش)' : 'Amount (Raqam)'}
             </label>
             <input
+              ref={amountInputRef}
               type="number"
+              inputMode="decimal"
               value={amount}
               onChange={e => setAmount(e.target.value)}
               onFocus={() => setIsFormFocused(true)}
               onBlur={() => {
                 setIsFormFocused(false);
                 setTimeout(() => {
+                  if (document.activeElement === amountInputRef.current) return;
                   formCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                 }, 80);
               }}
@@ -1053,7 +1120,7 @@ export const DailyCashView: React.FC = () => {
               }}
               placeholder={entryType === 'shift_closing' ? 'مثلاً 1200 یا 21000 یا 15000' : 'Raqam Likhein'}
               required
-              className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-sm focus:outline-none focus:border-indigo-500 focus:bg-white"
+              className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-sm focus:outline-none focus:border-indigo-500 focus:bg-white scroll-my-24"
             />
           </div>
 
@@ -1132,6 +1199,9 @@ export const DailyCashView: React.FC = () => {
             <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Note (Detail/Name)</label>
             <input
               type="text"
+              name="entry_note"
+              list="nh-note-suggestions"
+              autoComplete="on"
               value={description}
               onChange={e => setDescription(e.target.value)}
               onFocus={() => setIsFormFocused(true)}
@@ -1387,6 +1457,9 @@ export const DailyCashView: React.FC = () => {
                 <label className="block text-[11px] font-bold text-slate-500 mb-1">Note (Detail)</label>
                 <input
                   type="text"
+                  name="edit_note"
+                  list="nh-note-suggestions"
+                  autoComplete="on"
                   value={editDesc}
                   onChange={e => setEditDesc(e.target.value)}
                   className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg"

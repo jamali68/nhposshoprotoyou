@@ -32,6 +32,7 @@ import {
 } from 'lucide-react';
 import { usePOS, formatNHUsername } from '../context/POSContext';
 import { StaffAccount, UserRole } from '../types/pos';
+import { showAppConfirm } from '../components/AppDialogHost';
 import {
   superAdminService,
   ALL_STAFF_CONTROLLABLE_MODULES,
@@ -1120,8 +1121,14 @@ export const StaffManagementView: React.FC = () => {
 
                     <button
                       type="button"
-                      onClick={() => {
-                        if (confirm(`Are you sure you want to delete ${acc.name}'s account?`)) {
+                      onClick={async () => {
+                        const confirmed = await showAppConfirm({
+                          title: 'Delete Staff Account',
+                          message: `Are you sure you want to delete ${acc.name}'s account?`,
+                          confirmText: 'Delete Account',
+                          variant: 'danger'
+                        });
+                        if (confirmed) {
                           deleteStaffAccount(acc.id);
                         }
                       }}

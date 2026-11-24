@@ -115,12 +115,12 @@ export const MonthlySummaryView: React.FC = () => {
 
   // Aggregate Month-by-Month data for selected year
   const monthlyData: MonthDataPoint[] = useMemo(() => {
-    const monthsMap: Record<string, { cashIn: number; cashOut: number; txCount: number; dates: Set<string> }> = {};
+    const monthsMap: Record<string, { cashIn: number; marginCashIn: number; cashOut: number; txCount: number; dates: Set<string> }> = {};
 
     for (let m = 1; m <= 12; m++) {
       const mm = String(m).padStart(2, '0');
       const key = `${selectedYear}-${mm}`;
-      monthsMap[key] = { cashIn: 0, cashOut: 0, txCount: 0, dates: new Set() };
+      monthsMap[key] = { cashIn: 0, marginCashIn: 0, cashOut: 0, txCount: 0, dates: new Set() };
     }
 
     dailyTransactions.forEach(t => {
@@ -129,8 +129,16 @@ export const MonthlySummaryView: React.FC = () => {
       if (monthsMap[mKey]) {
         monthsMap[mKey].txCount++;
         monthsMap[mKey].dates.add(t.transaction_date);
+        const isInternalTransfer =
+          t.transfer_direction === 'from_back_cash' ||
+          t.transfer_direction === 'to_back_cash' ||
+          Boolean(t.linked_transfer_id) ||
+          (t.description || '').startsWith('[Back Cash');
         if (t.type === 'in' || (t.type === 'payment' && t.party_type === 'customer')) {
           monthsMap[mKey].cashIn += t.amount;
+          if (!isInternalTransfer) {
+            monthsMap[mKey].marginCashIn += t.amount;
+          }
         } else if (t.type === 'out' || (t.type === 'payment' && t.party_type === 'wholesaler')) {
           monthsMap[mKey].cashOut += t.amount;
         }
@@ -144,7 +152,7 @@ export const MonthlySummaryView: React.FC = () => {
         const monthIndex = parseInt(key.split('-')[1], 10) - 1;
         const netFlow = item.cashIn - item.cashOut;
 
-        // Calculate estimated profit by summing daily profits or using 8% margin + load
+        // Calculate estimated profit by summing daily profits or using 8% margin excluding internal Back Cash transfers
         let totalMonthBachat = 0;
         if (item.dates.size > 0) {
           item.dates.forEach(d => {
@@ -152,9 +160,9 @@ export const MonthlySummaryView: React.FC = () => {
             totalMonthBachat += (b.totalNetBachat || 0);
           });
         }
-        // If no explicit bachat calculated, derive standard retail gross margin (8%)
-        if (totalMonthBachat === 0 && item.cashIn > 0) {
-          totalMonthBachat = Math.round(item.cashIn * 0.08);
+        // If no explicit bachat calculated, derive standard retail gross margin (8%) on non-transfer cashIn
+        if (totalMonthBachat === 0 && item.marginCashIn > 0) {
+          totalMonthBachat = Math.round(item.marginCashIn * 0.08);
         }
 
         const profitMargin = item.cashIn > 0 ? (totalMonthBachat / item.cashIn) * 100 : 0;
@@ -185,21 +193,29 @@ export const MonthlySummaryView: React.FC = () => {
       0
     ).getDate();
 
-    const daysMap: Record<string, { cashIn: number; cashOut: number }> = {};
+    const daysMap: Record<string, { cashIn: number; marginCashIn: number; cashOut: number }> = {};
 
     for (let d = 1; d <= daysInMonth; d++) {
       const dd = String(d).padStart(2, '0');
       const fullDate = `${selectedMonth}-${dd}`;
-      daysMap[fullDate] = { cashIn: 0, cashOut: 0 };
+      daysMap[fullDate] = { cashIn: 0, marginCashIn: 0, cashOut: 0 };
     }
 
     dailyTransactions.forEach(t => {
       if (t.transaction_date && t.transaction_date.startsWith(selectedMonth)) {
         if (!daysMap[t.transaction_date]) {
-          daysMap[t.transaction_date] = { cashIn: 0, cashOut: 0 };
+          daysMap[t.transaction_date] = { cashIn: 0, marginCashIn: 0, cashOut: 0 };
         }
+        const isInternalTransfer =
+          t.transfer_direction === 'from_back_cash' ||
+          t.transfer_direction === 'to_back_cash' ||
+          Boolean(t.linked_transfer_id) ||
+          (t.description || '').startsWith('[Back Cash');
         if (t.type === 'in' || (t.type === 'payment' && t.party_type === 'customer')) {
           daysMap[t.transaction_date].cashIn += t.amount;
+          if (!isInternalTransfer) {
+            daysMap[t.transaction_date].marginCashIn += t.amount;
+          }
         } else if (t.type === 'out' || (t.type === 'payment' && t.party_type === 'wholesaler')) {
           daysMap[t.transaction_date].cashOut += t.amount;
         }
@@ -214,8 +230,8 @@ export const MonthlySummaryView: React.FC = () => {
         const netFlow = stats.cashIn - stats.cashOut;
         const b = getBachatProfit(dStr);
         let netProfit = b.totalNetBachat || 0;
-        if (netProfit === 0 && stats.cashIn > 0) {
-          netProfit = Math.round(stats.cashIn * 0.08);
+        if (netProfit === 0 && stats.marginCashIn > 0) {
+          netProfit = Math.round(stats.marginCashIn * 0.08);
         }
         const profitMargin = stats.cashIn > 0 ? (netProfit / stats.cashIn) * 100 : 0;
         const dayCommission = getCommissionTotal(dStr);

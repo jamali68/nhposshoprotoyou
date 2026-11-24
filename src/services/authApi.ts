@@ -8,6 +8,8 @@
  * Eliminates HTTP 405 "Method Not Allowed" errors forever.
  */
 
+import { trackNetlifyFunctionCall } from '../utils/usageTracker';
+
 export interface GoogleVerifyResult {
   success: boolean;
   verifiedEmail?: string;
@@ -206,7 +208,7 @@ async function clientHashPassword(password: string): Promise<PasswordHashResult>
 /**
  * Dispatches an action to Netlify Functions / Firebase Functions.
  */
-async function postToAuthFunction(payload: any): Promise<any> {
+async function postToAuthFunction(payload: any, authToken?: string): Promise<any> {
   if (typeof window !== 'undefined') {
     const host = window.location.hostname.toLowerCase();
     if (host.endsWith('github.io') || window.location.protocol === 'file:') {
@@ -218,15 +220,23 @@ async function postToAuthFunction(payload: any): Promise<any> {
 
   for (const url of urls) {
     try {
+      const bodyStr = JSON.stringify(payload);
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        headers,
+        body: bodyStr
       });
 
       if (res.status === 405 || res.status === 404 || res.status >= 500) {
         continue;
       }
+
+      // Count actual Netlify Function / API execution + estimated request/response bytes
+      trackNetlifyFunctionCall((bodyStr?.length || 200) + 950);
 
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.toLowerCase().includes('application/json')) {
@@ -387,42 +397,26 @@ export const authApi = {
   },
 
   /**
-   * Verifies Super Admin Master Credentials via Server Core
+   * Verifies Super Admin Master Credentials strictly via Server Core (Never hardcoded in browser)
    */
   async verifySuperAdmin(
     email: string,
-    secretKey: string,
-    customStoredKey?: string
+    secretKey: string
   ): Promise<SuperAdminVerifyResult> {
     try {
       const backendRes = await postToAuthFunction({
         action: 'verify-super-admin',
         email,
-        secretKey,
-        customStoredKey
+        secretKey
       });
 
       if (!backendRes.isStaticFallback) {
         return backendRes;
       }
 
-      // Offline / static fallback (Strictly the 2 authorized Super Admin emails)
-      const allowedMasters = [
-        'helpgoodforyouofficial@gmail.com',
-        'aliimtiaz1126@gmail.com'
-      ];
-      const cleanEmail = email.trim().toLowerCase();
-      if (!allowedMasters.includes(cleanEmail)) {
-        return { success: false, error: 'Unauthorized Master Email address.' };
-      }
-      const expected = customStoredKey || 'NH-SUPER-786';
-      if (secretKey.trim() !== expected && secretKey.trim() !== 'NH-SUPER-786') {
-        return { success: false, error: 'Incorrect Master Security Key.' };
-      }
       return {
-        success: true,
-        masterEmail: cleanEmail,
-        token: `static_master_${Date.now()}`
+        success: false,
+        error: 'Server authentication service unavailable. Super Admin login requires live Netlify Function verification.'
       };
     } catch {
       return { success: false, error: 'Super Admin verification failed' };
@@ -430,20 +424,30 @@ export const authApi = {
   },
 
   /**
-   * Updates Super Admin Master Secret Key on Server Core
+   * Updates Super Admin Master Secret Key on Server Core (Requires verified Super Admin Bearer token)
    */
-  async updateSuperAdminSecret(newSecretKey: string): Promise<{ success: boolean; error?: string }> {
+  async updateSuperAdminSecret(
+    newSecretKey: string,
+    sessionToken: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!sessionToken) {
+      return { success: false, error: 'Valid Super Admin session token required.' };
+    }
     try {
-      const backendRes = await postToAuthFunction({
-        action: 'update-super-admin-secret',
-        newSecretKey
-      });
+      const backendRes = await postToAuthFunction(
+        {
+          action: 'update-super-admin-secret',
+          newSecretKey,
+          sessionToken
+        },
+        sessionToken
+      );
       if (!backendRes.isStaticFallback) {
         return backendRes;
       }
-      return { success: true };
+      return { success: false, error: 'Server authentication service unavailable.' };
     } catch {
-      return { success: true };
+      return { success: false, error: 'Failed to update Super Admin secret key.' };
     }
   },
 

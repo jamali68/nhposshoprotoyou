@@ -6,6 +6,7 @@
 import React from 'react';
 import { ArrowLeft, RotateCcw, Trash2, History, AlertTriangle } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
+import { showAppConfirm } from '../components/AppDialogHost';
 
 export const DeletedHistoryView: React.FC = () => {
   const {
@@ -17,14 +18,26 @@ export const DeletedHistoryView: React.FC = () => {
     goBack
   } = usePOS();
 
-  const handleRestore = (id: string) => {
-    if (window.confirm('Do you want to restore this entry back to its active account?')) {
+  const handleRestore = async (id: string) => {
+    const confirmed = await showAppConfirm({
+      title: 'Restore Entry',
+      message: 'Do you want to restore this entry back to its active account?',
+      confirmText: 'Restore',
+      variant: 'primary'
+    });
+    if (confirmed) {
       restoreDeletedEntry(id);
     }
   };
 
-  const handlePermanentDelete = (id: string) => {
-    if (window.confirm('Permanently delete this entry? This action cannot be undone.')) {
+  const handlePermanentDelete = async (id: string) => {
+    const confirmed = await showAppConfirm({
+      title: 'Permanent Delete',
+      message: 'Permanently delete this entry? This action cannot be undone.',
+      confirmText: 'Delete Forever',
+      variant: 'danger'
+    });
+    if (confirmed) {
       permanentDeleteEntry(id);
     }
   };
