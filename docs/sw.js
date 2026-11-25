@@ -1,10 +1,10 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v17.6.1
+ * Version: v18.0.1
  * Comprehensive Offline & GitHub Pages Support
  */
-const SW_VERSION = 'v17.6.1';
-const BUILD_ID = 'BtJfu5nN';
+const SW_VERSION = 'v18.0.1';
+const BUILD_ID = 'CaneDsj9';
 const CACHE_NAME =
   'nh-pos-' +
   SW_VERSION +
@@ -25,7 +25,7 @@ const CORE_ASSETS = [
 ];
 
 const INJECTED_ASSETS = [
-    './assets/app-BtJfu5nN.js',
+    './assets/app-CaneDsj9.js',
   './assets/apple-touch-icon.png',
   './assets/icon-192-DyOrLONy.png',
   './assets/icon-192.png',
@@ -34,7 +34,7 @@ const INJECTED_ASSETS = [
   './assets/icon.png',
   './assets/icon.svg',
   './assets/icon1.png',
-  './assets/index-CaJcJEou.css',
+  './assets/index-DVQmHlWr.css',
   './assets/manifest-BbU1Ym6m.json',
   './assets/manifest.json'
 ];
