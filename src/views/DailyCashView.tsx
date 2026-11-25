@@ -26,6 +26,7 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
+import { DailyTransaction } from '../types/pos';
 import { HistoryModal } from '../components/HistoryModal';
 import { ReportModal } from '../components/ReportModal';
 import { DateNavigator } from '../components/DateNavigator';
@@ -58,6 +59,22 @@ export const DailyCashView: React.FC = () => {
   const [isTotalHidden, setIsTotalHidden] = useState<boolean>(true);
   // Collapsible state for Shift Closing & Sale Report (Collapsed by default)
   const [isShiftClosingExpanded, setIsShiftClosingExpanded] = useState<boolean>(false);
+  // Multi-Shift Cash Handover Mode:
+  // 'separate'   -> Each shift enters only its own separate/new cash counted (Shift 1 + Shift 2 = Total Shop Cash)
+  // 'cumulative' -> 2nd shift counts the FULL drawer including Shift 1's leftover cash (Last shift cash = Final Drawer)
+  const [shiftClosingMode, setShiftClosingMode] = useState<'separate' | 'cumulative'>(() => {
+    try {
+      const saved = localStorage.getItem('nhpos_shift_closing_mode');
+      if (saved === 'cumulative' || saved === 'separate') return saved;
+    } catch {}
+    return 'separate';
+  });
+  const updateShiftClosingMode = (mode: 'separate' | 'cumulative') => {
+    setShiftClosingMode(mode);
+    try {
+      localStorage.setItem('nhpos_shift_closing_mode', mode);
+    } catch {}
+  };
 
   // Real-time Admin -> Staff Lock/Unlock Permissions
   const [, setPermTick] = useState(0);
@@ -357,51 +374,193 @@ export const DailyCashView: React.FC = () => {
     };
   }, [dailyTransactions, filterDate]);
 
-  // Shift Closing & Net Sale calculation and multi-user shift breakdown
-  const shiftClosingAnalysis = useMemo(() => {
-    const shiftTxs = dailyTransactions.filter(
-      t => t.transaction_date === filterDate && t.type === 'shift_closing'
-    );
-    const totalClosingCash = shiftTxs.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-    const netSale = shiftTxs.length > 0 ? (totalClosingCash + totalOutPurchases) - effectiveOpening : 0;
-    const differenceFromOpening = totalClosingCash - effectiveOpening;
+  // Pure Shift Closing & Net Sale calculator with chronological per-shift purchase attribution
+  const computeShiftClosing = (
+    shiftTxsInput: DailyTransaction[],
+    outTxsInput: DailyTransaction[],
+    openingAmount: number,
+    mode: 'separate' | 'cumulative'
+  ) => {
+    const sortedShifts = [...shiftTxsInput].sort((a, b) => {
+      const ta = getTxTimestamp(a);
+      const tb = getTxTimestamp(b);
+      if (ta !== 0 && tb !== 0 && ta !== tb) return ta - tb;
+      return (a.id || '').localeCompare(b.id || '');
+    });
 
-    // Group by user for multi-user shift reporting
-    const userGroups = new Map<string, {
+    const sortedOuts = [...outTxsInput].sort((a, b) => {
+      const ta = getTxTimestamp(a);
+      const tb = getTxTimestamp(b);
+      if (ta !== 0 && tb !== 0 && ta !== tb) return ta - tb;
+      return (a.id || '').localeCompare(b.id || '');
+    });
+
+    const normalizeUserKey = (role?: string, name?: string) => {
+      const r = (role || 'user').trim().toLowerCase();
+      const n = (name || (r === 'admin' ? 'Admin' : r) || 'Staff').trim().toLowerCase();
+      return `${r}___${n}`;
+    };
+
+    type RawShift = {
+      shiftIndex: number;
+      key: string;
       userId: string;
       userName: string;
       role: string;
       totalCash: number;
-      entries: typeof shiftTxs;
-    }>();
+      firstTs: number;
+      endTs: number;
+      entries: DailyTransaction[];
+      outEntries: DailyTransaction[];
+      shiftPurchases: number;
+    };
 
-    shiftTxs.forEach(t => {
+    // Group consecutive shift_closing entries by the same operator into chronological shifts
+    const rawShifts: RawShift[] = [];
+    sortedShifts.forEach(t => {
       const uId = t.created_by || 'user';
       const uName = t.created_by_name || (t.created_by === 'admin' ? 'Admin' : t.created_by) || 'Staff';
-      const key = `${uId}___${uName}`;
-      if (!userGroups.has(key)) {
-        userGroups.set(key, {
+      const key = normalizeUserKey(uId, uName);
+      const ts = getTxTimestamp(t);
+      const last = rawShifts[rawShifts.length - 1];
+
+      if (last && last.key === key) {
+        last.totalCash += Number(t.amount) || 0;
+        last.entries.push(t);
+        if (ts > 0 && (last.firstTs === 0 || ts < last.firstTs)) last.firstTs = ts;
+        if (ts > last.endTs) last.endTs = ts;
+      } else {
+        rawShifts.push({
+          shiftIndex: rawShifts.length,
+          key,
           userId: uId,
           userName: uName,
           role: (t.created_by || 'user').toUpperCase(),
-          totalCash: 0,
-          entries: []
+          totalCash: Number(t.amount) || 0,
+          firstTs: ts,
+          endTs: ts,
+          entries: [t],
+          outEntries: [],
+          shiftPurchases: 0
         });
       }
-      const group = userGroups.get(key)!;
-      group.totalCash += Number(t.amount) || 0;
-      group.entries.push(t);
+    });
+
+    // Attribute each Cash Out / Purchase transaction strictly to the shift window in which it occurred
+    let unclosedShiftPurchases = 0;
+    if (rawShifts.length === 1) {
+      const onlyShift = rawShifts[0];
+      sortedOuts.forEach(outTx => {
+        const outTs = getTxTimestamp(outTx);
+        const outKey = normalizeUserKey(outTx.created_by, outTx.created_by_name);
+        const isAfterClosingByDifferentUser =
+          onlyShift.endTs > 0 &&
+          outTs > onlyShift.endTs &&
+          outKey !== onlyShift.key;
+
+        if (isAfterClosingByDifferentUser) {
+          // A 2nd shift user has already started purchasing after Shift 1 closed, before logging Shift 2 closing
+          unclosedShiftPurchases += Number(outTx.amount) || 0;
+        } else {
+          onlyShift.outEntries.push(outTx);
+          onlyShift.shiftPurchases += Number(outTx.amount) || 0;
+        }
+      });
+    } else if (rawShifts.length > 1) {
+      const hasShiftTimestamps = rawShifts.some(s => s.endTs > 0);
+      sortedOuts.forEach(outTx => {
+        const outTs = getTxTimestamp(outTx);
+        let targetIdx = -1;
+
+        if (outTs > 0 && hasShiftTimestamps) {
+          for (let i = 0; i < rawShifts.length; i++) {
+            if (rawShifts[i].endTs > 0 && outTs <= rawShifts[i].endTs) {
+              targetIdx = i;
+              break;
+            }
+          }
+          if (targetIdx === -1) {
+            targetIdx = rawShifts.length - 1;
+          }
+        } else {
+          const outKey = normalizeUserKey(outTx.created_by, outTx.created_by_name);
+          const byUser = rawShifts.findIndex(s => s.key === outKey);
+          targetIdx = byUser >= 0 ? byUser : 0;
+        }
+
+        rawShifts[targetIdx].outEntries.push(outTx);
+        rawShifts[targetIdx].shiftPurchases += Number(outTx.amount) || 0;
+      });
+    }
+
+    const userGroups = rawShifts.map((shift, idx) => {
+      let startingCash = 0;
+      let remainingBase = 0;
+      let shiftSale = 0;
+
+      if (idx === 0) {
+        startingCash = openingAmount;
+        remainingBase = openingAmount - shift.shiftPurchases;
+        shiftSale = (shift.totalCash + shift.shiftPurchases) - openingAmount;
+      } else if (mode === 'cumulative') {
+        const prevClosingCash = rawShifts[idx - 1].totalCash;
+        startingCash = prevClosingCash;
+        remainingBase = prevClosingCash - shift.shiftPurchases;
+        shiftSale = (shift.totalCash + shift.shiftPurchases) - prevClosingCash;
+      } else {
+        // 'separate' mode: Shift 1's closing cash is already accounted for; Shift 2+ counts only its own new cash
+        startingCash = 0;
+        remainingBase = -shift.shiftPurchases;
+        shiftSale = shift.totalCash + shift.shiftPurchases;
+      }
+
+      return {
+        ...shift,
+        startingCash,
+        remainingBase,
+        shiftSale
+      };
+    });
+
+    const totalClosingCash =
+      userGroups.length === 0
+        ? 0
+        : mode === 'cumulative' && userGroups.length > 1
+        ? userGroups[userGroups.length - 1].totalCash
+        : sortedShifts.reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+    const netSale = userGroups.reduce((sum, g) => sum + g.shiftSale, 0);
+    const differenceFromOpening = totalClosingCash - openingAmount;
+
+    const entryShiftMap = new Map<string, (typeof userGroups)[number]>();
+    userGroups.forEach(group => {
+      group.entries.forEach(e => {
+        entryShiftMap.set(e.id, group);
+      });
     });
 
     return {
-      entries: shiftTxs,
+      entries: sortedShifts,
       totalClosingCash,
       netSale,
       differenceFromOpening,
-      hasShiftClosing: shiftTxs.length > 0,
-      userGroups: Array.from(userGroups.values())
+      hasShiftClosing: sortedShifts.length > 0,
+      unclosedShiftPurchases,
+      userGroups,
+      entryShiftMap
     };
-  }, [dailyTransactions, filterDate, totalOutPurchases, effectiveOpening]);
+  };
+
+  // Shift Closing & Net Sale calculation and multi-user shift breakdown
+  const shiftClosingAnalysis = useMemo(() => {
+    const dayShiftTxs = dailyTransactions.filter(
+      t => t.transaction_date === filterDate && t.type.toLowerCase() === 'shift_closing'
+    );
+    const dayOutTxs = dailyTransactions.filter(
+      t => t.transaction_date === filterDate && t.type.toLowerCase() === 'out'
+    );
+    return computeShiftClosing(dayShiftTxs, dayOutTxs, effectiveOpening, shiftClosingMode);
+  }, [dailyTransactions, filterDate, effectiveOpening, shiftClosingMode]);
 
   // Auto-fill description when opening, shift_closing or transfer is selected
   const handleTypeChange = (newType: 'out' | 'in' | 'opening' | 'from_back_cash' | 'to_back_cash' | 'shift_closing') => {
@@ -452,20 +611,40 @@ export const DailyCashView: React.FC = () => {
       });
     } else if (entryType === 'shift_closing') {
       const uName = currentUser?.name || currentUser?.username || (currentUser?.role === 'admin' ? 'Admin' : 'Staff');
+      const nowIso = new Date().toISOString();
       const nowTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      const dayShiftTxs = dailyTransactions.filter(
+        t => t.transaction_date === filterDate && t.type.toLowerCase() === 'shift_closing'
+      );
+      const dayOutTxs = dailyTransactions.filter(
+        t => t.transaction_date === filterDate && t.type.toLowerCase() === 'out'
+      );
+      const simEntry: DailyTransaction = {
+        id: `dt-${Date.now()}-sim`,
+        type: 'shift_closing',
+        amount: val,
+        description: description.trim() || `${uName} Shift Closing Balance`,
+        transaction_date: filterDate,
+        created_by: currentUser?.role || 'user',
+        created_by_name: uName,
+        created_at: nowIso
+      };
+      const simResult = computeShiftClosing([...dayShiftTxs, simEntry], dayOutTxs, effectiveOpening, shiftClosingMode);
+      const simShift = simResult.userGroups[simResult.userGroups.length - 1];
+
       addDailyTransaction({
         type: 'shift_closing',
         amount: val,
         description: description.trim() || `${uName} Shift Closing Balance`,
         transaction_date: filterDate,
-        created_at: new Date().toISOString(),
+        created_at: nowIso,
         created_by_name: uName,
         extra_fields: {
           shift_time: nowTime,
           user_name: uName,
-          opening_cash: effectiveOpening,
-          out_purchases: totalOutPurchases,
-          calculated_sale: (val + totalOutPurchases) - effectiveOpening
+          opening_cash: simShift ? simShift.startingCash : effectiveOpening,
+          out_purchases: simShift ? simShift.shiftPurchases : totalOutPurchases,
+          calculated_sale: simShift ? simShift.shiftSale : (val + totalOutPurchases) - effectiveOpening
         }
       });
       setIsShiftClosingExpanded(true);
@@ -975,12 +1154,62 @@ export const DailyCashView: React.FC = () => {
                     </span>
                   </div>
                   <div className="bg-white/10 rounded-xl py-1.5 px-2 border border-white/5">
-                    <span className="text-amber-300 block font-semibold truncate">کل کلوزنگ گنتی کیش</span>
+                    <span className="text-amber-300 block font-semibold truncate">
+                      {shiftClosingMode === 'cumulative' && shiftClosingAnalysis.userGroups.length > 1
+                        ? 'آخری دراز گنتی کیش'
+                        : 'کل کلوزنگ گنتی کیش'}
+                    </span>
                     <span className="font-mono font-bold text-white text-xs">
                       Rs. {shiftClosingAnalysis.totalClosingCash.toLocaleString()}
                     </span>
                   </div>
                 </div>
+
+                {/* Multi-Shift Handover Mode Toggle (Only shown when 2+ Staff Shifts exist) */}
+                {shiftClosingAnalysis.userGroups.length > 1 && (
+                  <div className="bg-white/10 rounded-xl p-2 border border-indigo-400/30 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="text-[10px] font-bold text-indigo-200">
+                        دوسری شفٹ کیش گنتی کا طریقہ (Handover Mode):
+                      </span>
+                      <div className="grid grid-cols-2 gap-1 w-full sm:w-auto">
+                        <button
+                          type="button"
+                          onClick={() => updateShiftClosingMode('separate')}
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
+                            shiftClosingMode === 'separate'
+                              ? 'bg-emerald-500 text-white shadow-xs'
+                              : 'bg-white/10 text-indigo-200 hover:bg-white/20'
+                          }`}
+                        >
+                          الگ شفٹ کیش (Separate)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => updateShiftClosingMode('cumulative')}
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
+                            shiftClosingMode === 'cumulative'
+                              ? 'bg-amber-500 text-slate-950 shadow-xs'
+                              : 'bg-white/10 text-indigo-200 hover:bg-white/20'
+                          }`}
+                        >
+                          مکمل دراز کیش (Handover)
+                        </button>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-indigo-200/90 leading-snug">
+                      {shiftClosingMode === 'separate'
+                        ? 'الگ شفٹ کیش: ہر شفٹ نے صرف اپنا نیا/الگ کیش درج کیا ہے (پچھلی شفٹ کا کیش دوبارہ نہیں گنا گیا)۔'
+                        : 'مکمل دراز کیش: دوسری شفٹ کی گنتی میں پچھلی شفٹ کا چھوڑا گیا کیش (بقایا اوپننگ + پہلی شفٹ کی سیل) بھی شامل ہے، اس لیے دوسری شفٹ کی سیل پچھلی شفٹ کا کیش نکال کر حساب ہو رہی ہے۔'}
+                    </p>
+                  </div>
+                )}
+
+                {shiftClosingAnalysis.unclosedShiftPurchases > 0 && (
+                  <div className="bg-amber-500/20 border border-amber-400/40 rounded-xl px-2.5 py-2 text-[10px] text-amber-100 leading-snug">
+                    ⏳ پہلی شفٹ بند ہونے کے بعد <b>Rs. {shiftClosingAnalysis.unclosedShiftPurchases.toLocaleString()}</b> کی خریداری دوسرے یوزر نے کی ہے — یہ پہلی شفٹ میں شامل نہیں کی گئی، دوسری شفٹ کلوز ہونے پر اس میں خودکار شامل ہو جائے گی۔
+                  </div>
+                )}
 
                 {/* User-wise Shift Breakdown - Dynamic Single-User vs Multi-User Support */}
                 {shiftClosingAnalysis.userGroups.length > 0 && (
@@ -1002,55 +1231,96 @@ export const DailyCashView: React.FC = () => {
                     <div className="space-y-1.5">
                       {shiftClosingAnalysis.userGroups.map((u, idx) => {
                         const isSolo = shiftClosingAnalysis.userGroups.length === 1;
-                        const uSale = isSolo
-                          ? shiftClosingAnalysis.netSale
-                          : (u.totalCash + totalOutPurchases) - effectiveOpening;
+                        const uSale = u.shiftSale;
+                        const isCumulativeMismatch =
+                          idx > 0 && shiftClosingMode === 'cumulative' && uSale < 0;
 
                         return (
-                          <div key={idx} className="bg-white/5 rounded-lg p-2.5 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 border border-white/5">
-                            <div className="flex items-center gap-2">
-                              <span className="w-5 h-5 rounded-full bg-indigo-500/40 text-indigo-200 font-black text-[10px] flex items-center justify-center shrink-0">
-                                {idx + 1}
-                              </span>
-                              <div>
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                  <span className="font-bold text-white text-sm">{u.userName}</span>
-                                  <span className="text-[9px] text-indigo-300 px-1.5 py-0.2 rounded bg-indigo-500/20 uppercase font-mono">
-                                    {u.role}
-                                  </span>
-                                  {isSolo && (
-                                    <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.2 rounded font-bold border border-emerald-500/30">
-                                      100% Full Day Sale &amp; Profit (مکمل دن کا منافع و سیل)
+                          <div key={`${u.key}-${idx}`} className="bg-white/5 rounded-lg p-2.5 text-xs space-y-2 border border-white/5">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                              <div className="flex items-center gap-2">
+                                <span className="w-5 h-5 rounded-full bg-indigo-500/40 text-indigo-200 font-black text-[10px] flex items-center justify-center shrink-0">
+                                  {idx + 1}
+                                </span>
+                                <div>
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-bold text-white text-sm">{u.userName}</span>
+                                    <span className="text-[9px] text-indigo-300 px-1.5 py-0.2 rounded bg-indigo-500/20 uppercase font-mono">
+                                      {u.role}
                                     </span>
-                                  )}
+                                    {isSolo && (
+                                      <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.2 rounded font-bold border border-emerald-500/30">
+                                        100% Full Day Sale &amp; Profit (مکمل دن کا منافع و سیل)
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-[10px] text-slate-300 mt-1 flex flex-wrap gap-1">
+                                    {u.entries.map((e, eIdx) => (
+                                      <span key={e.id} className="font-mono text-white/90 bg-white/10 px-1.5 py-0.5 rounded">
+                                        Rs. {e.amount.toLocaleString()} {e.extra_fields?.shift_time ? `(${e.extra_fields.shift_time})` : ''}
+                                        {eIdx < u.entries.length - 1 ? ' +' : ''}
+                                      </span>
+                                    ))}
+                                  </div>
                                 </div>
-                                <div className="text-[10px] text-slate-300 mt-1 flex flex-wrap gap-1">
-                                  {u.entries.map((e, eIdx) => (
-                                    <span key={e.id} className="font-mono text-white/90 bg-white/10 px-1.5 py-0.5 rounded">
-                                      Rs. {e.amount.toLocaleString()} {e.extra_fields?.shift_time ? `(${e.extra_fields.shift_time})` : ''}
-                                      {eIdx < u.entries.length - 1 ? ' +' : ''}
-                                    </span>
-                                  ))}
+                              </div>
+
+                              <div className="flex items-center gap-3 sm:text-right shrink-0 pt-1 sm:pt-0 border-t sm:border-t-0 border-white/10">
+                                <div>
+                                  <span className="text-[9px] text-indigo-300 block">
+                                    {idx > 0 && shiftClosingMode === 'cumulative' ? 'مکمل دراز کیش' : 'گنتی کیش'}
+                                  </span>
+                                  <span className="font-mono font-bold text-white text-xs">
+                                    Rs. {u.totalCash.toLocaleString()}
+                                  </span>
+                                </div>
+                                <div>
+                                  <span className="text-[9px] text-emerald-300 block">
+                                    {isSolo ? 'کل سیل (100% یوزر سیل)' : 'شفٹ کی اصل سیل'}
+                                  </span>
+                                  <span className={`font-mono font-black text-xs ${uSale >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    Rs. {uSale.toLocaleString()}
+                                  </span>
                                 </div>
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-3 sm:text-right shrink-0 pt-1 sm:pt-0 border-t sm:border-t-0 border-white/10">
-                              <div>
-                                <span className="text-[9px] text-indigo-300 block">گنتی کیش</span>
-                                <span className="font-mono font-bold text-white text-xs">
-                                  Rs. {u.totalCash.toLocaleString()}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-[9px] text-emerald-300 block">
-                                  {isSolo ? 'کل سیل (100% یوزر سیل)' : 'حساب شدہ سیل'}
-                                </span>
-                                <span className={`font-mono font-black text-xs ${uSale >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                  Rs. {uSale.toLocaleString()}
-                                </span>
-                              </div>
+                            {/* Transparent Per-Shift Accounting Formula Strip */}
+                            <div className="bg-black/25 rounded-lg px-2 py-1.5 text-[10px] text-indigo-100/90 flex flex-wrap items-center gap-x-2.5 gap-y-1 border border-white/5 font-mono">
+                              {idx === 0 ? (
+                                <>
+                                  <span>اوپننگ: <b>Rs. {u.startingCash.toLocaleString()}</b></span>
+                                  <span className="text-rose-300">شفٹ پرچیز: <b>-Rs. {u.shiftPurchases.toLocaleString()}</b></span>
+                                  <span className="text-amber-300">بقایا اوپننگ: <b>Rs. {u.remainingBase.toLocaleString()}</b></span>
+                                  <span className="text-emerald-300">
+                                    حساب: {u.totalCash.toLocaleString()} {u.remainingBase >= 0 ? `- ${u.remainingBase.toLocaleString()}` : `+ ${Math.abs(u.remainingBase).toLocaleString()}`} = <b>Rs. {uSale.toLocaleString()}</b>
+                                  </span>
+                                </>
+                              ) : shiftClosingMode === 'cumulative' ? (
+                                <>
+                                  <span>پچھلی شفٹ ہینڈ اوور: <b>Rs. {u.startingCash.toLocaleString()}</b></span>
+                                  <span className="text-rose-300">شفٹ پرچیز: <b>-Rs. {u.shiftPurchases.toLocaleString()}</b></span>
+                                  <span className="text-amber-300">بقایا ہینڈ اوور: <b>Rs. {u.remainingBase.toLocaleString()}</b></span>
+                                  <span className={uSale >= 0 ? 'text-emerald-300' : 'text-rose-300'}>
+                                    حساب: {u.totalCash.toLocaleString()} {u.remainingBase >= 0 ? `- ${u.remainingBase.toLocaleString()}` : `+ ${Math.abs(u.remainingBase).toLocaleString()}`} = <b>Rs. {uSale.toLocaleString()}</b>
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="text-indigo-200">الگ شفٹ کیش: <b>Rs. {u.totalCash.toLocaleString()}</b></span>
+                                  <span className="text-rose-300">شفٹ پرچیز: <b>+Rs. {u.shiftPurchases.toLocaleString()}</b></span>
+                                  <span className="text-emerald-300">
+                                    حساب: {u.totalCash.toLocaleString()} + {u.shiftPurchases.toLocaleString()} = <b>Rs. {uSale.toLocaleString()}</b>
+                                  </span>
+                                </>
+                              )}
                             </div>
+
+                            {isCumulativeMismatch && (
+                              <div className="bg-amber-500/20 border border-amber-400/40 rounded-lg px-2 py-1.5 text-[10px] text-amber-100 leading-snug">
+                                ⚠️ گنتی کیش (Rs. {u.totalCash.toLocaleString()}) بقایا ہینڈ اوور (Rs. {u.remainingBase.toLocaleString()}) سے کم ہے۔ اگر آپ نے صرف اس شفٹ کا الگ کیش درج کیا ہے (پچھلی شفٹ کا Rs. {u.startingCash.toLocaleString()} شامل کیے بغیر) تو اوپر <b>"الگ شفٹ کیش (Separate)"</b> منتخب کریں۔
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -1178,15 +1448,45 @@ export const DailyCashView: React.FC = () => {
           {/* Live Interactive Calculation Preview for Shift Closing */}
           {entryType === 'shift_closing' && (() => {
             const previewAmountVal = parseFloat(amount) || 0;
-            const previewTotalCounted = shiftClosingAnalysis.totalClosingCash + previewAmountVal;
-            const previewCalculatedSale = previewAmountVal > 0 
-              ? (previewTotalCounted + totalOutPurchases) - effectiveOpening 
-              : (shiftClosingAnalysis.hasShiftClosing ? shiftClosingAnalysis.netSale : 0);
-            const previewDiff = previewTotalCounted - effectiveOpening;
+            const uName = currentUser?.name || currentUser?.username || (currentUser?.role === 'admin' ? 'Admin' : 'Staff');
+            const dayShiftTxs = dailyTransactions.filter(
+              t => t.transaction_date === filterDate && t.type.toLowerCase() === 'shift_closing'
+            );
+            const dayOutTxs = dailyTransactions.filter(
+              t => t.transaction_date === filterDate && t.type.toLowerCase() === 'out'
+            );
+
+            const previewAnalysis =
+              previewAmountVal > 0
+                ? computeShiftClosing(
+                    [
+                      ...dayShiftTxs,
+                      {
+                        id: `dt-${Date.now()}-preview`,
+                        type: 'shift_closing',
+                        amount: previewAmountVal,
+                        description: description.trim() || `${uName} Shift Closing Balance`,
+                        transaction_date: filterDate,
+                        created_by: currentUser?.role || 'user',
+                        created_by_name: uName,
+                        created_at: new Date().toISOString()
+                      }
+                    ],
+                    dayOutTxs,
+                    effectiveOpening,
+                    shiftClosingMode
+                  )
+                : shiftClosingAnalysis;
+
+            const activePreviewShift = previewAnalysis.userGroups[previewAnalysis.userGroups.length - 1];
+            const previewTotalCounted = previewAnalysis.totalClosingCash;
+            const previewCalculatedSale = previewAnalysis.netSale;
+            const previewShiftSale = activePreviewShift ? activePreviewShift.shiftSale : 0;
+            const isMultiShiftPreview = previewAnalysis.userGroups.length > 1;
 
             return (
               <div className="p-3 bg-gradient-to-br from-indigo-50/90 to-purple-50/90 border border-indigo-200/80 rounded-xl space-y-2">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between flex-wrap gap-1">
                   <span className="font-extrabold text-[11px] text-indigo-900 flex items-center gap-1.5">
                     <TrendingUp className="w-4 h-4 text-indigo-600" />
                     <span>Shift Closing &amp; Sale Calculator (سیل حساب کتاب)</span>
@@ -1200,45 +1500,77 @@ export const DailyCashView: React.FC = () => {
 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-center text-[10px]">
                   <div className="bg-white/80 p-2 rounded-lg border border-indigo-100 shadow-2xs">
-                    <span className="text-slate-500 font-bold block truncate">1. Opening Cash</span>
+                    <span className="text-slate-500 font-bold block truncate">
+                      {isMultiShiftPreview && activePreviewShift
+                        ? shiftClosingMode === 'cumulative'
+                          ? '1. Prev Handover'
+                          : '1. Shift Mode'
+                        : '1. Opening Cash'}
+                    </span>
                     <span className="font-mono font-black text-slate-800 text-[11px]">
-                      Rs. {effectiveOpening.toLocaleString()}
+                      {isMultiShiftPreview && activePreviewShift
+                        ? shiftClosingMode === 'cumulative'
+                          ? `Rs. ${activePreviewShift.startingCash.toLocaleString()}`
+                          : 'Separate'
+                        : `Rs. ${effectiveOpening.toLocaleString()}`}
                     </span>
                   </div>
 
                   <div className="bg-white/80 p-2 rounded-lg border border-indigo-100 shadow-2xs">
-                    <span className="text-rose-600 font-bold block truncate">2. Out/Purchases (-)</span>
+                    <span className="text-rose-600 font-bold block truncate">
+                      {isMultiShiftPreview ? '2. This Shift Out (-)' : '2. Out/Purchases (-)'}
+                    </span>
                     <span className="font-mono font-black text-rose-700 text-[11px]">
-                      Rs. {totalOutPurchases.toLocaleString()}
+                      Rs. {(activePreviewShift ? activePreviewShift.shiftPurchases : totalOutPurchases).toLocaleString()}
                     </span>
                   </div>
 
                   <div className="bg-white/80 p-2 rounded-lg border border-indigo-100 shadow-2xs">
-                    <span className="text-indigo-600 font-bold block truncate">3. Closing Counted</span>
+                    <span className="text-indigo-600 font-bold block truncate">
+                      {isMultiShiftPreview ? '3. This Shift Cash' : '3. Closing Counted'}
+                    </span>
                     <span className="font-mono font-black text-indigo-700 text-[11px]">
-                      Rs. {previewTotalCounted.toLocaleString()}
+                      Rs. {(activePreviewShift ? activePreviewShift.totalCash : previewTotalCounted).toLocaleString()}
                     </span>
                   </div>
 
                   <div className="bg-white/80 p-2 rounded-lg border border-indigo-100 shadow-2xs">
-                    <span className="text-emerald-600 font-bold block truncate">4. Net Sale (کل سیل)</span>
+                    <span className="text-emerald-600 font-bold block truncate">
+                      {isMultiShiftPreview ? '4. This Shift Sale' : '4. Net Sale (کل سیل)'}
+                    </span>
                     <span className={`font-mono font-black text-[12px] ${
-                      previewCalculatedSale >= 0 ? 'text-emerald-700' : 'text-rose-600'
+                      (isMultiShiftPreview ? previewShiftSale : previewCalculatedSale) >= 0 ? 'text-emerald-700' : 'text-rose-600'
                     }`}>
-                      Rs. {previewCalculatedSale.toLocaleString()}
+                      Rs. {(isMultiShiftPreview ? previewShiftSale : previewCalculatedSale).toLocaleString()}
                     </span>
                   </div>
                 </div>
 
                 {/* Explanation text */}
                 <div className="text-[10px] text-slate-700 bg-white/70 p-2 rounded-lg border border-indigo-100/60 leading-relaxed">
-                  {previewAmountVal > 0 ? (
+                  {previewAmountVal > 0 && activePreviewShift ? (
                     <p className="font-semibold text-slate-700">
-                      💡 <span className="font-bold text-indigo-900">حساب:</span> کلوزنگ کیش (Rs. {previewTotalCounted.toLocaleString()}) + کل خرچ (Rs. {totalOutPurchases.toLocaleString()}) - اوپننگ (Rs. {effectiveOpening.toLocaleString()}) = <span className="font-bold text-emerald-700">کل سیل Rs. {previewCalculatedSale.toLocaleString()}</span> {previewDiff !== 0 && `(کیش فرق: ${previewDiff >= 0 ? '+' : ''}Rs. ${previewDiff.toLocaleString()})`}
+                      💡 <span className="font-bold text-indigo-900">اس شفٹ کا حساب ({activePreviewShift.userName}):</span>{' '}
+                      {activePreviewShift.shiftIndex === 0 ? (
+                        <>
+                          گنتی کیش (Rs. {activePreviewShift.totalCash.toLocaleString()}) + شفٹ پرچیز (Rs. {activePreviewShift.shiftPurchases.toLocaleString()}) - اوپننگ (Rs. {activePreviewShift.startingCash.toLocaleString()}) ={' '}
+                          <span className="font-bold text-emerald-700">شفٹ سیل Rs. {previewShiftSale.toLocaleString()}</span>
+                        </>
+                      ) : shiftClosingMode === 'cumulative' ? (
+                        <>
+                          مکمل دراز کیش (Rs. {activePreviewShift.totalCash.toLocaleString()}) + شفٹ پرچیز (Rs. {activePreviewShift.shiftPurchases.toLocaleString()}) - پچھلی شفٹ ہینڈ اوور (Rs. {activePreviewShift.startingCash.toLocaleString()}) ={' '}
+                          <span className={`font-bold ${previewShiftSale >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>شفٹ سیل Rs. {previewShiftSale.toLocaleString()}</span> | کل دن کی سیل: <span className="font-bold text-indigo-800">Rs. {previewCalculatedSale.toLocaleString()}</span>
+                        </>
+                      ) : (
+                        <>
+                          الگ شفٹ کیش (Rs. {activePreviewShift.totalCash.toLocaleString()}) + شفٹ پرچیز (Rs. {activePreviewShift.shiftPurchases.toLocaleString()}) ={' '}
+                          <span className="font-bold text-emerald-700">شفٹ سیل Rs. {previewShiftSale.toLocaleString()}</span> | کل دن کی سیل: <span className="font-bold text-indigo-800">Rs. {previewCalculatedSale.toLocaleString()}</span>
+                        </>
+                      )}
                     </p>
                   ) : (
                     <p className="text-slate-500">
-                      اوپر رقم والے خانے میں کیش لکھیں (بڑے نوٹ جیسے 1000/500 یا مجموعی کیش)۔ سسٹم خودکار طور پر اوپننگ اور پرچیزز کو مدنظر رکھ کر خالص سیل نکال دے گا۔
+                      اوپر رقم والے خانے میں کیش لکھیں (بڑے نوٹ جیسے 1000/500 یا مجموعی کیش)۔ سسٹم خودکار طور پر ہر شفٹ کی اپنی پرچیزز اور اوپننگ/ہینڈ اوور کے مطابق اصل سیل نکال دے گا۔
                     </p>
                   )}
                 </div>
@@ -1422,11 +1754,17 @@ export const DailyCashView: React.FC = () => {
                       {isShiftClosing ? '💼 ' : isOut ? '-' : isOpening ? '★ ' : '+'} Rs. {t.amount.toLocaleString()}
                     </div>
 
-                    {isShiftClosing && (
-                      <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100 inline-block mt-0.5">
-                        سیل: Rs. {((t.amount + totalOutPurchases) - effectiveOpening).toLocaleString()}
-                      </span>
-                    )}
+                    {isShiftClosing && (() => {
+                      const matchedShift = shiftClosingAnalysis.entryShiftMap.get(t.id);
+                      const displaySale = matchedShift
+                        ? matchedShift.shiftSale
+                        : (t.amount + totalOutPurchases) - effectiveOpening;
+                      return (
+                        <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100 inline-block mt-0.5">
+                          {matchedShift ? `شفٹ #${matchedShift.shiftIndex + 1} سیل:` : 'سیل:'} Rs. {displaySale.toLocaleString()}
+                        </span>
+                      );
+                    })()}
 
                     {canDeleteEntry && (
                       <button
