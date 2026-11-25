@@ -341,18 +341,18 @@ export const DashboardView: React.FC = () => {
       </div>
 
       {/* Easyload Ledger Section (Matching load_index.php) */}
-      <div className="bg-white rounded-2xl p-4 sm:p-5 shadow-xs border border-slate-200/80 space-y-3">
-        <div className="flex items-center justify-between gap-1.5">
-          <div className="flex items-center gap-1.5 sm:gap-2">
+      <div className="bg-white rounded-2xl p-3.5 sm:p-5 shadow-xs border border-slate-200/80 space-y-3 overflow-hidden">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1">
             <Radio className="w-4 h-4 text-[#e67e22] shrink-0" />
-            <h3 className="font-extrabold text-[13px] sm:text-base text-slate-800 tracking-tight whitespace-nowrap">
+            <h3 className="font-extrabold text-xs sm:text-base text-slate-800 tracking-tight truncate">
               Easy Load Ledger ({formattedDate})
             </h3>
           </div>
           <button
             type="button"
             onClick={() => setActiveView('daily_cash')}
-            className="flex items-center gap-1 px-2.5 sm:px-3 py-1.5 bg-[#2c3e50] hover:bg-slate-700 text-white rounded-xl text-[11px] sm:text-xs font-bold transition-colors shrink-0 whitespace-nowrap"
+            className="flex items-center gap-1 px-2.5 sm:px-3 py-1.5 bg-[#2c3e50] hover:bg-slate-700 text-white rounded-xl text-[10px] sm:text-xs font-bold transition-colors shrink-0 whitespace-nowrap"
           >
             <PlusCircle className="w-3.5 h-3.5 shrink-0" />
             <span>Load Purchase</span>
