@@ -1,12 +1,13 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v18.0.5
+ * Version: v18.0.6
  * Smart Background Pre-Download & Non-Disruptive Offline Support (GitHub Pages + Netlify)
  */
-const SW_VERSION = 'v18.0.5';
+const SW_VERSION = 'v18.0.6';
 const BUILD_ID = '/* __BUILD_ID__ */';
+const SMART_CACHE_PREFIX = 'nh-pos-smart-';
 const CACHE_NAME =
-  'nh-pos-' +
+  SMART_CACHE_PREFIX +
   SW_VERSION +
   (BUILD_ID && !BUILD_ID.includes('__BUILD_ID__') ? '-' + BUILD_ID : '');
 
@@ -34,6 +35,13 @@ const PRECACHE_ASSETS = Array.from(new Set([...CORE_ASSETS, ...INJECTED_ASSETS])
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
+      // Check BEFORE opening CACHE_NAME whether the device already runs the smart updater (v18.0.6+)
+      // Devices stuck on legacy v18.0.1 ('nh-pos-v18.0.1-...') cannot send SKIP_WAITING, so we auto-upgrade them once.
+      const existingCacheKeysBeforeInstall = await caches.keys();
+      const hasSmartCache = existingCacheKeysBeforeInstall.some((k) =>
+        k.startsWith(SMART_CACHE_PREFIX)
+      );
+
       const cache = await caches.open(CACHE_NAME);
 
       const isCriticalAsset = (asset) =>
@@ -72,11 +80,12 @@ self.addEventListener('install', (event) => {
       );
 
       // Smart Non-Disruptive Activation:
-      // - If no app window is open (cold install / closed app), activate immediately.
-      // - If user currently has the app open, stay in 'waiting' state (zero disruption)
-      //   and notify open tabs that the new version is 100% downloaded and ready to apply on page switch/refresh/reopen.
+      // - If upgrading from a legacy pre-smart cache (e.g. stuck v18.0.1) OR no app window is open:
+      //   activate immediately so trapped legacy phones escape cleanly into the smart updater.
+      // - If device already has smart updater (v18.0.6+) AND user has the app open:
+      //   stay silently in 'waiting' state (zero disruption) and notify tabs to apply on page switch/refresh/reopen.
       const existingClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-      if (existingClients.length === 0) {
+      if (!hasSmartCache || existingClients.length === 0) {
         await self.skipWaiting();
       } else {
         for (const client of existingClients) {
@@ -95,10 +104,14 @@ self.addEventListener('activate', (event) => {
     (async () => {
       const keys = await caches.keys();
       let deletedOldCache = false;
+      let upgradedFromLegacy = false;
       await Promise.all(
         keys.map((key) => {
           if (key !== CACHE_NAME) {
             deletedOldCache = true;
+            if (!key.startsWith(SMART_CACHE_PREFIX)) {
+              upgradedFromLegacy = true;
+            }
             console.log('[SW] Purging old cache:', key);
             return caches.delete(key);
           }
@@ -106,10 +119,15 @@ self.addEventListener('activate', (event) => {
       );
       await self.clients.claim();
       if (deletedOldCache) {
-        const windowClients = await self.clients.matchAll({ type: 'window' });
+        const windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
         for (const client of windowClients) {
           try {
-            client.postMessage({ type: 'SW_ACTIVATED', version: SW_VERSION, cacheName: CACHE_NAME });
+            if (upgradedFromLegacy) {
+              // Legacy v18.0.1 index.html listens for 'SW_UPDATED' to reload once out of stale cache
+              client.postMessage({ type: 'SW_UPDATED', version: CACHE_NAME });
+            } else {
+              client.postMessage({ type: 'SW_ACTIVATED', version: SW_VERSION, cacheName: CACHE_NAME });
+            }
           } catch {}
         }
       }

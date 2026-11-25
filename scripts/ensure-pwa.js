@@ -53,6 +53,12 @@ targets.forEach((dir) => {
     fs.mkdirSync(assetsDir, { recursive: true });
   }
 
+  // Strip unused AI Studio chat media folder from build output (keeps dist/ and docs/ lightweight for GitHub & Netlify)
+  const aistudioAssetsDir = path.join(assetsDir, 'aistudio');
+  if (fs.existsSync(aistudioAssetsDir)) {
+    fs.rmSync(aistudioAssetsDir, { recursive: true, force: true });
+  }
+
   // 1. Write pristine manifest.json in root and assets
   const manifestJson = JSON.stringify(MANIFEST_CONTENT, null, 2);
   fs.writeFileSync(path.join(dir, 'manifest.json'), manifestJson, 'utf8');
@@ -94,7 +100,7 @@ targets.forEach((dir) => {
 
     // Extract SW_VERSION from public/sw.js
     const verMatch = swContent.match(/SW_VERSION\s*=\s*['"]([^'"]+)['"]/);
-    const appVersion = verMatch && verMatch[1] ? verMatch[1] : 'v18.0.5';
+    const appVersion = verMatch && verMatch[1] ? verMatch[1] : 'v18.0.6';
 
     swContent = swContent
       .replace(/\/\* __BUILD_ID__ \*\//g, buildId)
