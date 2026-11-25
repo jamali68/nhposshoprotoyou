@@ -78,7 +78,7 @@ targets.forEach((dir) => {
     }
   });
 
-  // 3. Inject compiled build bundles (JS & CSS) and unique BUILD_ID into sw.js for complete offline capability
+  // 3. Inject compiled build bundles (JS & CSS) and unique BUILD_ID into sw.js + write version.json for GitHub Pages & Netlify instant update detection
   if (fs.existsSync('public/sw.js')) {
     let swContent = fs.readFileSync('public/sw.js', 'utf8');
 
@@ -88,17 +88,33 @@ targets.forEach((dir) => {
     const bundleListStr = bundleUrls.map(u => `  '${u}'`).join(',\n');
 
     // Extract hash from main JS bundle (e.g. app-C7vCqfTp.js -> C7vCqfTp)
-    const jsFile = assetFiles.find(f => f.endsWith('.js')) || '';
+    const jsFile = assetFiles.find(f => f.startsWith('app-') && f.endsWith('.js')) || assetFiles.find(f => f.endsWith('.js')) || '';
     const hashMatch = jsFile.match(/-([a-zA-Z0-9_-]+)\.js$/);
     const buildId = hashMatch && hashMatch[1] ? hashMatch[1] : String(Date.now());
+
+    // Extract SW_VERSION from public/sw.js
+    const verMatch = swContent.match(/SW_VERSION\s*=\s*['"]([^'"]+)['"]/);
+    const appVersion = verMatch && verMatch[1] ? verMatch[1] : 'v18.0.5';
 
     swContent = swContent
       .replace(/\/\* __BUILD_ID__ \*\//g, buildId)
       .replace(/\/\* __BUILD_ASSETS__ \*\//, bundleListStr);
 
+    const versionManifest = JSON.stringify(
+      {
+        version: appVersion,
+        buildId,
+        builtAt: new Date().toISOString()
+      },
+      null,
+      2
+    );
+
     fs.writeFileSync(path.join(dir, 'sw.js'), swContent, 'utf8');
+    fs.writeFileSync(path.join(dir, 'version.json'), versionManifest, 'utf8');
     if (dir === 'dist') {
       fs.writeFileSync('sw.js', swContent, 'utf8');
+      fs.writeFileSync('version.json', versionManifest, 'utf8');
     }
   }
 

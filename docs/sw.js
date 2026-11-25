@@ -1,10 +1,10 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v18.0.1
- * Comprehensive Offline & GitHub Pages Support
+ * Version: v18.0.5
+ * Smart Background Pre-Download & Non-Disruptive Offline Support (GitHub Pages + Netlify)
  */
-const SW_VERSION = 'v18.0.1';
-const BUILD_ID = 'CaneDsj9';
+const SW_VERSION = 'v18.0.5';
+const BUILD_ID = 'SY10Qyid';
 const CACHE_NAME =
   'nh-pos-' +
   SW_VERSION +
@@ -25,7 +25,7 @@ const CORE_ASSETS = [
 ];
 
 const INJECTED_ASSETS = [
-    './assets/app-CaneDsj9.js',
+    './assets/app-SY10Qyid.js',
   './assets/apple-touch-icon.png',
   './assets/icon-192-DyOrLONy.png',
   './assets/icon-192.png',
@@ -56,10 +56,15 @@ self.addEventListener('install', (event) => {
       const criticalAssets = PRECACHE_ASSETS.filter(isCriticalAsset);
       const optionalAssets = PRECACHE_ASSETS.filter((a) => !isCriticalAsset(a));
 
-      // Critical assets must succeed so we never activate an incomplete cache on slow/flaky mobile networks
+      // Critical assets must succeed so we never activate an incomplete cache on slow/flaky mobile networks.
+      // For HTML entry files ('./', 'index.html'), append a versioned cache-buster query on the network request
+      // so GitHub Pages' 10-minute CDN cache (max-age=600) is bypassed immediately, while storing under the clean key!
+      const cacheBuster = encodeURIComponent(SW_VERSION + '_' + BUILD_ID);
       await Promise.all(
         criticalAssets.map(async (asset) => {
-          const req = new Request(asset, { cache: 'reload' });
+          const isHtmlEntry = asset === './' || asset === 'index.html';
+          const fetchUrl = isHtmlEntry ? `index.html?_v=${cacheBuster}` : asset;
+          const req = new Request(fetchUrl, { cache: 'reload' });
           const resp = await fetch(req);
           if (!resp || resp.status !== 200) {
             throw new Error('[SW] Failed to precache critical asset: ' + asset);
@@ -77,8 +82,20 @@ self.addEventListener('install', (event) => {
         )
       );
 
-      // Only skipWaiting AFTER all critical bundles are safely stored in CACHE_NAME
-      await self.skipWaiting();
+      // Smart Non-Disruptive Activation:
+      // - If no app window is open (cold install / closed app), activate immediately.
+      // - If user currently has the app open, stay in 'waiting' state (zero disruption)
+      //   and notify open tabs that the new version is 100% downloaded and ready to apply on page switch/refresh/reopen.
+      const existingClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      if (existingClients.length === 0) {
+        await self.skipWaiting();
+      } else {
+        for (const client of existingClients) {
+          try {
+            client.postMessage({ type: 'SW_UPDATE_READY', version: SW_VERSION, cacheName: CACHE_NAME });
+          } catch {}
+        }
+      }
     })()
   );
 });
@@ -103,7 +120,7 @@ self.addEventListener('activate', (event) => {
         const windowClients = await self.clients.matchAll({ type: 'window' });
         for (const client of windowClients) {
           try {
-            client.postMessage({ type: 'SW_UPDATED', version: CACHE_NAME });
+            client.postMessage({ type: 'SW_ACTIVATED', version: SW_VERSION, cacheName: CACHE_NAME });
           } catch {}
         }
       }
@@ -137,7 +154,11 @@ self.addEventListener('fetch', (event) => {
     url.pathname.startsWith('/@') ||
     url.pathname.includes('/node_modules/') ||
     url.pathname.includes('/src/') ||
-    url.pathname.includes('hot-update')
+    url.pathname.includes('hot-update') ||
+    url.pathname.endsWith('/sw.js') ||
+    url.pathname === '/sw.js' ||
+    url.pathname.endsWith('/version.json') ||
+    url.pathname === '/version.json'
   ) {
     return;
   }
@@ -301,8 +322,12 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// 4. Live version messaging
+// 4. Live version & on-demand safe activation messaging
 self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+    return;
+  }
   if (event.data && event.data.type === 'GET_VERSION') {
     event.ports[0]?.postMessage({ version: SW_VERSION, cacheName: CACHE_NAME });
   }

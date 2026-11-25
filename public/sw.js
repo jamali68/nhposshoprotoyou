@@ -1,9 +1,9 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v18.0.4
- * Smart Background Pre-Download & Non-Disruptive Offline Support
+ * Version: v18.0.5
+ * Smart Background Pre-Download & Non-Disruptive Offline Support (GitHub Pages + Netlify)
  */
-const SW_VERSION = 'v18.0.4';
+const SW_VERSION = 'v18.0.5';
 const BUILD_ID = '/* __BUILD_ID__ */';
 const CACHE_NAME =
   'nh-pos-' +
@@ -45,10 +45,15 @@ self.addEventListener('install', (event) => {
       const criticalAssets = PRECACHE_ASSETS.filter(isCriticalAsset);
       const optionalAssets = PRECACHE_ASSETS.filter((a) => !isCriticalAsset(a));
 
-      // Critical assets must succeed so we never activate an incomplete cache on slow/flaky mobile networks
+      // Critical assets must succeed so we never activate an incomplete cache on slow/flaky mobile networks.
+      // For HTML entry files ('./', 'index.html'), append a versioned cache-buster query on the network request
+      // so GitHub Pages' 10-minute CDN cache (max-age=600) is bypassed immediately, while storing under the clean key!
+      const cacheBuster = encodeURIComponent(SW_VERSION + '_' + BUILD_ID);
       await Promise.all(
         criticalAssets.map(async (asset) => {
-          const req = new Request(asset, { cache: 'reload' });
+          const isHtmlEntry = asset === './' || asset === 'index.html';
+          const fetchUrl = isHtmlEntry ? `index.html?_v=${cacheBuster}` : asset;
+          const req = new Request(fetchUrl, { cache: 'reload' });
           const resp = await fetch(req);
           if (!resp || resp.status !== 200) {
             throw new Error('[SW] Failed to precache critical asset: ' + asset);
@@ -140,7 +145,9 @@ self.addEventListener('fetch', (event) => {
     url.pathname.includes('/src/') ||
     url.pathname.includes('hot-update') ||
     url.pathname.endsWith('/sw.js') ||
-    url.pathname === '/sw.js'
+    url.pathname === '/sw.js' ||
+    url.pathname.endsWith('/version.json') ||
+    url.pathname === '/version.json'
   ) {
     return;
   }

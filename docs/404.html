@@ -30,30 +30,7 @@
     <meta name="twitter:card" content="summary_large_image" />
 
     <script>
-      // Early Service Worker registration so Chrome installability criteria & updates run immediately (production only)
-      if ('serviceWorker' in navigator) {
-        var isDevEnv =
-          window.location.hostname === 'localhost' ||
-          window.location.hostname === '127.0.0.1' ||
-          window.location.hostname.includes('run.app');
-
-        if (!isDevEnv) {
-          var initSw = function() {
-            navigator.serviceWorker.register('sw.js', { scope: './', updateViaCache: 'none' })
-              .then(function(reg) {
-                reg.update().catch(function() {});
-              })
-              .catch(function(e) {
-                console.warn('SW register notice:', e);
-              });
-          };
-          if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', initSw);
-          } else {
-            initSw();
-          }
-        }
-      }
+      // Service Worker registration & Smart Non-Disruptive Updates are managed cleanly by src/utils/pwaUpdater.ts
 
       // Immediately capture beforeinstallprompt before any framework loads
       window.deferredInstallPrompt = null;
@@ -103,7 +80,7 @@
         return false;
       };
     </script>
-    <script type="module" crossorigin src="./assets/app-CaneDsj9.js"></script>
+    <script type="module" crossorigin src="./assets/app-Disfdodi.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-DVQmHlWr.css">
   </head>
   <body>
@@ -149,20 +126,6 @@
             fallback.style.display = 'block';
           }
         });
-
-        // Safe Service Worker update listener (reloads at most once per version)
-        if ('serviceWorker' in navigator) {
-          navigator.serviceWorker.addEventListener('message', function(event) {
-            if (event.data && event.data.type === 'SW_UPDATED') {
-              var newVer = event.data.version || 'latest';
-              var sessionKey = 'nh_sw_reloaded_' + newVer;
-              if (!sessionStorage.getItem(sessionKey)) {
-                sessionStorage.setItem(sessionKey, '1');
-                window.location.reload();
-              }
-            }
-          });
-        }
       })();
     </script>
   </body>

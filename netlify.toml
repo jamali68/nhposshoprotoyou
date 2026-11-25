@@ -1,4 +1,4 @@
-# Netlify Configuration for NH POS Shop (v18.0.4 — 15-Layer Security Shield)
+# Netlify Configuration for NH POS Shop (v18.0.5 — 15-Layer Security Shield)
 # Automatically detected by Netlify upon connecting GitHub repository
 
 [build]
@@ -79,6 +79,13 @@
 
 [[headers]]
   for = "/404.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+    Pragma = "no-cache"
+    Expires = "0"
+
+[[headers]]
+  for = "/version.json"
   [headers.values]
     Cache-Control = "no-cache, no-store, must-revalidate"
     Pragma = "no-cache"

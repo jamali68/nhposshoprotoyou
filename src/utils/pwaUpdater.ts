@@ -1,5 +1,7 @@
 /**
- * Smart Non-Disruptive PWA Background Updater
+ * Smart Non-Disruptive PWA Background Updater (Works identically on GitHub Pages & Netlify)
+ * - Bypasses GitHub Pages' 10-minute CDN cache (max-age=600) via fresh version.json?_t=... check
+ *   and versioned sw.js?v=<version>-<buildId> registration
  * - Downloads new Service Worker + bundles silently in the background whenever online
  * - NEVER reloads or interrupts the user while working/typing/viewing a screen
  * - Instantly applies the pre-downloaded update at safe transition moments:
@@ -8,10 +10,12 @@
  *     3. App close & reopen (after being backgrounded, only when no form input/mutation is active)
  */
 
+import { DEFAULT_APP_VERSION } from './version';
+
 const PENDING_VIEW_KEY = 'nhpos_pending_view_after_update';
 const LAST_APPLIED_AT_KEY = 'nhpos_pwa_last_applied_at';
-const CHECK_DEBOUNCE_MS = 25_000;
-const PERIODIC_CHECK_MS = 90_000;
+const CHECK_DEBOUNCE_MS = 20_000;
+const PERIODIC_CHECK_MS = 75_000;
 const APPLY_COOLDOWN_MS = 5_000;
 const MIN_HIDDEN_MS_FOR_REOPEN_APPLY = 3_000;
 
@@ -23,11 +27,27 @@ let lastCheckAt = 0;
 let hiddenSinceAt = 0;
 let initialized = false;
 let periodicTimer: number | null = null;
+let lastRegisteredVersionTag = '';
 
 function isProductionPwaHost(): boolean {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return false;
   const host = window.location.hostname;
   return host !== 'localhost' && host !== '127.0.0.1' && !host.includes('run.app');
+}
+
+function getRunningBuildId(): string {
+  if (typeof document === 'undefined') return '';
+  try {
+    const scripts = document.querySelectorAll('script[src]');
+    for (let i = 0; i < scripts.length; i++) {
+      const src = scripts[i].getAttribute('src') || '';
+      const match = src.match(/app-([a-zA-Z0-9_-]+)\.js/);
+      if (match && match[1]) return match[1];
+    }
+  } catch {
+    // ignore
+  }
+  return '';
 }
 
 function canApplyNowWithoutLoop(): boolean {
@@ -118,21 +138,89 @@ function trackInstallingWorker(worker: ServiceWorker | null): void {
   });
 }
 
+function attachRegistrationListeners(reg: ServiceWorkerRegistration): void {
+  swRegistration = reg;
+  if (reg.waiting && navigator.serviceWorker.controller) {
+    waitingWorker = reg.waiting;
+  }
+  if (reg.installing) {
+    trackInstallingWorker(reg.installing);
+  }
+  reg.addEventListener('updatefound', () => {
+    trackInstallingWorker(reg.installing);
+  });
+}
+
 /**
- * Silently checks the server for a new sw.js and pre-downloads its bundles in the background.
+ * Checks version.json with a fresh query string to bypass GitHub Pages' 10-minute CDN cache
+ * (Cache-Control: max-age=600). If a newer version/buildId exists on GitHub Pages or Netlify,
+ * registers `./sw.js?v=<version>-<buildId>` to immediately pre-download the new bundles in background!
+ */
+async function checkRemoteVersionManifest(): Promise<void> {
+  if (!isProductionPwaHost()) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+  try {
+    const resp = await fetch(`./version.json?_t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache'
+      }
+    });
+    if (!resp.ok) return;
+
+    const data = await resp.json();
+    const remoteVersion = typeof data?.version === 'string' ? data.version.trim() : '';
+    const remoteBuildId = typeof data?.buildId === 'string' ? data.buildId.trim() : '';
+    if (!remoteVersion && !remoteBuildId) return;
+
+    const runningBuildId = getRunningBuildId();
+    const versionChanged = Boolean(remoteVersion && remoteVersion !== DEFAULT_APP_VERSION);
+    const buildChanged = Boolean(runningBuildId && remoteBuildId && remoteBuildId !== runningBuildId);
+
+    if (versionChanged || buildChanged) {
+      const tag = `${remoteVersion || DEFAULT_APP_VERSION}-${remoteBuildId || 'latest'}`;
+      if (tag === lastRegisteredVersionTag) {
+        // Already triggered background download for this tag — ensure update check runs
+        swRegistration?.update().catch(() => {});
+        return;
+      }
+      lastRegisteredVersionTag = tag;
+
+      // Registering with unique ?v=<tag> bypasses GitHub Pages' 10-minute CDN cache on sw.js!
+      const swUrl = `./sw.js?v=${encodeURIComponent(tag)}`;
+      const reg = await navigator.serviceWorker.register(swUrl, {
+        scope: './',
+        updateViaCache: 'none'
+      });
+      attachRegistrationListeners(reg);
+      reg.update().catch(() => {});
+    }
+  } catch {
+    // Offline or version.json not yet present — ignore silently
+  }
+}
+
+/**
+ * Silently checks the server for a new sw.js + version.json and pre-downloads its bundles in the background.
  * Never refreshes the UI.
  */
 export function triggerSilentPwaCheck(force = false): void {
-  if (!isProductionPwaHost() || !swRegistration) return;
+  if (!isProductionPwaHost()) return;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
 
   const now = Date.now();
   if (!force && now - lastCheckAt < CHECK_DEBOUNCE_MS) return;
   lastCheckAt = now;
 
-  swRegistration.update().catch(() => {
-    // Offline or flaky network — ignore silently
-  });
+  // 1. Standard SW update check (instant on Netlify via no-cache headers)
+  if (swRegistration) {
+    swRegistration.update().catch(() => {});
+  }
+
+  // 2. CDN cache-bypass version manifest check (instant on GitHub Pages even with max-age=600!)
+  void checkRemoteVersionManifest();
 }
 
 function activateWaitingWorkerNow(): boolean {
@@ -237,7 +325,7 @@ export function initSmartPwaUpdater(): void {
     navigator.serviceWorker
       .register('./sw.js', { scope: './', updateViaCache: 'none' })
       .then((reg) => {
-        swRegistration = reg;
+        attachRegistrationListeners(reg);
 
         // If an update finished downloading previously and user just refreshed or reopened the app,
         // activate it right away on startup before the user starts typing!
@@ -249,15 +337,7 @@ export function initSmartPwaUpdater(): void {
           }
         }
 
-        if (reg.installing) {
-          trackInstallingWorker(reg.installing);
-        }
-
-        reg.addEventListener('updatefound', () => {
-          trackInstallingWorker(reg.installing);
-        });
-
-        // Start silent background check right after boot
+        // Start silent background check (both SW update + GitHub Pages version.json check) right after boot
         triggerSilentPwaCheck(true);
       })
       .catch((err) => {
