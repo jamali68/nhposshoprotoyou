@@ -1,9 +1,9 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v18.0.3
- * Comprehensive Offline & GitHub Pages Support
+ * Version: v18.0.4
+ * Smart Background Pre-Download & Non-Disruptive Offline Support
  */
-const SW_VERSION = 'v18.0.3';
+const SW_VERSION = 'v18.0.4';
 const BUILD_ID = '/* __BUILD_ID__ */';
 const CACHE_NAME =
   'nh-pos-' +
@@ -66,8 +66,20 @@ self.addEventListener('install', (event) => {
         )
       );
 
-      // Only skipWaiting AFTER all critical bundles are safely stored in CACHE_NAME
-      await self.skipWaiting();
+      // Smart Non-Disruptive Activation:
+      // - If no app window is open (cold install / closed app), activate immediately.
+      // - If user currently has the app open, stay in 'waiting' state (zero disruption)
+      //   and notify open tabs that the new version is 100% downloaded and ready to apply on page switch/refresh/reopen.
+      const existingClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      if (existingClients.length === 0) {
+        await self.skipWaiting();
+      } else {
+        for (const client of existingClients) {
+          try {
+            client.postMessage({ type: 'SW_UPDATE_READY', version: SW_VERSION, cacheName: CACHE_NAME });
+          } catch {}
+        }
+      }
     })()
   );
 });
@@ -92,7 +104,7 @@ self.addEventListener('activate', (event) => {
         const windowClients = await self.clients.matchAll({ type: 'window' });
         for (const client of windowClients) {
           try {
-            client.postMessage({ type: 'SW_UPDATED', version: CACHE_NAME });
+            client.postMessage({ type: 'SW_ACTIVATED', version: SW_VERSION, cacheName: CACHE_NAME });
           } catch {}
         }
       }
@@ -126,7 +138,9 @@ self.addEventListener('fetch', (event) => {
     url.pathname.startsWith('/@') ||
     url.pathname.includes('/node_modules/') ||
     url.pathname.includes('/src/') ||
-    url.pathname.includes('hot-update')
+    url.pathname.includes('hot-update') ||
+    url.pathname.endsWith('/sw.js') ||
+    url.pathname === '/sw.js'
   ) {
     return;
   }
@@ -290,8 +304,12 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// 4. Live version messaging
+// 4. Live version & on-demand safe activation messaging
 self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+    return;
+  }
   if (event.data && event.data.type === 'GET_VERSION') {
     event.ports[0]?.postMessage({ version: SW_VERSION, cacheName: CACHE_NAME });
   }

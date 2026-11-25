@@ -32,6 +32,12 @@ import {
   rememberTextSuggestion,
   getCombinedSuggestions
 } from '../utils/suggestionMemory';
+import {
+  applyPendingPwaUpdateOnNavigation,
+  consumePendingViewAfterPwaUpdate,
+  setPwaMutationBusy,
+  triggerSilentPwaCheck
+} from '../utils/pwaUpdater';
 import { handleFirestoreError, OperationType } from '../firestoreErrorHandler';
 import {
   sanitizeTextInput,
@@ -396,7 +402,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return saved ? JSON.parse(saved) : [];
   });
 
-  const [activeView, setActiveViewState] = useState<ActiveView>('dashboard');
+  const [activeView, setActiveViewState] = useState<ActiveView>(() => {
+    const restored = consumePendingViewAfterPwaUpdate();
+    return (restored as ActiveView) || 'dashboard';
+  });
+  const activeViewRef = useRef<ActiveView>(activeView);
+  activeViewRef.current = activeView;
   const viewHistoryRef = useRef<ActiveView[]>([]);
   const backHandlersRef = useRef<(() => boolean)[]>([]);
 
@@ -416,39 +427,49 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, []);
 
   const stepBackView = useCallback(() => {
-    setActiveViewState(current => {
-      if (current === 'edit_logs' || current === 'deleted_history') {
-        while (viewHistoryRef.current.length > 0) {
-          const candidate = viewHistoryRef.current.pop()!;
-          if (candidate !== current && candidate !== 'edit_logs' && candidate !== 'deleted_history') {
-            return candidate;
-          }
+    const current = activeViewRef.current;
+    let nextView: ActiveView = 'dashboard';
+    if (current === 'edit_logs' || current === 'deleted_history') {
+      let found: ActiveView | null = null;
+      while (viewHistoryRef.current.length > 0) {
+        const candidate = viewHistoryRef.current.pop()!;
+        if (candidate !== current && candidate !== 'edit_logs' && candidate !== 'deleted_history') {
+          found = candidate;
+          break;
         }
-        return current === 'edit_logs' ? 'back_cash' : 'dashboard';
       }
+      nextView = found || (current === 'edit_logs' ? 'back_cash' : 'dashboard');
+    } else {
       viewHistoryRef.current = [];
-      return 'dashboard';
-    });
+      nextView = 'dashboard';
+    }
+
+    if (nextView !== current && applyPendingPwaUpdateOnNavigation(nextView)) {
+      return;
+    }
+    setActiveViewState(nextView);
   }, []);
 
   const setActiveView = useCallback((newView: ActiveView) => {
-    setActiveViewState(prev => {
-      if (prev === newView) return prev;
-      if (newView === 'dashboard') {
-        viewHistoryRef.current = [];
-      } else if (
-        viewHistoryRef.current.length > 0 &&
-        viewHistoryRef.current[viewHistoryRef.current.length - 1] === newView
-      ) {
-        viewHistoryRef.current.pop();
-      } else if (prev !== 'edit_logs' && prev !== 'deleted_history') {
-        viewHistoryRef.current.push(prev);
-      }
-      if (typeof window !== 'undefined' && window.history) {
-        window.history.pushState({ appView: newView }, '', window.location.href);
-      }
-      return newView;
-    });
+    const prev = activeViewRef.current;
+    if (prev === newView) return;
+    if (applyPendingPwaUpdateOnNavigation(newView)) {
+      return;
+    }
+    if (newView === 'dashboard') {
+      viewHistoryRef.current = [];
+    } else if (
+      viewHistoryRef.current.length > 0 &&
+      viewHistoryRef.current[viewHistoryRef.current.length - 1] === newView
+    ) {
+      viewHistoryRef.current.pop();
+    } else if (prev !== 'edit_logs' && prev !== 'deleted_history') {
+      viewHistoryRef.current.push(prev);
+    }
+    if (typeof window !== 'undefined' && window.history) {
+      window.history.pushState({ appView: newView }, '', window.location.href);
+    }
+    setActiveViewState(newView);
   }, []);
 
   const goBack = useCallback(() => {
@@ -842,11 +863,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const delayMs = superAdminService.getDataUpdateDelayMs();
       if (delayMs <= 0) {
         isExecutingScheduledMutationRef.current = true;
+        setPwaMutationBusy(true);
         try {
           mutateFn();
         } finally {
           isExecutingScheduledMutationRef.current = false;
+          setPwaMutationBusy(false);
         }
+        triggerSilentPwaCheck(false);
         return;
       }
 
@@ -854,6 +878,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         clearTimeout(mutationLoaderTimerRef.current);
       }
 
+      setPwaMutationBusy(true);
       setMutationLoader({
         active: true,
         actionType,
@@ -868,8 +893,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           mutateFn();
         } finally {
           isExecutingScheduledMutationRef.current = false;
+          setPwaMutationBusy(false);
         }
         setMutationLoader(prev => ({ ...prev, active: false }));
+        // Quietly check & pre-download any new update in background after saving (never reloads mid-work)
+        triggerSilentPwaCheck(false);
       }, delayMs);
     },
     []

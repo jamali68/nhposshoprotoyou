@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-export const DEFAULT_APP_VERSION = 'v18.0.3';
+export const DEFAULT_APP_VERSION = 'v18.0.4';
 
 let liveSwVersionCache: string | null = null;
 
@@ -53,6 +53,18 @@ export async function getLiveSwVersion(forceFresh = false): Promise<string> {
     return liveSwVersionCache;
   }
 
+  // Always report the actually running app bundle version so users are never shown
+  // an unapplied background version before it activates on page switch/refresh.
+  liveSwVersionCache = DEFAULT_APP_VERSION;
+  try {
+    sessionStorage.setItem('taj_pos_sw_version', DEFAULT_APP_VERSION);
+  } catch {
+    // ignore
+  }
+  return DEFAULT_APP_VERSION;
+}
+
+export async function _legacyFetchSwVersion(): Promise<string> {
   const basePath = import.meta.env.BASE_URL || '/';
   const candidates = [
     `${basePath.endsWith('/') ? basePath : basePath + '/'}sw.js`,
@@ -184,7 +196,7 @@ export function useAppVersion() {
     // 4. Listen to service worker postMessage & controllerchange
     if ('serviceWorker' in navigator) {
       const handleMessage = (event: MessageEvent) => {
-        if (event.data?.version) {
+        if (event.data?.type === 'SW_ACTIVATED' && event.data?.version) {
           applyVersion(String(event.data.version));
         }
       };
