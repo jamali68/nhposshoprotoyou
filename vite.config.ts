@@ -121,87 +121,12 @@ export default defineConfig(() => {
     base: './',
     plugins: [react(), tailwindcss(), netlifyFunctionsDevPlugin()],
     build: {
-      chunkSizeWarningLimit: 600,
-      rolldownOptions: {
+      chunkSizeWarningLimit: 2500,
+      rollupOptions: {
         output: {
           entryFileNames: 'assets/app-[hash].js',
           chunkFileNames: 'assets/[name]-[hash].js',
-          assetFileNames: 'assets/[name]-[hash].[ext]',
-          codeSplitting: {
-            groups: [
-              {
-                name: 'vendor-firestore',
-                test: /node_modules[\\/](@firebase[\\/]firestore|firebase[\\/]firestore)/,
-                priority: 40,
-                maxSize: 400000
-              },
-              {
-                name: 'vendor-firebase',
-                test: /node_modules[\\/](@firebase|firebase|idb)/,
-                priority: 35,
-                maxSize: 400000
-              },
-              {
-                name: 'vendor-charts',
-                test: /node_modules[\\/](recharts|d3-|victory-vendor|redux|@reduxjs|immer|es-toolkit|decimal\.js)/,
-                priority: 30,
-                maxSize: 400000
-              },
-              {
-                name: 'vendor-motion',
-                test: /node_modules[\\/](motion|framer-motion)/,
-                priority: 25,
-                maxSize: 400000
-              },
-              {
-                name: 'vendor-react',
-                test: /node_modules[\\/](react|react-dom|scheduler|react-is)[\\/]/,
-                priority: 20
-              },
-              {
-                name: 'vendor-icons',
-                test: /node_modules[\\/]lucide-react/,
-                priority: 15
-              },
-              {
-                name: 'vendor-misc',
-                test: /node_modules[\\/]/,
-                priority: 10,
-                maxSize: 400000
-              },
-              {
-                name: 'app-superadmin',
-                test: /[\\/]src[\\/]superadmin[\\/]/,
-                priority: 15
-              },
-              {
-                name: 'app-context',
-                test: /[\\/]src[\\/]context[\\/]/,
-                priority: 15
-              },
-              {
-                name: 'app-cash',
-                test: /[\\/]src[\\/]views[\\/](DailyCashView|BackCashView)/,
-                priority: 15
-              },
-              {
-                name: 'app-dashboard',
-                test: /[\\/]src[\\/]views[\\/](DashboardView|MonthlySummaryView)/,
-                priority: 15
-              },
-              {
-                name: 'app-ledgers',
-                test: /[\\/]src[\\/]views[\\/](CustomerBillsView|WholesalerBillsView|EasyloadLedgerView)/,
-                priority: 15
-              },
-              {
-                name: 'app-views',
-                test: /[\\/]src[\\/]views[\\/]/,
-                priority: 10,
-                maxSize: 350000
-              }
-            ]
-          }
+          assetFileNames: 'assets/[name]-[hash].[ext]'
         }
       }
     },
