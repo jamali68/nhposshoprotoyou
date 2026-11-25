@@ -89,10 +89,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
   const [isManualSyncing, setIsManualSyncing] = useState(false);
   const [relativeTimeStr, setRelativeTimeStr] = useState<string>('');
   const [moduleConfig, setModuleConfig] = useState(() => superAdminService.getModuleControlConfig());
+  const [, setPermTick] = useState(0);
 
   useEffect(() => {
     const handleModuleUpdate = () => {
       setModuleConfig(superAdminService.getModuleControlConfig());
+      setPermTick(t => t + 1);
     };
     window.addEventListener('taj_module_control_updated', handleModuleUpdate);
     return () => window.removeEventListener('taj_module_control_updated', handleModuleUpdate);
@@ -303,9 +305,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
           {navItems.map(item => {
             const Icon = item.icon;
             const isActive = activeView === item.id;
-            const isModEnabled = superAdminService.isModuleEnabledForShop(item.id, currentUser?.shopId);
-            const userLockCheck = superAdminService.isModuleUnlockedForUser(item.id, currentUser);
-            const isOptionLocked = !userLockCheck.unlocked || !isModEnabled;
+            const effectiveShopId = currentShop?.id || currentUser?.shopId;
+            const userWithShop = currentUser ? { ...currentUser, shopId: effectiveShopId } : null;
+            const userLockCheck = superAdminService.isModuleUnlockedForUser(item.id, userWithShop);
+            const isOptionLocked = !userLockCheck.unlocked;
 
             return (
               <button

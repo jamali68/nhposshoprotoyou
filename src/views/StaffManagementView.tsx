@@ -83,8 +83,13 @@ export const StaffManagementView: React.FC = () => {
   const [selectedPermTarget, setSelectedPermTarget] = useState<string>('ROLE_MANAGER');
   const [permSaveBanner, setPermSaveBanner] = useState<string | null>(null);
 
+  const [permSaveStatus, setPermSaveStatus] = useState<'synced' | 'offline' | 'error'>('synced');
+
   useEffect(() => {
     setStaffPerms(superAdminService.getShopStaffPermissions(shopId));
+    superAdminService.syncShopStaffPermissionsFromCloud(shopId).then(cloudPerms => {
+      if (cloudPerms) setStaffPerms(cloudPerms);
+    });
     const handleUpdate = () => {
       setStaffPerms(superAdminService.getShopStaffPermissions(shopId));
     };
@@ -101,17 +106,16 @@ export const StaffManagementView: React.FC = () => {
     if (targetKey === 'ROLE_SALESMAN') return cfg.rolePermissions.salesman;
 
     const cleanUser = targetKey.trim().toLowerCase();
-    if (cfg.userOverrides[cleanUser]) {
-      return cfg.userOverrides[cleanUser];
-    }
     const staffAcc = staffAccounts.find(s => s.username.toLowerCase() === cleanUser);
     const roleKey =
       staffAcc?.role === 'manager' || staffAcc?.role === 'cashier' || staffAcc?.role === 'salesman'
         ? staffAcc.role
         : 'cashier';
+    const baseRole = cfg.rolePermissions[roleKey];
+    const override = cfg.userOverrides[cleanUser];
     return {
-      modules: { ...cfg.rolePermissions[roleKey].modules },
-      actions: { ...cfg.rolePermissions[roleKey].actions }
+      modules: { ...baseRole.modules, ...(override?.modules || {}) },
+      actions: { ...baseRole.actions, ...(override?.actions || {}) }
     };
   };
 
@@ -120,21 +124,52 @@ export const StaffManagementView: React.FC = () => {
     bannerMsg = '✓ یوزر / مینیجر پرمیشنز (Lock / Unlock) اپڈیٹ ہو گئیں!'
   ) => {
     setStaffPerms(nextCfg);
-    await superAdminService.saveShopStaffPermissions(shopId, nextCfg);
-    setPermSaveBanner(bannerMsg);
-    setTimeout(() => setPermSaveBanner(null), 3000);
+    const saved = await superAdminService.saveShopStaffPermissions(shopId, nextCfg);
+    if (!navigator.onLine) {
+      setPermSaveStatus('offline');
+      setPermSaveBanner(`${bannerMsg} (آف لائن — انٹرنیٹ آتے ہی سنک ہوگا)`);
+    } else if (saved) {
+      setPermSaveStatus('synced');
+      setPermSaveBanner(bannerMsg);
+    } else {
+      setPermSaveStatus('error');
+      setPermSaveBanner('⚠️ کلاؤڈ سنک میں مسئلہ آیا — برائے مہربانی دوبارہ کوشش کریں!');
+    }
+    setTimeout(() => setPermSaveBanner(null), 3500);
+  };
+
+  // Clear conflicting per-user overrides for a specific module/action when Admin toggles a Role-level switch
+  const clearRoleUsersOverrideKey = (
+    overrides: Record<string, StaffTargetPermissions>,
+    targetRole: 'manager' | 'cashier' | 'salesman',
+    section: 'modules' | 'actions',
+    key: string
+  ) => {
+    const nextOverrides: Record<string, StaffTargetPermissions> = { ...overrides };
+    staffAccounts.forEach(acc => {
+      if ((acc.role || '').toLowerCase() !== targetRole) return;
+      const uKey = acc.username.trim().toLowerCase();
+      const existing = nextOverrides[uKey];
+      if (!existing) return;
+      const nextMod = { ...(existing.modules || {}) };
+      const nextAct = { ...(existing.actions || {}) };
+      if (section === 'modules') {
+        delete nextMod[key];
+      } else {
+        delete (nextAct as any)[key];
+      }
+      if (Object.keys(nextMod).length === 0 && Object.keys(nextAct).length === 0) {
+        delete nextOverrides[uKey];
+      } else {
+        nextOverrides[uKey] = { modules: nextMod, actions: nextAct as any };
+      }
+    });
+    return nextOverrides;
   };
 
   const handleToggleTargetModuleLock = async (moduleId: string) => {
     const currentTarget = getEffectiveTargetPerms(selectedPermTarget);
     const nextUnlocked = !(currentTarget.modules[moduleId] !== false);
-    const nextTargetPerms: StaffTargetPermissions = {
-      modules: {
-        ...currentTarget.modules,
-        [moduleId]: nextUnlocked
-      },
-      actions: { ...currentTarget.actions }
-    };
 
     const nextCfg: ShopStaffPermissionsConfig = {
       ...staffPerms,
@@ -144,13 +179,30 @@ export const StaffManagementView: React.FC = () => {
     };
 
     if (selectedPermTarget === 'ROLE_MANAGER') {
-      nextCfg.rolePermissions.manager = nextTargetPerms;
+      nextCfg.rolePermissions.manager = {
+        modules: { ...currentTarget.modules, [moduleId]: nextUnlocked },
+        actions: { ...currentTarget.actions }
+      };
+      nextCfg.userOverrides = clearRoleUsersOverrideKey(nextCfg.userOverrides, 'manager', 'modules', moduleId);
     } else if (selectedPermTarget === 'ROLE_CASHIER') {
-      nextCfg.rolePermissions.cashier = nextTargetPerms;
+      nextCfg.rolePermissions.cashier = {
+        modules: { ...currentTarget.modules, [moduleId]: nextUnlocked },
+        actions: { ...currentTarget.actions }
+      };
+      nextCfg.userOverrides = clearRoleUsersOverrideKey(nextCfg.userOverrides, 'cashier', 'modules', moduleId);
     } else if (selectedPermTarget === 'ROLE_SALESMAN') {
-      nextCfg.rolePermissions.salesman = nextTargetPerms;
+      nextCfg.rolePermissions.salesman = {
+        modules: { ...currentTarget.modules, [moduleId]: nextUnlocked },
+        actions: { ...currentTarget.actions }
+      };
+      nextCfg.userOverrides = clearRoleUsersOverrideKey(nextCfg.userOverrides, 'salesman', 'modules', moduleId);
     } else {
-      nextCfg.userOverrides[selectedPermTarget.trim().toLowerCase()] = nextTargetPerms;
+      const cleanUser = selectedPermTarget.trim().toLowerCase();
+      const existing = nextCfg.userOverrides[cleanUser] || { modules: {}, actions: {} as any };
+      nextCfg.userOverrides[cleanUser] = {
+        modules: { ...(existing.modules || {}), [moduleId]: nextUnlocked },
+        actions: { ...(existing.actions || {}) } as any
+      };
     }
 
     await saveUpdatedStaffPerms(
@@ -164,13 +216,6 @@ export const StaffManagementView: React.FC = () => {
   const handleToggleTargetActionLock = async (actionId: StaffPermissionActionId) => {
     const currentTarget = getEffectiveTargetPerms(selectedPermTarget);
     const nextUnlocked = !(currentTarget.actions[actionId] !== false);
-    const nextTargetPerms: StaffTargetPermissions = {
-      modules: { ...currentTarget.modules },
-      actions: {
-        ...currentTarget.actions,
-        [actionId]: nextUnlocked
-      }
-    };
 
     const nextCfg: ShopStaffPermissionsConfig = {
       ...staffPerms,
@@ -180,13 +225,30 @@ export const StaffManagementView: React.FC = () => {
     };
 
     if (selectedPermTarget === 'ROLE_MANAGER') {
-      nextCfg.rolePermissions.manager = nextTargetPerms;
+      nextCfg.rolePermissions.manager = {
+        modules: { ...currentTarget.modules },
+        actions: { ...currentTarget.actions, [actionId]: nextUnlocked }
+      };
+      nextCfg.userOverrides = clearRoleUsersOverrideKey(nextCfg.userOverrides, 'manager', 'actions', actionId);
     } else if (selectedPermTarget === 'ROLE_CASHIER') {
-      nextCfg.rolePermissions.cashier = nextTargetPerms;
+      nextCfg.rolePermissions.cashier = {
+        modules: { ...currentTarget.modules },
+        actions: { ...currentTarget.actions, [actionId]: nextUnlocked }
+      };
+      nextCfg.userOverrides = clearRoleUsersOverrideKey(nextCfg.userOverrides, 'cashier', 'actions', actionId);
     } else if (selectedPermTarget === 'ROLE_SALESMAN') {
-      nextCfg.rolePermissions.salesman = nextTargetPerms;
+      nextCfg.rolePermissions.salesman = {
+        modules: { ...currentTarget.modules },
+        actions: { ...currentTarget.actions, [actionId]: nextUnlocked }
+      };
+      nextCfg.userOverrides = clearRoleUsersOverrideKey(nextCfg.userOverrides, 'salesman', 'actions', actionId);
     } else {
-      nextCfg.userOverrides[selectedPermTarget.trim().toLowerCase()] = nextTargetPerms;
+      const cleanUser = selectedPermTarget.trim().toLowerCase();
+      const existing = nextCfg.userOverrides[cleanUser] || { modules: {}, actions: {} as any };
+      nextCfg.userOverrides[cleanUser] = {
+        modules: { ...(existing.modules || {}) },
+        actions: { ...(existing.actions || {}), [actionId]: nextUnlocked } as any
+      };
     }
 
     if (actionId === 'allowDeleteEntry') {
@@ -229,10 +291,25 @@ export const StaffManagementView: React.FC = () => {
 
     if (selectedPermTarget === 'ROLE_MANAGER') {
       nextCfg.rolePermissions.manager = nextTargetPerms;
+      staffAccounts.forEach(acc => {
+        if ((acc.role || '').toLowerCase() === 'manager') {
+          delete nextCfg.userOverrides[acc.username.trim().toLowerCase()];
+        }
+      });
     } else if (selectedPermTarget === 'ROLE_CASHIER') {
       nextCfg.rolePermissions.cashier = nextTargetPerms;
+      staffAccounts.forEach(acc => {
+        if ((acc.role || '').toLowerCase() === 'cashier') {
+          delete nextCfg.userOverrides[acc.username.trim().toLowerCase()];
+        }
+      });
     } else if (selectedPermTarget === 'ROLE_SALESMAN') {
       nextCfg.rolePermissions.salesman = nextTargetPerms;
+      staffAccounts.forEach(acc => {
+        if ((acc.role || '').toLowerCase() === 'salesman') {
+          delete nextCfg.userOverrides[acc.username.trim().toLowerCase()];
+        }
+      });
     } else {
       nextCfg.userOverrides[selectedPermTarget.trim().toLowerCase()] = nextTargetPerms;
     }
@@ -610,9 +687,23 @@ export const StaffManagementView: React.FC = () => {
         {renderTopAdminTabs()}
 
         {permSaveBanner && (
-          <div className="p-3 bg-emerald-600 text-white rounded-2xl text-xs font-bold flex items-center justify-between shadow-md animate-in fade-in">
+          <div
+            className={`p-3 text-white rounded-2xl text-xs font-bold flex items-center justify-between shadow-md animate-in fade-in ${
+              permSaveStatus === 'error'
+                ? 'bg-rose-600'
+                : permSaveStatus === 'offline'
+                ? 'bg-amber-600'
+                : 'bg-emerald-600'
+            }`}
+          >
             <span>{permSaveBanner}</span>
-            <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono">REAL-TIME APPLIED</span>
+            <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono">
+              {permSaveStatus === 'error'
+                ? 'SYNC FAILED'
+                : permSaveStatus === 'offline'
+                ? 'OFFLINE SAVED'
+                : 'REAL-TIME CLOUD SYNCED'}
+            </span>
           </div>
         )}
 

@@ -81,13 +81,15 @@ const MainAppContent: React.FC = () => {
   const exitToastTimerRef = useRef<any>(null);
   const [, setTick] = useState<number>(0);
 
-  // Module Control Listener (Super Admin entry is strictly restricted to the Sidebar when logged in as one of the 2 Master emails)
+  // Module Control & Shop Status Listener (Super Admin entry is strictly restricted to the Sidebar when logged in as one of the 2 Master emails)
   useEffect(() => {
     const handleModuleUpdate = () => setModuleControlTick(t => t + 1);
     window.addEventListener('taj_module_control_updated', handleModuleUpdate);
+    window.addEventListener('taj_shop_status_changed', handleModuleUpdate);
 
     return () => {
       window.removeEventListener('taj_module_control_updated', handleModuleUpdate);
+      window.removeEventListener('taj_shop_status_changed', handleModuleUpdate);
     };
   }, []);
 
@@ -235,16 +237,18 @@ const MainAppContent: React.FC = () => {
 
   const renderActiveView = () => {
     // Check if current module is Locked by Super Admin or Store Admin
-    const lockCheck = superAdminService.isModuleUnlockedForUser(activeView, currentUser);
+    const userWithShop = currentUser
+      ? { ...currentUser, shopId: currentShop?.id || currentUser.shopId }
+      : null;
+    const lockCheck = superAdminService.isModuleUnlockedForUser(activeView, userWithShop);
     if (
       !isAuthorizedSuperAdmin &&
       activeView !== 'dashboard' &&
       activeView !== 'super_admin' &&
-      activeView !== 'staff_management' &&
-      activeView !== 'permissions' &&
       !lockCheck.unlocked
     ) {
-      const modInfo = ALL_CONTROLLABLE_MODULES.find(m => m.id === activeView);
+      const lookupModId = activeView === 'permissions' ? 'staff_management' : activeView;
+      const modInfo = ALL_CONTROLLABLE_MODULES.find(m => m.id === lookupModId);
       const isSuperLock = lockCheck.lockedBy === 'super_admin';
       return (
         <div className="bg-white rounded-3xl border border-rose-200 p-8 text-center max-w-md mx-auto my-8 shadow-lg space-y-4 animate-in fade-in">

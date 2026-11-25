@@ -194,7 +194,7 @@ export const DEFAULT_MODULE_CONTROL_CONFIG: PlatformModuleControlConfig = {
   featurePermissions: {
     allowShopSignup: true,
     allowStaffCreation: true,
-    allowStaffDeleteTransactions: false,
+    allowStaffDeleteTransactions: true,
     allowDataExport: true,
     allowSqlImport: true,
     requireStrongPasswords: true,
@@ -313,23 +313,53 @@ export const superAdminService = {
   },
 
   /**
+   * Merge and apply cloud PlatformModuleControlConfig locally + notify all listeners
+   */
+  applyCloudModuleControlConfig(cloudData: Partial<PlatformModuleControlConfig>): PlatformModuleControlConfig {
+    const merged: PlatformModuleControlConfig = {
+      ...DEFAULT_MODULE_CONTROL_CONFIG,
+      ...cloudData,
+      globalModules: {
+        ...DEFAULT_MODULE_CONTROL_CONFIG.globalModules,
+        ...(cloudData.globalModules || {})
+      },
+      featurePermissions: {
+        ...DEFAULT_MODULE_CONTROL_CONFIG.featurePermissions,
+        ...(cloudData.featurePermissions || {})
+      },
+      shopOverrides: cloudData.shopOverrides || {}
+    };
+    try {
+      const prevRaw = localStorage.getItem(MODULE_CONTROL_STORAGE_KEY);
+      const nextRaw = JSON.stringify(merged);
+      if (prevRaw !== nextRaw) {
+        localStorage.setItem(MODULE_CONTROL_STORAGE_KEY, nextRaw);
+        window.dispatchEvent(new CustomEvent('taj_module_control_updated', { detail: merged }));
+      }
+    } catch {}
+    return merged;
+  },
+
+  /**
    * Save Global & Per-Shop Module Control Configuration to LocalStorage & Firestore
    */
   async saveModuleControlConfig(config: PlatformModuleControlConfig): Promise<boolean> {
     try {
-      const updated: PlatformModuleControlConfig = {
-        ...config,
-        updatedAt: new Date().toISOString()
-      };
+      const updated: PlatformModuleControlConfig = JSON.parse(
+        JSON.stringify({
+          ...config,
+          updatedAt: new Date().toISOString()
+        })
+      );
       localStorage.setItem(MODULE_CONTROL_STORAGE_KEY, JSON.stringify(updated));
       window.dispatchEvent(new CustomEvent('taj_module_control_updated', { detail: updated }));
 
-      if (navigator.onLine) {
-        await setDoc(doc(db, 'platform_settings', 'module_control'), updated, { merge: true }).catch(() => {});
+      if (typeof navigator === 'undefined' || navigator.onLine) {
+        await setDoc(doc(db, 'platform_settings', 'module_control'), updated, { merge: true });
       }
       return true;
     } catch (err) {
-      console.error('Error saving module control config:', err);
+      console.error('Error saving module control config to Firestore:', err);
       return false;
     }
   },
@@ -339,42 +369,30 @@ export const superAdminService = {
    */
   async syncModuleControlFromCloud(): Promise<PlatformModuleControlConfig> {
     const local = this.getModuleControlConfig();
-    if (!navigator.onLine) return local;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return local;
     try {
       const snap = await getDoc(doc(db, 'platform_settings', 'module_control'));
       if (snap.exists()) {
         const cloudData = snap.data() as PlatformModuleControlConfig;
-        const merged: PlatformModuleControlConfig = {
-          ...DEFAULT_MODULE_CONTROL_CONFIG,
-          ...cloudData,
-          globalModules: {
-            ...DEFAULT_MODULE_CONTROL_CONFIG.globalModules,
-            ...(cloudData.globalModules || {})
-          },
-          featurePermissions: {
-            ...DEFAULT_MODULE_CONTROL_CONFIG.featurePermissions,
-            ...(cloudData.featurePermissions || {})
-          },
-          shopOverrides: cloudData.shopOverrides || {}
-        };
-        localStorage.setItem(MODULE_CONTROL_STORAGE_KEY, JSON.stringify(merged));
-        window.dispatchEvent(new CustomEvent('taj_module_control_updated', { detail: merged }));
-        return merged;
+        return this.applyCloudModuleControlConfig(cloudData);
       }
-    } catch {}
+    } catch (err) {
+      console.warn('syncModuleControlFromCloud note:', err);
+    }
     return local;
   },
 
   /**
-   * Check if a specific module is enabled for a given shop
+   * Check if a specific module is enabled for a given shop (Per-shop override takes precedence over global default)
    */
   isModuleEnabledForShop(moduleId: string, shopId?: string): boolean {
     if (moduleId === 'dashboard' || moduleId === 'super_admin') return true;
+    const effectiveModId = moduleId === 'permissions' ? 'staff_management' : moduleId;
     const cfg = this.getModuleControlConfig();
-    if (cfg.globalModules[moduleId] === false) {
-      return false;
+    if (shopId && cfg.shopOverrides?.[shopId] && typeof cfg.shopOverrides[shopId][effectiveModId] === 'boolean') {
+      return cfg.shopOverrides[shopId][effectiveModId] !== false;
     }
-    if (shopId && cfg.shopOverrides[shopId] && cfg.shopOverrides[shopId][moduleId] === false) {
+    if (cfg.globalModules[effectiveModId] === false) {
       return false;
     }
     return true;
@@ -440,14 +458,16 @@ export const superAdminService = {
   ): Promise<boolean> {
     if (!shopId) return false;
     try {
-      const updated: ShopStaffPermissionsConfig = {
-        ...config,
-        updatedAt: new Date().toISOString()
-      };
+      const updated: ShopStaffPermissionsConfig = JSON.parse(
+        JSON.stringify({
+          ...config,
+          updatedAt: new Date().toISOString()
+        })
+      );
       localStorage.setItem(`taj_shop_staff_perms_${shopId}`, JSON.stringify(updated));
       window.dispatchEvent(new CustomEvent('taj_module_control_updated', { detail: updated }));
 
-      if (navigator.onLine) {
+      if (typeof navigator === 'undefined' || navigator.onLine) {
         await setDoc(
           doc(db, 'shops', shopId),
           {
@@ -455,13 +475,40 @@ export const superAdminService = {
             last_data_sync_at: Date.now()
           },
           { merge: true }
-        ).catch(() => {});
+        );
       }
       return true;
     } catch (err) {
-      console.error('Error saving shop staff permissions:', err);
+      console.error('Error saving shop staff permissions to Firestore:', err);
       return false;
     }
+  },
+
+  /**
+   * Pull latest Staff & Manager Lock/Unlock Permissions for a shop directly from Firestore
+   */
+  async syncShopStaffPermissionsFromCloud(shopId?: string): Promise<ShopStaffPermissionsConfig | null> {
+    if (!shopId || (typeof navigator !== 'undefined' && !navigator.onLine)) return null;
+    try {
+      const snap = await getDoc(doc(db, 'shops', shopId));
+      if (snap.exists()) {
+        const data = snap.data() as any;
+        if (data?.staff_permissions_config && typeof data.staff_permissions_config === 'object') {
+          const nextRaw = JSON.stringify(data.staff_permissions_config);
+          const prevRaw = localStorage.getItem(`taj_shop_staff_perms_${shopId}`);
+          if (prevRaw !== nextRaw) {
+            localStorage.setItem(`taj_shop_staff_perms_${shopId}`, nextRaw);
+            window.dispatchEvent(
+              new CustomEvent('taj_module_control_updated', { detail: data.staff_permissions_config })
+            );
+          }
+          return this.getShopStaffPermissions(shopId);
+        }
+      }
+    } catch (err) {
+      console.warn('syncShopStaffPermissionsFromCloud note:', err);
+    }
+    return null;
   },
 
   /**
@@ -480,8 +527,9 @@ export const superAdminService = {
     if (moduleId === 'dashboard' || moduleId === 'super_admin') {
       return { unlocked: true };
     }
+    const normalizedRole = (user?.role || '').trim().toLowerCase();
     const isVerifiedSuper = Boolean(
-      user?.role === 'super_admin' && this.isMasterAdminEmail(user?.email)
+      normalizedRole === 'super_admin' && this.isMasterAdminEmail(user?.email)
     );
     if (isVerifiedSuper) {
       return { unlocked: true };
@@ -494,7 +542,7 @@ export const superAdminService = {
 
     // 2. Store Admin has full access to their shop modules (unless locked by Super Admin above)
     const isStoreAdmin = Boolean(
-      user?.isGoogleUser || user?.role === 'admin' || user?.role === 'super_admin'
+      user?.isGoogleUser || normalizedRole === 'admin' || normalizedRole === 'super_admin'
     );
     if (isStoreAdmin) {
       return { unlocked: true };
@@ -503,8 +551,11 @@ export const superAdminService = {
     // 3. Check Store Admin's Staff/Manager Lock/Unlock configuration
     const perms = this.getShopStaffPermissions(user?.shopId);
     const cleanUserKey = (user?.username || '').trim().toLowerCase();
+    const bareKey = cleanUserKey.replace(/^nh[-_]?/, '');
     const userOverride: StaffTargetPermissions | undefined = cleanUserKey
-      ? perms.userOverrides[cleanUserKey]
+      ? perms.userOverrides[cleanUserKey] ||
+        perms.userOverrides[`nh-${bareKey}`] ||
+        perms.userOverrides[bareKey]
       : undefined;
 
     if (userOverride && typeof userOverride.modules?.[moduleId] === 'boolean') {
@@ -514,8 +565,8 @@ export const superAdminService = {
     }
 
     const roleKey =
-      user?.role === 'manager' || user?.role === 'cashier' || user?.role === 'salesman'
-        ? user.role
+      normalizedRole === 'manager' || normalizedRole === 'cashier' || normalizedRole === 'salesman'
+        ? normalizedRole
         : 'cashier';
     const roleAllowed = perms.rolePermissions[roleKey]?.modules?.[moduleId];
     if (roleAllowed === false) {
@@ -537,25 +588,39 @@ export const superAdminService = {
       shopId?: string;
     } | null
   ): boolean {
+    const normalizedRole = (user?.role || '').trim().toLowerCase();
     const isVerifiedSuper = Boolean(
-      user?.role === 'super_admin' && this.isMasterAdminEmail(user?.email)
+      normalizedRole === 'super_admin' && this.isMasterAdminEmail(user?.email)
     );
     const isStoreAdmin = Boolean(
-      user?.isGoogleUser || user?.role === 'admin' || user?.role === 'super_admin' || isVerifiedSuper
+      user?.isGoogleUser || normalizedRole === 'admin' || normalizedRole === 'super_admin' || isVerifiedSuper
     );
     if (isStoreAdmin) return true;
 
+    // Platform-wide Super Admin kill-switch for non-owner staff deleting transactions
+    if (actionId === 'allowDeleteEntry') {
+      const platformCfg = this.getModuleControlConfig();
+      if (platformCfg.featurePermissions?.allowStaffDeleteTransactions === false) {
+        return false;
+      }
+    }
+
     const perms = this.getShopStaffPermissions(user?.shopId);
     const cleanUserKey = (user?.username || '').trim().toLowerCase();
-    const userOverride = cleanUserKey ? perms.userOverrides[cleanUserKey] : undefined;
+    const bareKey = cleanUserKey.replace(/^nh[-_]?/, '');
+    const userOverride = cleanUserKey
+      ? perms.userOverrides[cleanUserKey] ||
+        perms.userOverrides[`nh-${bareKey}`] ||
+        perms.userOverrides[bareKey]
+      : undefined;
 
     if (userOverride && typeof userOverride.actions?.[actionId] === 'boolean') {
       return userOverride.actions[actionId];
     }
 
     const roleKey =
-      user?.role === 'manager' || user?.role === 'cashier' || user?.role === 'salesman'
-        ? user.role
+      normalizedRole === 'manager' || normalizedRole === 'cashier' || normalizedRole === 'salesman'
+        ? normalizedRole
         : 'cashier';
     return perms.rolePermissions[roleKey]?.actions?.[actionId] !== false;
   },
@@ -613,8 +678,10 @@ export const superAdminService = {
         snap.forEach(d => {
           const data = d.data();
           const shopId = d.id;
-          const localStatus = localStorage.getItem(`taj_shop_status_${shopId}`);
-          const isActive = localStatus ? localStatus === 'active' : data.is_active !== false;
+          const isActive = data.is_active !== false;
+          try {
+            localStorage.setItem(`taj_shop_status_${shopId}`, isActive ? 'active' : 'suspended');
+          } catch {}
 
           const mergedTelemetry = mergeShopUsageTelemetry(shopId, data.usage_telemetry);
           shopsMap.set(shopId, {
@@ -733,7 +800,7 @@ export const superAdminService = {
       localStorage.setItem(`taj_shop_status_${shopId}`, isActive ? 'active' : 'suspended');
       window.dispatchEvent(new CustomEvent('taj_shop_status_changed', { detail: { shopId, isActive } }));
 
-      if (navigator.onLine) {
+      if (typeof navigator === 'undefined' || navigator.onLine) {
         try {
           await updateDoc(doc(db, 'shops', shopId), {
             is_active: isActive,
@@ -751,7 +818,7 @@ export const superAdminService = {
       return true;
     } catch (err) {
       console.error('Failed to update shop status:', err);
-      return true;
+      return false;
     }
   },
 

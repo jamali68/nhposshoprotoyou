@@ -38,11 +38,11 @@ service cloud.firestore {
 
     function isValidShopData(data) {
       return isValidPayload()
-        && (!('shop_name' in data) || (data.shop_name is string && data.shop_name.size() >= 2 && data.shop_name.size() <= 120))
-        && (!('owner_email' in data) || (data.owner_email is string && data.owner_email.size() >= 5 && data.owner_email.size() <= 120))
-        && (!('owner_name' in data) || (data.owner_name is string && data.owner_name.size() <= 120))
-        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 32))
-        && (!('address' in data) || (data.address is string && data.address.size() <= 240));
+        && (!('shop_name' in data) || data.shop_name == null || (data.shop_name is string && data.shop_name.size() <= 120))
+        && (!('owner_email' in data) || data.owner_email == null || (data.owner_email is string && data.owner_email.size() <= 120))
+        && (!('owner_name' in data) || data.owner_name == null || (data.owner_name is string && data.owner_name.size() <= 120))
+        && (!('phone' in data) || data.phone == null || (data.phone is string && data.phone.size() <= 32))
+        && (!('address' in data) || data.address == null || (data.address is string && data.address.size() <= 240));
     }
 
     function isShopOwnerImmutable() {

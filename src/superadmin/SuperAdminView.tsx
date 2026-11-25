@@ -30,6 +30,7 @@ import {
   Copy,
   MessageCircle
 } from 'lucide-react';
+import { auth, googleProvider, signInWithPopup } from '../firebase';
 import { usePOS } from '../context/POSContext';
 import {
   superAdminService,
@@ -97,6 +98,50 @@ export const SuperAdminView: React.FC = () => {
   );
   const [selectedShopForModules, setSelectedShopForModules] = useState<string>('GLOBAL');
   const [moduleSaveBanner, setModuleSaveBanner] = useState<string | null>(null);
+  const [moduleSaveStatus, setModuleSaveStatus] = useState<'synced' | 'error'>('synced');
+
+  // Firebase Master Google Auth Verification State (required by Firestore security rules for /platform_settings writes)
+  const [firebaseAuthEmail, setFirebaseAuthEmail] = useState<string | null>(
+    () => auth.currentUser?.email?.toLowerCase() || null
+  );
+  const [isVerifyingCloudAuth, setIsVerifyingCloudAuth] = useState<boolean>(false);
+
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged(u => {
+      setFirebaseAuthEmail(u?.email ? u.email.toLowerCase() : null);
+    });
+    return () => unsub();
+  }, []);
+
+  const isFirebaseMasterVerified = Boolean(
+    firebaseAuthEmail && superAdminService.isMasterAdminEmail(firebaseAuthEmail)
+  );
+
+  const handleVerifyMasterGoogleCloudAuth = async () => {
+    setIsVerifyingCloudAuth(true);
+    try {
+      const res = await signInWithPopup(auth, googleProvider);
+      const signedEmail = res.user?.email?.toLowerCase() || null;
+      setFirebaseAuthEmail(signedEmail);
+      if (signedEmail && superAdminService.isMasterAdminEmail(signedEmail)) {
+        setModuleSaveStatus('synced');
+        setModuleSaveBanner(`✓ Master Cloud Auth verified (${signedEmail})! Ab tamam Lock/Unlock changes real-time Firestore par sync honge.`);
+        setTimeout(() => setModuleSaveBanner(null), 4000);
+        loadData();
+      } else {
+        setModuleSaveStatus('error');
+        setModuleSaveBanner(`⚠️ Please sign in with a Master Super Admin Gmail (${MASTER_SUPER_ADMIN_EMAILS.join(' or ')}).`);
+        setTimeout(() => setModuleSaveBanner(null), 5000);
+      }
+    } catch (err) {
+      console.error('Master Google Cloud Auth error:', err);
+      setModuleSaveStatus('error');
+      setModuleSaveBanner('⚠️ Google popup band ho gaya ya block hua. Dobara koshish karein.');
+      setTimeout(() => setModuleSaveBanner(null), 4000);
+    } finally {
+      setIsVerifyingCloudAuth(false);
+    }
+  };
 
   // Store Staff / Manager Permissions Control State (Super Admin can also Lock/Unlock User & Manager roles per shop)
   const targetShopIdForStaffPerms =
@@ -110,6 +155,9 @@ export const SuperAdminView: React.FC = () => {
 
   useEffect(() => {
     setShopStaffPermConfig(superAdminService.getShopStaffPermissions(targetShopIdForStaffPerms));
+    superAdminService.syncShopStaffPermissionsFromCloud(targetShopIdForStaffPerms).then(cloudCfg => {
+      if (cloudCfg) setShopStaffPermConfig(cloudCfg);
+    });
   }, [targetShopIdForStaffPerms]);
 
   // Diagnostics State
@@ -245,6 +293,21 @@ export const SuperAdminView: React.FC = () => {
     }
   };
 
+  const showCloudSaveResult = (ok: boolean, successMsg: string, requireMasterAuthHint = true) => {
+    if (ok) {
+      setModuleSaveStatus('synced');
+      setModuleSaveBanner(successMsg);
+    } else {
+      setModuleSaveStatus('error');
+      setModuleSaveBanner(
+        requireMasterAuthHint && !isFirebaseMasterVerified
+          ? '⚠️ Cloud Sync Failed: Master Google Auth verify karein (upar "Verify Cloud Auth" button dabayein) taake dusre devices par foran sync ho!'
+          : '⚠️ Cloud Firestore sync failed! Internet aur Master Google login check karein.'
+      );
+    }
+    setTimeout(() => setModuleSaveBanner(null), 4000);
+  };
+
   // Toggle Store Status (Unlocked / Locked)
   const handleToggleStatus = async (shop: TenantShopInfo) => {
     const nextStatus = !shop.is_active;
@@ -252,6 +315,14 @@ export const SuperAdminView: React.FC = () => {
     if (success) {
       setShops(prev => prev.map(s => (s.id === shop.id ? { ...s, is_active: nextStatus } : s)));
       setModuleConfig(superAdminService.getModuleControlConfig());
+      showCloudSaveResult(
+        true,
+        nextStatus
+          ? `🔓 ${shop.shop_name} UNLOCKED (Active) — Real-time synced!`
+          : `🔒 ${shop.shop_name} SUSPENDED — Real-time synced!`
+      );
+    } else {
+      showCloudSaveResult(false, '', false);
     }
   };
 
@@ -277,9 +348,8 @@ export const SuperAdminView: React.FC = () => {
     }
 
     setModuleConfig(updated);
-    await superAdminService.saveModuleControlConfig(updated);
-    setModuleSaveBanner('✓ Permission Lock / Unlock status saved and synced across all devices!');
-    setTimeout(() => setModuleSaveBanner(null), 3000);
+    const saved = await superAdminService.saveModuleControlConfig(updated);
+    showCloudSaveResult(saved, '✓ Permission Lock / Unlock status saved and synced across all devices!');
   };
 
   // Toggle Platform Feature Permission Lock / Unlock
@@ -295,9 +365,8 @@ export const SuperAdminView: React.FC = () => {
       updatedBy: currentUser?.email || MASTER_EMAIL
     };
     setModuleConfig(updated);
-    await superAdminService.saveModuleControlConfig(updated);
-    setModuleSaveBanner('✓ Platform security & feature Lock / Unlock updated!');
-    setTimeout(() => setModuleSaveBanner(null), 3000);
+    const saved = await superAdminService.saveModuleControlConfig(updated);
+    showCloudSaveResult(saved, '✓ Platform security & feature Lock / Unlock updated!');
   };
 
   // Toggle Store Manager / Cashier / Salesman Module Lock/Unlock from Super Admin
@@ -322,13 +391,14 @@ export const SuperAdminView: React.FC = () => {
       updatedBy: currentUser?.email || MASTER_EMAIL
     };
     setShopStaffPermConfig(updated);
-    await superAdminService.saveShopStaffPermissions(targetShopIdForStaffPerms, updated);
-    setModuleSaveBanner(
+    const saved = await superAdminService.saveShopStaffPermissions(targetShopIdForStaffPerms, updated);
+    showCloudSaveResult(
+      saved,
       `✓ ${selectedStaffRoleTarget.toUpperCase()} module (${moduleId}) ${
         !isCurrentlyUnlocked ? 'UNLOCKED 🔓' : 'LOCKED 🔒'
-      }!`
+      }!`,
+      false
     );
-    setTimeout(() => setModuleSaveBanner(null), 3000);
   };
 
   // Toggle Store Manager / Cashier / Salesman Action Lock/Unlock from Super Admin
@@ -353,13 +423,14 @@ export const SuperAdminView: React.FC = () => {
       updatedBy: currentUser?.email || MASTER_EMAIL
     };
     setShopStaffPermConfig(updated);
-    await superAdminService.saveShopStaffPermissions(targetShopIdForStaffPerms, updated);
-    setModuleSaveBanner(
+    const saved = await superAdminService.saveShopStaffPermissions(targetShopIdForStaffPerms, updated);
+    showCloudSaveResult(
+      saved,
       `✓ ${selectedStaffRoleTarget.toUpperCase()} action (${actionId}) ${
         !isCurrentlyUnlocked ? 'UNLOCKED 🔓' : 'LOCKED 🔒'
-      }!`
+      }!`,
+      false
     );
-    setTimeout(() => setModuleSaveBanner(null), 3000);
   };
 
   // Update Global Data Update Delay Time (in milliseconds, default 1000ms = 1.0s)
@@ -374,11 +445,11 @@ export const SuperAdminView: React.FC = () => {
       updatedBy: currentUser?.email || MASTER_EMAIL
     };
     setModuleConfig(updated);
-    await superAdminService.setDataUpdateDelayMs(clampedMs);
-    setModuleSaveBanner(
+    const saved = await superAdminService.setDataUpdateDelayMs(clampedMs);
+    showCloudSaveResult(
+      saved,
       `✓ Data Update Delay Time set to ${(clampedMs / 1000).toFixed(1)} sec (${clampedMs} ms) for ALL accounts!`
     );
-    setTimeout(() => setModuleSaveBanner(null), 3000);
   };
 
   // Unlock All / Lock All Modules
@@ -389,16 +460,21 @@ export const SuperAdminView: React.FC = () => {
       shopOverrides: { ...moduleConfig.shopOverrides },
       updatedBy: currentUser?.email || MASTER_EMAIL
     };
-    ALL_CONTROLLABLE_MODULES.forEach(m => {
-      updated.globalModules[m.id] = true;
-    });
-    if (selectedShopForModules !== 'GLOBAL') {
-      delete updated.shopOverrides[selectedShopForModules];
+    if (selectedShopForModules === 'GLOBAL') {
+      ALL_CONTROLLABLE_MODULES.forEach(m => {
+        updated.globalModules[m.id] = true;
+      });
+      updated.shopOverrides = {};
+    } else {
+      const shopOverrides = { ...(updated.shopOverrides[selectedShopForModules] || {}) };
+      ALL_CONTROLLABLE_MODULES.forEach(m => {
+        shopOverrides[m.id] = true;
+      });
+      updated.shopOverrides[selectedShopForModules] = shopOverrides;
     }
     setModuleConfig(updated);
-    await superAdminService.saveModuleControlConfig(updated);
-    setModuleSaveBanner('✓ All modules UNLOCKED (🔓)!');
-    setTimeout(() => setModuleSaveBanner(null), 3000);
+    const saved = await superAdminService.saveModuleControlConfig(updated);
+    showCloudSaveResult(saved, '✓ All modules UNLOCKED (🔓)!');
   };
 
   const handleLockAllModules = async () => {
@@ -412,6 +488,7 @@ export const SuperAdminView: React.FC = () => {
       ALL_CONTROLLABLE_MODULES.forEach(m => {
         updated.globalModules[m.id] = false;
       });
+      updated.shopOverrides = {};
     } else {
       const shopOverrides = { ...(updated.shopOverrides[selectedShopForModules] || {}) };
       ALL_CONTROLLABLE_MODULES.forEach(m => {
@@ -420,9 +497,8 @@ export const SuperAdminView: React.FC = () => {
       updated.shopOverrides[selectedShopForModules] = shopOverrides;
     }
     setModuleConfig(updated);
-    await superAdminService.saveModuleControlConfig(updated);
-    setModuleSaveBanner('🔒 All controllable modules LOCKED (Visible with Lock icon)!');
-    setTimeout(() => setModuleSaveBanner(null), 3000);
+    const saved = await superAdminService.saveModuleControlConfig(updated);
+    showCloudSaveResult(saved, '🔒 All controllable modules LOCKED (Visible with Lock icon)!');
   };
 
   // Reset Store Owner Password
@@ -1527,10 +1603,38 @@ export const SuperAdminView: React.FC = () => {
       {/* ========================================================================= */}
       {activeTab === 'modules' && (
         <div className="space-y-4">
+          {!isFirebaseMasterVerified && (
+            <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-start gap-2.5 text-xs text-amber-900">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-black">Cloud Write Verification Required (Master Google Auth)</div>
+                  <p className="text-[11px] text-amber-800 mt-0.5 leading-snug">
+                    Aap Email/Password se login hain. Tamam shops par Global/Per-Shop Lock &amp; Unlock real-time sync karne ke liye 1-click Master Google verification zaroori hai.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleVerifyMasterGoogleCloudAuth}
+                disabled={isVerifyingCloudAuth}
+                className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white rounded-xl text-xs font-black shrink-0 cursor-pointer transition-all shadow-xs"
+              >
+                {isVerifyingCloudAuth ? 'Verifying...' : '🔐 Verify Cloud Auth (Google)'}
+              </button>
+            </div>
+          )}
+
           {moduleSaveBanner && (
-            <div className="p-3 bg-emerald-600 text-white rounded-2xl text-xs font-bold flex items-center justify-between shadow-md animate-in fade-in">
+            <div
+              className={`p-3 text-white rounded-2xl text-xs font-bold flex items-center justify-between shadow-md animate-in fade-in ${
+                moduleSaveStatus === 'error' ? 'bg-rose-600' : 'bg-emerald-600'
+              }`}
+            >
               <span>{moduleSaveBanner}</span>
-              <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono">LIVE SYNCED</span>
+              <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono shrink-0 ml-2">
+                {moduleSaveStatus === 'error' ? 'SYNC FAILED' : 'LIVE CLOUD SYNCED'}
+              </span>
             </div>
           )}
 

@@ -29,6 +29,7 @@ import { HistoryModal } from '../components/HistoryModal';
 import { ReportModal } from '../components/ReportModal';
 import { DateNavigator } from '../components/DateNavigator';
 import { showAppAlert } from '../components/AppDialogHost';
+import { superAdminService } from '../superadmin/superAdminService';
 
 export const BackCashView: React.FC = () => {
   const {
@@ -36,6 +37,7 @@ export const BackCashView: React.FC = () => {
     setFilterDate,
     yesterdayDate,
     currentUser,
+    currentShop,
     systemSettings,
     setSystemSettings,
     backCashTransactions,
@@ -58,6 +60,23 @@ export const BackCashView: React.FC = () => {
 
   // Privacy state for Total Back Cash box (Hidden by default)
   const [isTotalHidden, setIsTotalHidden] = useState<boolean>(true);
+
+  // Real-time Admin -> Staff Lock/Unlock Permissions
+  const [, setPermTick] = useState(0);
+  useEffect(() => {
+    const onPermChange = () => setPermTick(t => t + 1);
+    window.addEventListener('taj_module_control_updated', onPermChange);
+    return () => window.removeEventListener('taj_module_control_updated', onPermChange);
+  }, []);
+
+  const effectiveShopId = currentShop?.id || currentUser?.shopId;
+  const userWithShop = currentUser ? { ...currentUser, shopId: effectiveShopId } : null;
+  const isStoreAdmin = Boolean(
+    currentUser?.isGoogleUser || currentUser?.role === 'admin' || currentUser?.role === 'super_admin'
+  );
+  const canAddEntry = isStoreAdmin || superAdminService.isActionUnlockedForUser('allowAddEntry', userWithShop);
+  const canEditEntry = isStoreAdmin || superAdminService.isActionUnlockedForUser('allowEditEntry', userWithShop);
+  const canDeleteEntry = isStoreAdmin || superAdminService.isActionUnlockedForUser('allowDeleteEntry', userWithShop);
 
   // New Entry Form State
   const [type, setType] = useState<BackCashType>('receiving');
@@ -402,6 +421,10 @@ export const BackCashView: React.FC = () => {
 
   const handleSubmitNewEntry = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canAddEntry) {
+      showAppAlert('🔒 ایڈمن کی جانب سے نئی انٹری شامل کرنا لاک (Locked) ہے۔');
+      return;
+    }
     const val = parseFloat(amount);
     if (isNaN(val) || val <= 0) {
       showAppAlert('Please enter a valid amount!');
@@ -445,6 +468,10 @@ export const BackCashView: React.FC = () => {
   };
 
   const openEditModal = (t: BackCashTransaction) => {
+    if (!canEditEntry) {
+      showAppAlert('🔒 ایڈمن کی جانب سے انٹری ایڈٹ کرنا لاک (Locked) ہے۔');
+      return;
+    }
     setEditId(t.id);
     setEditType(t.type);
     setEditAmount(t.amount.toString());
@@ -454,6 +481,10 @@ export const BackCashView: React.FC = () => {
   const handleSaveEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editId) return;
+    if (!canEditEntry) {
+      showAppAlert('🔒 ایڈمن کی جانب سے انٹری ایڈٹ کرنا لاک (Locked) ہے۔');
+      return;
+    }
     const val = parseFloat(editAmount);
     if (isNaN(val) || val <= 0) return;
 
@@ -462,6 +493,10 @@ export const BackCashView: React.FC = () => {
   };
 
   const handleDelete = (id: string) => {
+    if (!canDeleteEntry) {
+      showAppAlert('🔒 ایڈمن کی جانب سے انٹری ڈیلیٹ کرنا لاک (Locked) ہے۔');
+      return;
+    }
     setDeleteConfirmId(id);
   };
 
@@ -471,12 +506,26 @@ export const BackCashView: React.FC = () => {
     setDeleteConfirmId(null);
   };
 
-  const toggleUserDeletePerm = () => {
-    if (currentUser?.role !== 'admin') return;
+  const toggleUserDeletePerm = async () => {
+    if (!isStoreAdmin) return;
+    const nextVal = !systemSettings.user_can_delete;
     setSystemSettings(prev => ({
       ...prev,
-      user_can_delete: !prev.user_can_delete
+      user_can_delete: nextVal
     }));
+    if (effectiveShopId) {
+      const cfg = superAdminService.getShopStaffPermissions(effectiveShopId);
+      cfg.rolePermissions.manager.actions.allowDeleteEntry = nextVal;
+      cfg.rolePermissions.cashier.actions.allowDeleteEntry = nextVal;
+      cfg.rolePermissions.salesman.actions.allowDeleteEntry = nextVal;
+      Object.keys(cfg.userOverrides || {}).forEach(uKey => {
+        if (cfg.userOverrides[uKey]?.actions) {
+          delete (cfg.userOverrides[uKey].actions as any).allowDeleteEntry;
+        }
+      });
+      cfg.updatedBy = currentUser?.name || currentUser?.username || 'Admin';
+      await superAdminService.saveShopStaffPermissions(effectiveShopId, cfg);
+    }
   };
 
   const getRoleBadge = (roleStr?: string, nameStr?: string) => {
@@ -561,7 +610,7 @@ export const BackCashView: React.FC = () => {
       </div>
 
       {/* Admin Permission Card */}
-      {currentUser?.role === 'admin' && (
+      {isStoreAdmin && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center justify-between text-xs">
           <div className="flex items-center gap-2 font-bold text-amber-900">
             {systemSettings.user_can_delete ? <Unlock className="w-4 h-4 text-emerald-600" /> : <Lock className="w-4 h-4 text-rose-600" />}
@@ -1290,14 +1339,16 @@ export const BackCashView: React.FC = () => {
                     </p>
 
                     <div className="flex items-center gap-2 mt-1.5 text-[11px]">
-                      <button
-                        type="button"
-                        onClick={() => openEditModal(t)}
-                        className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200/80 text-blue-600 font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                      >
-                        <Edit2 className="w-3.5 h-3.5 shrink-0" />
-                        <span>Edit</span>
-                      </button>
+                      {canEditEntry && (
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(t)}
+                          className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200/80 text-blue-600 font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                        >
+                          <Edit2 className="w-3.5 h-3.5 shrink-0" />
+                          <span>Edit</span>
+                        </button>
+                      )}
 
                       <button
                         type="button"
@@ -1335,7 +1386,7 @@ export const BackCashView: React.FC = () => {
                       {typeInfo.isNegative ? '-' : '+'} Rs. {t.amount.toLocaleString()}
                     </div>
 
-                    {(currentUser?.role === 'admin' || systemSettings.user_can_delete) && (
+                    {canDeleteEntry && (
                       <button
                         type="button"
                         onClick={() => handleDelete(t.id)}

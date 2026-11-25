@@ -1088,6 +1088,30 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           if (sData.usage_telemetry) {
             mergeShopUsageTelemetry(shopId, sData.usage_telemetry);
           }
+          if (sData.staff_permissions_config && typeof sData.staff_permissions_config === 'object') {
+            try {
+              const prevRaw = localStorage.getItem(`taj_shop_staff_perms_${shopId}`);
+              const nextRaw = JSON.stringify(sData.staff_permissions_config);
+              if (prevRaw !== nextRaw) {
+                localStorage.setItem(`taj_shop_staff_perms_${shopId}`, nextRaw);
+                window.dispatchEvent(
+                  new CustomEvent('taj_module_control_updated', { detail: sData.staff_permissions_config })
+                );
+              }
+            } catch {}
+          }
+          if (typeof sData.is_active === 'boolean') {
+            try {
+              const nextStatus = sData.is_active ? 'active' : 'suspended';
+              const prevStatus = localStorage.getItem(`taj_shop_status_${shopId}`);
+              if (prevStatus !== nextStatus) {
+                localStorage.setItem(`taj_shop_status_${shopId}`, nextStatus);
+                window.dispatchEvent(
+                  new CustomEvent('taj_shop_status_changed', { detail: { shopId, isActive: sData.is_active } })
+                );
+              }
+            } catch {}
+          }
           setCurrentShop(prev => (prev ? { ...prev, ...sData } : sData));
           pulledColsCount++;
         }
@@ -1197,6 +1221,31 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     [isDemoMode, currentShopId]
   );
 
+  // Real-time 1-Document Super Admin Module & Feature Permission Listener:
+  // Listens ONLY to doc(db, 'platform_settings', 'module_control') (1 single doc, 0 collection scans).
+  // Whenever Super Admin locks/unlocks ANY module or feature permission, all Shop Admin & Staff devices update in 1-2s!
+  useEffect(() => {
+    if (isDemoMode) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+
+    const moduleControlRef = doc(db, 'platform_settings', 'module_control');
+    const unsubscribe = onSnapshot(
+      moduleControlRef,
+      snap => {
+        if (!snap.exists()) return;
+        const cloudData = snap.data() as any;
+        superAdminService.applyCloudModuleControlConfig(cloudData);
+      },
+      err => {
+        console.warn('Platform module_control listener note:', err);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [isDemoMode, currentUser?.shopId]);
+
   // Real-time 1-Document Cross-Device Sync Pulse Listener:
   // Listens ONLY to doc(db, 'shops', currentShopId) (1 single doc, 0 collection scans).
   // Whenever ANY user or Admin completes their 30m timer OR presses "Update Now",
@@ -1224,6 +1273,22 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               localStorage.setItem(`taj_shop_staff_perms_${currentShopId}`, nextRaw);
               window.dispatchEvent(
                 new CustomEvent('taj_module_control_updated', { detail: sData.staff_permissions_config })
+              );
+            }
+          } catch {}
+        }
+
+        // Sync Super Admin's Store Active/Suspended Status in real time across devices
+        if (typeof sData.is_active === 'boolean') {
+          try {
+            const nextStatus = sData.is_active ? 'active' : 'suspended';
+            const prevStatus = localStorage.getItem(`taj_shop_status_${currentShopId}`);
+            if (prevStatus !== nextStatus) {
+              localStorage.setItem(`taj_shop_status_${currentShopId}`, nextStatus);
+              window.dispatchEvent(
+                new CustomEvent('taj_shop_status_changed', {
+                  detail: { shopId: currentShopId, isActive: sData.is_active }
+                })
               );
             }
           } catch {}
@@ -2259,6 +2324,22 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // CASE A: EXISTING REGISTERED SHOP! (Welcome back! Direct entry, restore store, no OTP, no overwrite)
       if (existingShop && existingShop.shop_name && existingShop.shop_name.trim() !== '') {
         const activeShopId = existingShop.id || matchedShopId || shopId;
+        if (typeof (existingShop as any).is_active === 'boolean') {
+          try {
+            localStorage.setItem(
+              `taj_shop_status_${activeShopId}`,
+              (existingShop as any).is_active ? 'active' : 'suspended'
+            );
+          } catch {}
+        }
+        if ((existingShop as any).staff_permissions_config && typeof (existingShop as any).staff_permissions_config === 'object') {
+          try {
+            localStorage.setItem(
+              `taj_shop_staff_perms_${activeShopId}`,
+              JSON.stringify((existingShop as any).staff_permissions_config)
+            );
+          } catch {}
+        }
         if (!isSuperAdminUser && superAdminService.isShopSuspended(activeShopId)) {
           return {
             success: false,
@@ -3623,6 +3704,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         hydrateShopDataFromLocal(targetShopId);
         setCurrentUser(userObj);
         localStorage.setItem('taj_pos_user', JSON.stringify(userObj));
+        // Immediately fetch latest Admin Lock/Unlock permissions from Firestore in background
+        superAdminService.syncShopStaffPermissionsFromCloud(targetShopId).catch(() => {});
         return { success: true };
       } else if (typeof navigator !== 'undefined' && !navigator.onLine) {
         recordOfflineAuthAttempt(localMatched.username, false);
@@ -3673,11 +3756,30 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000))
             ]);
             if (shopSnap && shopSnap.exists()) {
-              const sData = shopSnap.data() as ShopProfile;
+              const sData = shopSnap.data() as ShopProfile & { staff_permissions_config?: any };
               shopName = sData.shop_name;
               setCurrentShop(sData);
               localStorage.setItem(`taj_pos_shop_${shopId}`, JSON.stringify(sData));
               localStorage.setItem('taj_pos_shop', JSON.stringify(sData));
+              if (sData.staff_permissions_config && typeof sData.staff_permissions_config === 'object') {
+                localStorage.setItem(
+                  `taj_shop_staff_perms_${shopId}`,
+                  JSON.stringify(sData.staff_permissions_config)
+                );
+                window.dispatchEvent(
+                  new CustomEvent('taj_module_control_updated', { detail: sData.staff_permissions_config })
+                );
+              }
+              if (typeof (sData as any).is_active === 'boolean') {
+                const isActive = (sData as any).is_active;
+                localStorage.setItem(`taj_shop_status_${shopId}`, isActive ? 'active' : 'suspended');
+                window.dispatchEvent(
+                  new CustomEvent('taj_shop_status_changed', { detail: { shopId, isActive } })
+                );
+                if (!isActive) {
+                  return { success: false, error: 'اس دکان کا اکاؤنٹ سپر ایڈمن کی جانب سے معطل (Suspended) ہے۔' };
+                }
+              }
             }
           } catch {}
 
