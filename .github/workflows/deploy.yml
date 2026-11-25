@@ -1,4 +1,4 @@
-name: CI Build & Netlify Verification
+name: CI Build & GitHub Pages Publish
 
 on:
   push:
@@ -8,15 +8,15 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: 'ci-verify-${{ github.ref }}'
-  cancel-in-progress: true
+  group: 'ci-deploy-${{ github.ref }}'
+  cancel-in-progress: false
 
 jobs:
-  verify_build:
-    name: Build, TypeScript & Netlify Check
+  verify_and_publish:
+    name: Build, Verify & Publish to gh-pages
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -45,3 +45,23 @@ jobs:
 
       - name: Build production bundle
         run: npm run build
+
+      - name: Verify compiled PWA & JS bundle integrity
+        run: |
+          test -f dist/index.html
+          test -f dist/sw.js
+          test -f dist/version.json
+          ls dist/assets/app-*.js
+          echo "✅ Compiled dist/ bundle verified:"
+          cat dist/version.json
+
+      - name: Publish fresh build to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./dist
+          force_orphan: true
+          enable_jekyll: false
+          commit_message: 'deploy: publish fresh build (${{ github.sha }})'
+
