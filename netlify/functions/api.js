@@ -47,7 +47,7 @@ export async function handler(event) {
     body: JSON.stringify({
       status: 'ok',
       appName: 'NH POS Shop',
-      version: 'v18.0.0',
+      version: 'v18.0.1',
       securityShield: '15-Layer Anti-AI Protection Active',
       serverlessTime: new Date().toISOString()
     })

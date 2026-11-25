@@ -114,6 +114,7 @@ export const LoginView: React.FC = () => {
   // Staff Form State
   const [staffUsername, setStaffUsername] = useState<string>('');
   const [staffPassword, setStaffPassword] = useState<string>('');
+  const [showStaffPassword, setShowStaffPassword] = useState<boolean>(false);
   const [isStaffLoading, setIsStaffLoading] = useState<boolean>(false);
 
   // Google Loading & Error
@@ -977,7 +978,7 @@ export const LoginView: React.FC = () => {
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                 <input
-                  type="password"
+                  type={showStaffPassword ? 'text' : 'password'}
                   value={staffPassword}
                   onChange={e => {
                     setStaffPassword(e.target.value);
@@ -987,8 +988,16 @@ export const LoginView: React.FC = () => {
                   required
                   minLength={6}
                   dir="ltr"
-                  className="w-full pl-10 pr-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:outline-none focus:border-blue-600 focus:bg-white transition-all text-sm font-mono text-slate-900"
+                  className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold focus:outline-none focus:border-blue-600 focus:bg-white transition-all text-sm font-mono text-slate-900"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowStaffPassword(!showStaffPassword)}
+                  className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                  title={showStaffPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showStaffPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
               <div className={`flex ${isUrdu ? 'justify-start' : 'justify-end'} mt-1.5`}>
                 <button

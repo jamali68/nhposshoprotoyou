@@ -70,7 +70,7 @@ export async function handler(event) {
       body: JSON.stringify({
         status: 'ok',
         service: 'NH POS 15-Layer Security Shield & Auth Service',
-        version: 'v18.0.0',
+        version: 'v18.0.1',
         time: new Date().toISOString()
       })
     };
