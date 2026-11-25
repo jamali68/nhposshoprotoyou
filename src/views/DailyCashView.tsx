@@ -1317,7 +1317,7 @@ export const DailyCashView: React.FC = () => {
                       </span>
                     </div>
 
-                    <p className="font-bold text-slate-800 text-[13px] truncate mt-1">
+                    <p className="font-bold text-slate-800 text-[13px] leading-snug break-words whitespace-pre-wrap mt-1">
                       {t.description || 'No Note'}
                     </p>
 
@@ -1342,7 +1342,7 @@ export const DailyCashView: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="text-right">
+                  <div className="text-right shrink-0 whitespace-nowrap">
                     {txTime ? (
                       <div
                         className={`text-[11px] font-bold font-mono tracking-tight ${
@@ -1507,7 +1507,7 @@ export const DailyCashView: React.FC = () => {
 
               {targetTx && (
                 <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-3 text-xs space-y-1">
-                  <p className="font-bold text-slate-800 truncate">
+                  <p className="font-bold text-slate-800 break-words leading-snug">
                     {targetTx.description || 'Shop Cash Entry'}
                   </p>
                   <p className="font-mono font-black text-sm text-rose-600">

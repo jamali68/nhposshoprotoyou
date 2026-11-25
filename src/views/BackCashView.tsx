@@ -1207,11 +1207,11 @@ export const BackCashView: React.FC = () => {
                   AUTO CARRIED
                 </span>
               </div>
-              <p className="font-bold text-slate-800 text-[12px] truncate mt-1">
+              <p className="font-bold text-slate-800 text-[12px] leading-snug break-words mt-1">
                 Previous Carried Total ({bcLastClosingDate})
               </p>
             </div>
-            <div className="text-right">
+            <div className="text-right shrink-0 whitespace-nowrap">
               <div className="text-sm font-black font-mono text-blue-700">
                 Rs. {bcLastClosingAmount.toLocaleString()}
               </div>
@@ -1285,7 +1285,7 @@ export const BackCashView: React.FC = () => {
                       )}
                     </div>
 
-                    <p className={`font-bold text-[13px] truncate mt-1 ${isClosing ? 'text-orange-950 font-black' : 'text-slate-800'}`}>
+                    <p className={`font-bold text-[13px] leading-snug break-words whitespace-pre-wrap mt-1 ${isClosing ? 'text-orange-950 font-black' : 'text-slate-800'}`}>
                       {t.note || 'No Note'}
                     </p>
 
@@ -1310,7 +1310,7 @@ export const BackCashView: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="text-right">
+                  <div className="text-right shrink-0 whitespace-nowrap">
                     {txTime ? (
                       <div
                         className={`text-[11px] font-bold font-mono tracking-tight ${
@@ -1471,7 +1471,7 @@ export const BackCashView: React.FC = () => {
 
               {targetTx && (
                 <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-3 text-xs space-y-1">
-                  <p className="font-bold text-slate-800 truncate">
+                  <p className="font-bold text-slate-800 break-words leading-snug">
                     {targetTx.note || 'Back Cash Entry'}
                   </p>
                   <p className="font-mono font-black text-sm text-rose-600">
@@ -1657,7 +1657,7 @@ export const BackCashView: React.FC = () => {
                                 </span>
                               )}
                             </div>
-                            <p className="font-bold text-slate-800 text-[11px] truncate mt-1">
+                            <p className="font-bold text-slate-800 text-[11px] leading-snug break-words mt-1">
                               {row.note}
                             </p>
                           </div>
