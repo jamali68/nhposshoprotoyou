@@ -1,32 +1,31 @@
-// Netlify Serverless Function: send-otp
-// Generates or dispatches a 6-digit verification OTP to the customer's Gmail inbox
-// Also returns a signed HMAC OTP challenge token for tamper-proof verification.
+// Netlify Serverless Function: send-otp (v18.0.0 Hardened 15-Layer Shield)
+// Server-generates a cryptographically random 6-digit OTP, enforces anti-AI PoW,
+// strict per-IP + per-email rate limiting, disposable email blocking, and returns a
+// signed single-use HMAC OTP challenge token.
 
 import crypto from 'crypto';
-import { createOtpChallenge } from './core/authCore.js';
+import {
+  getClientIp,
+  buildSecurityHeaders,
+  isBlockedBotUserAgent,
+  checkIpBurstLimit,
+  verifyAntiBotShield,
+  parseAndSanitizeBody,
+  isDisposableOrFakeEmail,
+  checkRateLimit,
+  recordFailedAttempt,
+  applyFailureJitter,
+  createOtpChallenge
+} from './core/authCore.js';
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function buildHeaders(event) {
-  const origin = event.headers?.origin || event.headers?.Origin || '';
-  return {
-    'Content-Type': 'application/json',
-    ...(origin ? { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' } : {}),
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS'
-  };
-}
+const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,12}$/;
 
 export async function handler(event) {
-  const headers = buildHeaders(event);
+  const headers = buildSecurityHeaders(event, 'POST, OPTIONS');
 
   // CORS Preflight
   if (event.httpMethod === 'OPTIONS') {
-    return {
-      statusCode: 200,
-      headers,
-      body: ''
-    };
+    return { statusCode: 204, headers, body: '' };
   }
 
   if (event.httpMethod !== 'POST') {
@@ -37,17 +36,72 @@ export async function handler(event) {
     };
   }
 
-  try {
-    const body = JSON.parse(event.body || '{}');
-    const email = (body.email || '').trim().toLowerCase();
-    const providedOtp = typeof body.otp === 'string' && /^\d{6}$/.test(body.otp.trim()) ? body.otp.trim() : null;
-    const otp = providedOtp || crypto.randomInt(100000, 1000000).toString();
+  const clientIp = getClientIp(event);
 
-    if (!email || !EMAIL_REGEX.test(email)) {
+  // Layer 12A: Block automated scanners/scripts
+  if (isBlockedBotUserAgent(event)) {
+    return {
+      statusCode: 403,
+      headers,
+      body: JSON.stringify({ success: false, error: 'Automated request blocked by Security Shield.' })
+    };
+  }
+
+  // Layer 11A: Strict OTP Flood Protection (max 10 OTP sends / hour per IP)
+  const ipBurst = checkIpBurstLimit(`otp:${clientIp}`, 10, 60 * 60 * 1000);
+  if (!ipBurst.allowed) {
+    return {
+      statusCode: 429,
+      headers,
+      body: JSON.stringify({ success: false, error: ipBurst.error })
+    };
+  }
+
+  // Layer 13: Payload Firewall
+  const parsedBody = parseAndSanitizeBody(event, 4096);
+  if (!parsedBody.ok) {
+    return {
+      statusCode: parsedBody.statusCode,
+      headers,
+      body: JSON.stringify({ success: false, error: parsedBody.error })
+    };
+  }
+
+  // Layer 12B: Anti-AI Proof-of-Work & Nonce Replay Verification
+  const shieldCheck = verifyAntiBotShield(event, 'send-otp');
+  if (!shieldCheck.valid) {
+    await applyFailureJitter();
+    return {
+      statusCode: 403,
+      headers,
+      body: JSON.stringify({ success: false, error: shieldCheck.error })
+    };
+  }
+
+  try {
+    const body = parsedBody.payload;
+    const email = String(body.email || '').trim().toLowerCase();
+
+    if (!email || !EMAIL_REGEX.test(email) || isDisposableOrFakeEmail(email)) {
+      await applyFailureJitter();
       return {
         statusCode: 400,
         headers,
-        body: JSON.stringify({ success: false, error: 'A valid email address is required' })
+        body: JSON.stringify({
+          success: false,
+          error: 'A real, non-disposable email address is required.'
+        })
+      };
+    }
+
+    // Per-email OTP spam prevention (max 3 OTPs per 15 minutes per email)
+    const emailRateKey = `otp_send:${email}`;
+    const emailRateCheck = checkRateLimit(emailRateKey, 3, 15 * 60 * 1000);
+    if (!emailRateCheck.allowed) {
+      return {
+        statusCode: 429,
+        headers,
+        body: JSON.stringify({ success: false, error: emailRateCheck.error })
       };
     }
 
@@ -63,7 +117,12 @@ export async function handler(event) {
       };
     }
 
+    // Always generate OTP cryptographically on the server (never trust client-supplied OTP)
+    const otp = crypto.randomInt(100000, 1000000).toString();
     const challengeToken = createOtpChallenge(email, otp);
+
+    // Record OTP dispatch toward per-email rate cap
+    recordFailedAttempt(emailRateKey, 3, 15 * 60 * 1000, 15 * 60 * 1000);
 
     // Never log the raw 6-digit OTP code in server logs
     console.info(`[NH POS Shop] Dispatching verification email to: ${email}`);

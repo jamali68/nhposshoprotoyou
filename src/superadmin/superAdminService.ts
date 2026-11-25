@@ -5,6 +5,7 @@
 
 import { db, collection, doc, getDocs, getDoc, setDoc, updateDoc } from '../firebase';
 import { authApi } from '../services/authApi';
+import { generateSecurityRequestHeaders } from '../utils/securityShield';
 import {
   mergeShopUsageTelemetry,
   loadShopTelemetry,
@@ -1018,9 +1019,15 @@ export const superAdminService = {
     // 3. Test OTP Challenge HMAC Generator & Verifier
     const t2 = performance.now();
     try {
+      const saToken = this.getSession()?.token || '';
+      const powHeaders = await generateSecurityRequestHeaders('create-otp-challenge');
       const otpRes = await fetch('/.netlify/functions/auth', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...powHeaders,
+          ...(saToken ? { Authorization: `Bearer ${saToken}` } : {})
+        },
         body: JSON.stringify({ action: 'create-otp-challenge', email: 'verify@nhpos.com', otp: '482910' })
       }).then(r => r.json()).catch(() => ({ success: false }));
 

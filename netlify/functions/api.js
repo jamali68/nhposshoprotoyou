@@ -1,30 +1,55 @@
 // Netlify Serverless Cloud Function (Node.js / JavaScript)
-// You can call this at: /.netlify/functions/api or /api/* if routed
+// Endpoint: /.netlify/functions/api
 
-export async function handler(event, context) {
-  try {
-    const { httpMethod, queryStringParameters, headers } = event;
+import {
+  getClientIp,
+  buildSecurityHeaders,
+  isBlockedBotUserAgent,
+  checkIpBurstLimit
+} from './core/authCore.js';
 
-    // Example secure serverless backend endpoint
+export async function handler(event) {
+  const headers = buildSecurityHeaders(event, 'GET, OPTIONS');
+  const method = (event.httpMethod || 'GET').toUpperCase();
+
+  if (method === 'OPTIONS') {
+    return { statusCode: 204, headers, body: '' };
+  }
+
+  if (method !== 'GET') {
     return {
-      statusCode: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
-      },
-      body: JSON.stringify({
-        status: 'ok',
-        appName: 'Taj POS Pro',
-        serverlessTime: new Date().toISOString(),
-        message: 'Netlify Cloud Function is running securely with standard JavaScript!'
-      })
-    };
-  } catch (err) {
-    return {
-      statusCode: 500,
-      body: JSON.stringify({ error: err.message || 'Serverless function error' })
+      statusCode: 405,
+      headers,
+      body: JSON.stringify({ error: 'Method not allowed' })
     };
   }
+
+  if (isBlockedBotUserAgent(event)) {
+    return {
+      statusCode: 403,
+      headers,
+      body: JSON.stringify({ error: 'Automated client blocked' })
+    };
+  }
+
+  const burst = checkIpBurstLimit(`api:${getClientIp(event)}`, 30, 60 * 1000);
+  if (!burst.allowed) {
+    return {
+      statusCode: 429,
+      headers,
+      body: JSON.stringify({ error: burst.error })
+    };
+  }
+
+  return {
+    statusCode: 200,
+    headers,
+    body: JSON.stringify({
+      status: 'ok',
+      appName: 'NH POS Shop',
+      version: 'v18.0.0',
+      securityShield: '15-Layer Anti-AI Protection Active',
+      serverlessTime: new Date().toISOString()
+    })
+  };
 }

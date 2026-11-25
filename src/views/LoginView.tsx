@@ -34,6 +34,16 @@ import { useAppVersion } from '../utils/version';
 import { GmailOTPModal } from '../components/GmailOTPModal';
 import { PWAInstallGuideModal } from '../components/PWAInstallGuideModal';
 import { getStoredAuthorizedEmail } from '../utils/deviceSecurity';
+import {
+  verifyHumanFormSubmission,
+  validateAuthenticEmail,
+  validateAuthenticName,
+  validateAuthenticPhone,
+  validateStrongPassword,
+  checkClientSecurityThrottle,
+  recordClientAuthOutcome,
+  sanitizeTextInput
+} from '../utils/securityShield';
 
 export const LoginView: React.FC = () => {
   const {
@@ -115,6 +125,14 @@ export const LoginView: React.FC = () => {
     }
   });
   const [error, setError] = useState<string>('');
+  // Layer 1 & 2: Invisible Honeypot Trap & Human Interaction Timing Guard
+  const [honeypotTrap, setHoneypotTrap] = useState<string>('');
+  const formOpenedAtRef = React.useRef<number>(Date.now());
+  const hasInteractedRef = React.useRef<boolean>(false);
+
+  useEffect(() => {
+    formOpenedAtRef.current = Date.now();
+  }, [activeTab]);
 
   const activeError = error || authRedirectError || '';
 
@@ -184,9 +202,22 @@ export const LoginView: React.FC = () => {
   const handleGmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+
+    const humanCheck = verifyHumanFormSubmission({
+      honeypotValue: honeypotTrap,
+      formOpenedAt: formOpenedAtRef.current,
+      hasInteracted: hasInteractedRef.current,
+      minElapsedMs: 600
+    });
+    if (!humanCheck.valid) {
+      setError(lang === 'en' ? humanCheck.errorEn! : humanCheck.errorUr!);
+      return;
+    }
+
     const cleanEmail = gmailInput.trim().toLowerCase();
-    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
-      setError(lang === 'en' ? 'Please enter a valid email address.' : 'برائے مہربانی درست ای میل ایڈریس درج کریں۔');
+    const emailCheck = validateAuthenticEmail(cleanEmail);
+    if (!emailCheck.valid) {
+      setError(lang === 'en' ? emailCheck.errorEn! : emailCheck.errorUr!);
       return;
     }
     const cleanPass = ownerPassword.trim();
@@ -195,13 +226,21 @@ export const LoginView: React.FC = () => {
       return;
     }
 
+    const throttleCheck = checkClientSecurityThrottle('owner_login', cleanEmail);
+    if (!throttleCheck.valid) {
+      setError(lang === 'en' ? throttleCheck.errorEn! : throttleCheck.errorUr!);
+      return;
+    }
+
     setIsGmailLoading(true);
     const result = await loginWithGmail(cleanEmail, undefined, true, false, cleanPass);
     setIsGmailLoading(false);
 
     if (!result.success) {
+      recordClientAuthOutcome('owner_login', cleanEmail, false);
       setError(result.error || (lang === 'en' ? 'Login failed. Please check your email and password.' : 'لاگ ان کرنے میں مسئلہ پیش آیا۔ ای میل اور پاس ورڈ چیک کریں۔'));
     } else {
+      recordClientAuthOutcome('owner_login', cleanEmail, true);
       try {
         localStorage.setItem('taj_pos_saved_login_email', cleanEmail);
       } catch {}
@@ -212,25 +251,58 @@ export const LoginView: React.FC = () => {
     e.preventDefault();
     setError('');
 
-    const cleanEmail = signupEmail.trim().toLowerCase();
-    const cleanShop = signupShopName.trim();
-    const cleanOwner = signupOwnerName.trim();
-    const cleanPass = signupPassword.trim();
+    // Layer 1 & 2: Honeypot + Human Timing Check
+    const humanCheck = verifyHumanFormSubmission({
+      honeypotValue: honeypotTrap,
+      formOpenedAt: formOpenedAtRef.current,
+      hasInteracted: hasInteractedRef.current,
+      minElapsedMs: 1200
+    });
+    if (!humanCheck.valid) {
+      setError(lang === 'en' ? humanCheck.errorEn! : humanCheck.errorUr!);
+      return;
+    }
 
-    if (!cleanShop) {
-      setError(lang === 'en' ? 'Please enter your shop name.' : 'برائے مہربانی دکان کا نام درج کریں۔');
+    const cleanEmail = signupEmail.trim().toLowerCase();
+    const cleanShop = sanitizeTextInput(signupShopName, 80);
+    const cleanOwner = sanitizeTextInput(signupOwnerName, 80);
+    const cleanPass = signupPassword.trim();
+    const cleanPhone = sanitizeTextInput(signupPhone, 25);
+    const cleanAddress = sanitizeTextInput(signupAddress, 140);
+
+    // Layer 3: Authentic Shop Name, Owner Name, Email (Anti-Disposable/Fake) & Phone Check
+    const shopCheck = validateAuthenticName(cleanShop, 'Shop Name', 'دکان کا نام');
+    if (!shopCheck.valid) {
+      setError(lang === 'en' ? shopCheck.errorEn! : shopCheck.errorUr!);
       return;
     }
-    if (!cleanOwner) {
-      setError(lang === 'en' ? 'Please enter owner name.' : 'برائے مہربانی دکاندار کا نام درج کریں۔');
+    const ownerCheck = validateAuthenticName(cleanOwner, 'Owner Name', 'دکاندار کا نام');
+    if (!ownerCheck.valid) {
+      setError(lang === 'en' ? ownerCheck.errorEn! : ownerCheck.errorUr!);
       return;
     }
-    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
-      setError(lang === 'en' ? 'Please enter a valid email address.' : 'برائے مہربانی درست ای میل ایڈریس درج کریں۔');
+    const emailCheck = validateAuthenticEmail(cleanEmail);
+    if (!emailCheck.valid) {
+      setError(lang === 'en' ? emailCheck.errorEn! : emailCheck.errorUr!);
       return;
     }
-    if (cleanPass.length < 6) {
-      setError(lang === 'en' ? 'Password must be at least 6 characters.' : 'پاس ورڈ کم از کم 6 ہندسوں کا ہونا ضروری ہے۔');
+    const phoneCheck = validateAuthenticPhone(cleanPhone);
+    if (!phoneCheck.valid) {
+      setError(lang === 'en' ? phoneCheck.errorEn! : phoneCheck.errorUr!);
+      return;
+    }
+
+    // Layer 4: Strong Anti-AI Password Policy
+    const passCheck = validateStrongPassword(cleanPass, cleanEmail, cleanOwner);
+    if (!passCheck.valid) {
+      setError(lang === 'en' ? passCheck.errorEn! : passCheck.errorUr!);
+      return;
+    }
+
+    // Layer 6: Signup Flood Throttle
+    const throttleCheck = checkClientSecurityThrottle('shop_signup', cleanEmail);
+    if (!throttleCheck.valid) {
+      setError(lang === 'en' ? throttleCheck.errorEn! : throttleCheck.errorUr!);
       return;
     }
 
@@ -240,14 +312,16 @@ export const LoginView: React.FC = () => {
       ownerName: cleanOwner,
       email: cleanEmail,
       password: cleanPass,
-      phone: signupPhone.trim(),
-      address: signupAddress.trim()
+      phone: cleanPhone,
+      address: cleanAddress
     });
     setIsSignupLoading(false);
 
     if (!result.success) {
+      recordClientAuthOutcome('shop_signup', cleanEmail, false);
       setError(result.error || (lang === 'en' ? 'Failed to register shop. Please try again.' : 'دکان رجسٹر کرنے میں مسئلہ پیش آیا۔ دوبارہ کوشش کریں۔'));
     } else {
+      recordClientAuthOutcome('shop_signup', cleanEmail, true);
       try {
         localStorage.setItem('taj_pos_saved_login_email', cleanEmail);
       } catch {}
@@ -257,7 +331,19 @@ export const LoginView: React.FC = () => {
   const handleStaffSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    const cleanUser = staffUsername.trim();
+
+    const humanCheck = verifyHumanFormSubmission({
+      honeypotValue: honeypotTrap,
+      formOpenedAt: formOpenedAtRef.current,
+      hasInteracted: hasInteractedRef.current,
+      minElapsedMs: 600
+    });
+    if (!humanCheck.valid) {
+      setError(lang === 'en' ? humanCheck.errorEn! : humanCheck.errorUr!);
+      return;
+    }
+
+    const cleanUser = sanitizeTextInput(staffUsername, 60);
     const cleanPass = staffPassword.trim();
     if (!cleanUser || !cleanPass) {
       setError(lang === 'en' ? 'Please provide both username and password.' : 'برائے مہربانی یوزر نیم اور پاس ورڈ دونوں درج کریں۔');
@@ -267,11 +353,21 @@ export const LoginView: React.FC = () => {
       setError(lang === 'en' ? 'Password must be at least 6 characters.' : 'پاس ورڈ کم از کم 6 ہندسوں کا ہونا ضروری ہے۔');
       return;
     }
+
+    const throttleCheck = checkClientSecurityThrottle('staff_login', cleanUser);
+    if (!throttleCheck.valid) {
+      setError(lang === 'en' ? throttleCheck.errorEn! : throttleCheck.errorUr!);
+      return;
+    }
+
     setIsStaffLoading(true);
     const result = await loginStaff(cleanUser, cleanPass);
     setIsStaffLoading(false);
     if (!result.success) {
+      recordClientAuthOutcome('staff_login', cleanUser, false);
       setError(result.error || (lang === 'en' ? 'Invalid credentials. Contact the shop owner for details.' : 'درج کردہ تفصیلات غلط ہیں۔ دکان کے مالک سے درست تفصیلات حاصل کریں۔'));
+    } else {
+      recordClientAuthOutcome('staff_login', cleanUser, true);
     }
   };
 
@@ -492,7 +588,22 @@ export const LoginView: React.FC = () => {
             )}
 
             {/* Direct Email & Password Login Form */}
-            <form onSubmit={handleGmailSubmit} className="space-y-3.5">
+            <form
+              onSubmit={handleGmailSubmit}
+              onInput={() => { hasInteractedRef.current = true; }}
+              className="space-y-3.5"
+            >
+              {/* Invisible Anti-Bot Honeypot Trap */}
+              <input
+                type="text"
+                name="website_url"
+                value={honeypotTrap}
+                onChange={e => setHoneypotTrap(e.target.value)}
+                tabIndex={-1}
+                autoComplete="off"
+                aria-hidden="true"
+                className="hidden"
+              />
               <div>
                 <label className="block text-[11px] font-bold text-slate-700 mb-1">
                   {isUrdu ? 'دکان کے مالک کا ای میل ایڈریس (Email)' : 'Admin / Owner Email Address'}
@@ -505,6 +616,7 @@ export const LoginView: React.FC = () => {
                     autoComplete="email"
                     value={gmailInput}
                     onChange={e => {
+                      hasInteractedRef.current = true;
                       setGmailInput(e.target.value);
                       setError('');
                     }}
@@ -613,7 +725,22 @@ export const LoginView: React.FC = () => {
               </p>
             </div>
 
-            <form onSubmit={handleSignupSubmit} className="space-y-3 text-xs">
+            <form
+              onSubmit={handleSignupSubmit}
+              onInput={() => { hasInteractedRef.current = true; }}
+              className="space-y-3 text-xs"
+            >
+              {/* Invisible Anti-Bot Honeypot Trap */}
+              <input
+                type="text"
+                name="company_fax"
+                value={honeypotTrap}
+                onChange={e => setHoneypotTrap(e.target.value)}
+                tabIndex={-1}
+                autoComplete="off"
+                aria-hidden="true"
+                className="hidden"
+              />
               <div>
                 <label className="block font-bold text-slate-700 mb-1">
                   {isUrdu ? 'دکان کا نام *' : 'Shop Name *'}
@@ -681,7 +808,7 @@ export const LoginView: React.FC = () => {
                     {isUrdu ? 'اکاؤنٹ پاس ورڈ *' : 'Account Password *'}
                   </label>
                   <span className="text-[10px] text-slate-500 font-medium">
-                    {isUrdu ? 'کم از کم 6 ہندسے' : 'Min 6 characters'}
+                    {isUrdu ? 'کم از کم 8 حروف (A-Z + 0-9)' : 'Min 8 chars (A-Z + 0-9)'}
                   </span>
                 </div>
                 <div className="relative">
@@ -689,13 +816,14 @@ export const LoginView: React.FC = () => {
                   <input
                     type={showSignupPassword ? 'text' : 'password'}
                     required
-                    minLength={6}
+                    minLength={8}
                     value={signupPassword}
                     onChange={e => {
+                      hasInteractedRef.current = true;
                       setSignupPassword(e.target.value);
                       setError('');
                     }}
-                    placeholder={isUrdu ? 'نیا پاس ورڈ بنائیں (کم از کم 6 ہندسے)' : 'Create password (Min 6 chars)'}
+                    placeholder={isUrdu ? 'مضبوط پاس ورڈ (مثلاً: Shop@2026)' : 'Strong password (e.g. Shop@2026)'}
                     dir="ltr"
                     className="w-full pl-10 pr-10 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm font-mono"
                   />
@@ -784,7 +912,22 @@ export const LoginView: React.FC = () => {
         {/* PORTION 3: STAFF LOGIN                                   */}
         {/* ======================================================== */}
         {activeTab === 'staff_login' && (
-          <form onSubmit={handleStaffSubmit} className={`mt-5 space-y-3.5 text-xs ${isUrdu ? 'text-right' : 'text-left'}`}>
+          <form
+            onSubmit={handleStaffSubmit}
+            onInput={() => { hasInteractedRef.current = true; }}
+            className={`mt-5 space-y-3.5 text-xs ${isUrdu ? 'text-right' : 'text-left'}`}
+          >
+            {/* Invisible Anti-Bot Honeypot Trap */}
+            <input
+              type="text"
+              name="website_url"
+              value={honeypotTrap}
+              onChange={e => setHoneypotTrap(e.target.value)}
+              tabIndex={-1}
+              autoComplete="off"
+              aria-hidden="true"
+              className="hidden"
+            />
             <div className="p-3 bg-purple-50/70 border border-purple-100 rounded-xl text-[11px] text-purple-900">
               <span className="font-bold">
                 {isUrdu ? '💼 اسٹاف لاگ ان:' : '💼 Staff Member Login:'}

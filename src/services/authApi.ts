@@ -1,14 +1,18 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * 
- * Client-Side Authentication & Security API Service
- * Dispatches auth, SuperAdmin, and OTP verification requests to Netlify Functions / Firebase Functions backend.
- * Provides seamless cryptographic fallback on static hosts (e.g. GitHub Pages) and offline environments.
- * Eliminates HTTP 405 "Method Not Allowed" errors forever.
+ *
+ * Client-Side Authentication & 15-Layer Security API Service (v18.0.0)
+ * Dispatches auth, SuperAdmin, and OTP verification requests to Netlify Functions backend
+ * with automatic SHA-256 Proof-of-Work, Nonce Anti-Replay, Payload Sanitization,
+ * Upgraded 120,000-iteration PBKDF2-SHA256, and Fail-Closed token verification.
  */
 
 import { trackNetlifyFunctionCall } from '../utils/usageTracker';
+import {
+  generateSecurityRequestHeaders,
+  sanitizeDeepPayload
+} from '../utils/securityShield';
 
 export interface GoogleVerifyResult {
   success: boolean;
@@ -48,8 +52,17 @@ const getApiBaseUrls = (): string[] => {
   return ['/.netlify/functions/auth', '/api/auth'];
 };
 
+function constantTimeEqualStr(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
 /**
- * Standard Web Crypto PBKDF2 Password Verification
+ * Standard Web Crypto PBKDF2 Password Verification (Supports v2 120k, v1 12k & legacy)
  * Used seamlessly on static hosts (GitHub Pages) or when offline.
  */
 async function clientVerifyPassword(
@@ -72,8 +85,8 @@ async function clientVerifyPassword(
     return { success: true, mustChangePassword: true, isLegacy: true };
   }
 
-  // 2. Direct plaintext match check (supports unhashed legacy records and direct matches)
-  if (storedHash && cleanPass.toLowerCase() === storedHash.toLowerCase()) {
+  // 2. Direct plaintext match check (supports unhashed legacy records only when no salt exists)
+  if (!salt && storedHash && constantTimeEqualStr(cleanPass, storedHash)) {
     return {
       success: true,
       mustChangePassword: cleanPass === '123456',
@@ -81,16 +94,28 @@ async function clientVerifyPassword(
     };
   }
 
-  // If no salt exists and storedHash didn't match directly
-  if (!salt) {
+  if (!salt || !storedHash) {
     return {
       success: false,
       error: 'غلط پاس ورڈ! برائے مہربانی درست پاس ورڈ درج کریں۔ (Incorrect password)'
     };
   }
 
-  // 3. PBKDF2 Web Crypto Hash Verification
+  // 3. PBKDF2 Web Crypto Hash Verification (v2$120000$<hex> or legacy 12,000 iterations)
   try {
+    let iterations = 12000;
+    let targetHex = storedHash;
+    if (storedHash.startsWith('v2$')) {
+      const parts = storedHash.split('$');
+      if (parts.length === 3) {
+        const parsedIter = parseInt(parts[1], 10);
+        if (Number.isFinite(parsedIter) && parsedIter >= 10000 && parsedIter <= 600000) {
+          iterations = parsedIter;
+          targetHex = parts[2];
+        }
+      }
+    }
+
     const enc = new TextEncoder();
     const keyMaterial = await crypto.subtle.importKey(
       'raw',
@@ -104,7 +129,7 @@ async function clientVerifyPassword(
       {
         name: 'PBKDF2',
         salt: enc.encode(salt),
-        iterations: 12000,
+        iterations,
         hash: 'SHA-256'
       },
       keyMaterial,
@@ -115,7 +140,7 @@ async function clientVerifyPassword(
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
 
-    if (derivedHexUtf8.toLowerCase() === (storedHash || '').toLowerCase()) {
+    if (constantTimeEqualStr(derivedHexUtf8.toLowerCase(), targetHex.toLowerCase())) {
       return {
         success: true,
         mustChangePassword: cleanPass === '123456',
@@ -124,13 +149,13 @@ async function clientVerifyPassword(
     }
 
     const saltMatches = salt.match(/.{1,2}/g);
-    if (saltMatches && saltMatches.length > 0) {
+    if (saltMatches && saltMatches.length > 0 && !storedHash.startsWith('v2$')) {
       const saltBuffer = new Uint8Array(saltMatches.map(byte => parseInt(byte, 16)));
       const derivedBitsHex = await crypto.subtle.deriveBits(
         {
           name: 'PBKDF2',
           salt: saltBuffer,
-          iterations: 12000,
+          iterations,
           hash: 'SHA-256'
         },
         keyMaterial,
@@ -141,7 +166,7 @@ async function clientVerifyPassword(
         .map(b => b.toString(16).padStart(2, '0'))
         .join('');
 
-      if (derivedHexBytes.toLowerCase() === (storedHash || '').toLowerCase()) {
+      if (constantTimeEqualStr(derivedHexBytes.toLowerCase(), targetHex.toLowerCase())) {
         return {
           success: true,
           mustChangePassword: cleanPass === '123456',
@@ -155,15 +180,12 @@ async function clientVerifyPassword(
       error: 'غلط پاس ورڈ! برائے مہربانی درست پاس ورڈ درج کریں۔ (Incorrect password)'
     };
   } catch {
-    if (storedHash && cleanPass === storedHash) {
-      return { success: true, mustChangePassword: cleanPass === '123456', isLegacy: cleanPass === '123456' };
-    }
     return { success: false, error: 'پاس ورڈ کی تصدیق میں مسئلہ پیش آیا۔' };
   }
 }
 
 /**
- * Standard Web Crypto PBKDF2 Password Hashing
+ * Upgraded Web Crypto PBKDF2-SHA256 Password Hashing (120,000 OWASP iterations)
  */
 async function clientHashPassword(password: string): Promise<PasswordHashResult> {
   const cleanPass = password.trim();
@@ -174,6 +196,7 @@ async function clientHashPassword(password: string): Promise<PasswordHashResult>
   try {
     const saltBytes = crypto.getRandomValues(new Uint8Array(16));
     const salt = Array.from(saltBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    const iterations = 120000;
 
     const enc = new TextEncoder();
     const keyMaterial = await crypto.subtle.importKey(
@@ -188,25 +211,25 @@ async function clientHashPassword(password: string): Promise<PasswordHashResult>
       {
         name: 'PBKDF2',
         salt: enc.encode(salt),
-        iterations: 12000,
+        iterations,
         hash: 'SHA-256'
       },
       keyMaterial,
       256
     );
 
-    const hash = Array.from(new Uint8Array(derivedBits))
+    const hashHex = Array.from(new Uint8Array(derivedBits))
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
 
-    return { success: true, hash, salt };
+    return { success: true, hash: `v2$${iterations}$${hashHex}`, salt };
   } catch (err: any) {
     return { success: false, error: err?.message || 'Failed to hash password' };
   }
 }
 
 /**
- * Dispatches an action to Netlify Functions / Firebase Functions.
+ * Dispatches an action to Netlify Functions with Anti-AI PoW, Nonce & Payload Sanitization.
  */
 async function postToAuthFunction(payload: any, authToken?: string): Promise<any> {
   if (typeof window !== 'undefined') {
@@ -216,12 +239,18 @@ async function postToAuthFunction(payload: any, authToken?: string): Promise<any
     }
   }
 
+  const sanitizedPayload = sanitizeDeepPayload(payload);
+  const actionName = typeof sanitizedPayload?.action === 'string' ? sanitizedPayload.action : 'unknown';
   const urls = getApiBaseUrls();
 
   for (const url of urls) {
     try {
-      const bodyStr = JSON.stringify(payload);
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const powHeaders = await generateSecurityRequestHeaders(actionName);
+      const bodyStr = JSON.stringify(sanitizedPayload);
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...powHeaders
+      };
       if (authToken) {
         headers['Authorization'] = `Bearer ${authToken}`;
       }
@@ -251,7 +280,7 @@ async function postToAuthFunction(payload: any, authToken?: string): Promise<any
       if (res.ok && (typeof data.success === 'boolean' || typeof data.valid === 'boolean')) {
         return data;
       } else if (!res.ok && data.error) {
-        return { success: false, error: data.error };
+        return { success: false, valid: false, error: data.error };
       }
     } catch {
       // Network failure or offline; try next URL
@@ -263,7 +292,7 @@ async function postToAuthFunction(payload: any, authToken?: string): Promise<any
 
 export const authApi = {
   /**
-   * Validates a Google ID Token on the server, or via JWT / Google TokenInfo on static hosts
+   * Validates a Google ID Token on the server, or via Google TokenInfo on static hosts
    */
   async verifyGoogleIdToken(idToken: string): Promise<GoogleVerifyResult> {
     const decodeFirebaseOrGoogleJwt = (tokenStr: string): GoogleVerifyResult | null => {
@@ -306,11 +335,10 @@ export const authApi = {
         idToken
       });
 
-      if (!backendRes.isStaticFallback && backendRes.success) {
+      if (!backendRes.isStaticFallback) {
         return backendRes;
       }
 
-      // Check local JWT claims first (handles Firebase Auth ID tokens from securetoken.google.com)
       const jwtVerified = decodeFirebaseOrGoogleJwt(idToken);
       if (jwtVerified && jwtVerified.success) {
         return jwtVerified;
@@ -337,10 +365,6 @@ export const authApi = {
         picture: data.picture || ''
       };
     } catch (err: any) {
-      const jwtFallback = decodeFirebaseOrGoogleJwt(idToken);
-      if (jwtFallback && jwtFallback.success) {
-        return jwtFallback;
-      }
       return {
         success: false,
         error: err.message || 'Failed to verify Google token'
@@ -377,7 +401,7 @@ export const authApi = {
   },
 
   /**
-   * Hashes a new password securely via Server Core or Web Crypto fallback
+   * Hashes a new password securely via Server Core (120k PBKDF2) or Web Crypto fallback (120k PBKDF2)
    */
   async hashPassword(password: string): Promise<PasswordHashResult> {
     try {
@@ -452,13 +476,16 @@ export const authApi = {
   },
 
   /**
-   * Verifies a 6-digit OTP Challenge Token on the server
+   * Verifies a 6-digit single-use OTP Challenge Token strictly on the server (Fail-Closed!)
    */
   async verifyOtpChallenge(
     email: string,
     enteredOtp: string,
     challengeToken: string
   ): Promise<{ success: boolean; error?: string }> {
+    if (!email || !enteredOtp || !challengeToken) {
+      return { success: false, error: 'OTP verification requires valid email, code, and challenge token.' };
+    }
     try {
       const backendRes = await postToAuthFunction({
         action: 'verify-otp-challenge',
@@ -469,16 +496,22 @@ export const authApi = {
       if (!backendRes.isStaticFallback) {
         return backendRes;
       }
-      return { success: true };
+      return {
+        success: false,
+        error: 'Server OTP verification unavailable. Please connect to the internet and retry.'
+      };
     } catch (err: any) {
-      return { success: false, error: err.message };
+      return { success: false, error: err?.message || 'OTP verification failed.' };
     }
   },
 
   /**
-   * Verifies an issued session / device token
+   * Verifies an issued session / device token strictly (Fail-Closed on invalid/expired tokens!)
    */
   async verifyDeviceToken(sessionToken: string): Promise<{ valid: boolean; claims?: any; error?: string }> {
+    if (!sessionToken || typeof sessionToken !== 'string') {
+      return { valid: false, error: 'Session token is required.' };
+    }
     try {
       const backendRes = await postToAuthFunction({
         action: 'verify-device-token',
@@ -489,9 +522,9 @@ export const authApi = {
         return backendRes;
       }
 
-      return { valid: true };
+      return { valid: false, error: 'Unable to verify session token with server.' };
     } catch (err: any) {
-      return { valid: false, error: err.message };
+      return { valid: false, error: err?.message || 'Session token verification failed.' };
     }
   }
 };

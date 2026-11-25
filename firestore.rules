@@ -2,6 +2,10 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // =========================================================================
+    // LAYER 15: NH POS SHOP v18.0.0 — ZERO-TRUST FIRESTORE SECURITY FORTRESS
+    // =========================================================================
+
     function isValidId(id) {
       return id is string
         && id.size() >= 1
@@ -18,10 +22,48 @@ service cloud.firestore {
         );
     }
 
+    function hasNoUnauthorizedPrivilegeEscalation(data) {
+      return isSuperAdmin() || (
+        (!('role' in data) || data.role != 'super_admin')
+        && (!('isSuperAdmin' in data) || data.isSuperAdmin != true)
+      );
+    }
+
     function isValidPayload() {
       return request.resource.data is map
         && request.resource.data.keys().size() > 0
-        && request.resource.data.keys().size() <= 120;
+        && request.resource.data.keys().size() <= 120
+        && hasNoUnauthorizedPrivilegeEscalation(request.resource.data);
+    }
+
+    function isValidShopData(data) {
+      return isValidPayload()
+        && (!('shop_name' in data) || (data.shop_name is string && data.shop_name.size() >= 2 && data.shop_name.size() <= 120))
+        && (!('owner_email' in data) || (data.owner_email is string && data.owner_email.size() >= 5 && data.owner_email.size() <= 120))
+        && (!('owner_name' in data) || (data.owner_name is string && data.owner_name.size() <= 120))
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 32))
+        && (!('address' in data) || (data.address is string && data.address.size() <= 240));
+    }
+
+    function isShopOwnerImmutable() {
+      return isSuperAdmin() || (
+        (!('owner_email' in resource.data) || !('owner_email' in request.resource.data) || request.resource.data.owner_email == resource.data.owner_email)
+        && (!('id' in resource.data) || !('id' in request.resource.data) || request.resource.data.id == resource.data.id)
+      );
+    }
+
+    function isRegistryImmutable() {
+      return isSuperAdmin() || (
+        (!('shop_id' in resource.data) || !('shop_id' in request.resource.data) || request.resource.data.shop_id == resource.data.shop_id)
+        && (!('email' in resource.data) || !('email' in request.resource.data) || request.resource.data.email == resource.data.email)
+      );
+    }
+
+    function isValidStaffDirectoryData(data) {
+      return isValidPayload()
+        && ('shop_id' in data && data.shop_id is string && isValidId(data.shop_id))
+        && (!('username' in data) || (data.username is string && data.username.size() >= 2 && data.username.size() <= 64))
+        && (!('role' in data) || data.role in ['manager', 'cashier', 'salesman', 'staff', 'admin']);
     }
 
     function isAllowedShopSubcollection(sub) {
@@ -35,11 +77,16 @@ service cloud.firestore {
         'stock_transactions',
         'staff_accounts',
         'edit_history',
-        'deleted_history'
+        'deleted_history',
+        'auth_audit_logs'
       ];
     }
 
-    // Platform & System Settings: Readable by shops; Writable ONLY by verified Super Admin
+    function parentShopExists(shopId) {
+      return exists(/databases/$(database)/documents/shops/$(shopId));
+    }
+
+    // 1. Platform & System Settings: Readable by shops; Writable/Listable ONLY by verified Super Admin
     match /platform_settings/{settingId} {
       allow get: if isValidId(settingId);
       allow list: if isSuperAdmin();
@@ -54,23 +101,27 @@ service cloud.firestore {
       allow delete: if isSuperAdmin() && isValidId(settingId);
     }
 
-    // Staff Directory: Single-doc lookup for Staff Login (Blocks bulk credential scraping)
+    // 2. Staff Directory: Single-doc lookup ONLY (Blocks bulk staff scraping & super_admin escalation)
     match /staff_directory/{username} {
       allow get: if isValidId(username);
       allow list: if isSuperAdmin();
-      allow create, update: if isValidId(username) && isValidPayload();
+      allow create: if isValidId(username) && isValidStaffDirectoryData(request.resource.data);
+      allow update: if isValidId(username)
+        && isValidStaffDirectoryData(request.resource.data)
+        && (isSuperAdmin() || request.resource.data.shop_id == resource.data.shop_id);
       allow delete: if isValidId(username);
     }
 
-    // Account Registry: Lookup by email key or authenticated query; deletion restricted to Super Admin
+    // 3. Account Registry: Blocks unauthenticated bulk scraping, ownership hijacking & non-admin deletion
     match /account_registry/{emailKey} {
       allow get: if isValidId(emailKey);
-      allow list: if isSuperAdmin() || request.auth != null;
-      allow create, update: if isValidId(emailKey) && isValidPayload();
+      allow list: if isSuperAdmin() || (request.auth != null && request.query.limit <= 25);
+      allow create: if isValidId(emailKey) && isValidPayload();
+      allow update: if isValidId(emailKey) && isValidPayload() && isRegistryImmutable();
       allow delete: if isSuperAdmin() && isValidId(emailKey);
     }
 
-    // User Profiles: Blocks bulk scraping and non-admin deletion
+    // 4. User Profiles: Single-doc lookup only; blocks bulk scraping, privilege escalation & deletion
     match /users/{userId} {
       allow get: if isValidId(userId);
       allow list: if isSuperAdmin();
@@ -78,29 +129,54 @@ service cloud.firestore {
       allow delete: if isSuperAdmin() && isValidId(userId);
     }
 
-    // Multi-Tenant Shops & Strictly Allowlisted Subcollections
-    // Preserves compatibility for Google Auth, Email/Password Owners, and Staff logins
-    // while blocking rogue collections, ID poisoning, bulk shop scraping, and shop deletion.
+    // 5. Device Trust & Revocations: Single-doc check & bind only (Zero bulk listing)
+    match /device_trust/{trustId} {
+      allow get: if isValidId(trustId);
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidId(trustId) && isValidPayload() && request.resource.data.keys().size() <= 20;
+      allow delete: if isSuperAdmin() && isValidId(trustId);
+    }
+
+    match /device_revocations/{revId} {
+      allow get: if isValidId(revId);
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidId(revId) && isValidPayload() && request.resource.data.keys().size() <= 15;
+      allow delete: if isSuperAdmin() && isValidId(revId);
+    }
+
+    match /auth_audit_logs/{logId} {
+      allow get, list: if isSuperAdmin();
+      allow create: if isValidId(logId) && isValidPayload() && request.resource.data.keys().size() <= 15;
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // 6. Multi-Tenant Shops & Strictly Allowlisted Subcollections (Master Gate Enforced)
     match /shops/{shopId} {
       allow get: if isValidId(shopId);
-      allow list: if isSuperAdmin() || request.auth != null;
-      allow create, update: if isValidId(shopId) && isValidPayload();
+      allow list: if isSuperAdmin() || (request.auth != null && request.query.limit <= 25);
+      allow create: if isValidId(shopId) && isValidShopData(request.resource.data);
+      allow update: if isValidId(shopId) && isValidShopData(request.resource.data) && isShopOwnerImmutable();
       allow delete: if isSuperAdmin() && isValidId(shopId);
 
       match /{subcollection}/{docId} {
-        allow read: if isValidId(shopId)
+        allow get: if isValidId(shopId)
+          && isValidId(docId)
+          && isAllowedShopSubcollection(subcollection);
+        allow list: if isValidId(shopId)
           && isAllowedShopSubcollection(subcollection);
         allow create, update: if isValidId(shopId)
           && isValidId(docId)
           && isValidPayload()
-          && isAllowedShopSubcollection(subcollection);
+          && isAllowedShopSubcollection(subcollection)
+          && parentShopExists(shopId);
         allow delete: if isValidId(shopId)
           && isValidId(docId)
-          && isAllowedShopSubcollection(subcollection);
+          && isAllowedShopSubcollection(subcollection)
+          && parentShopExists(shopId);
       }
     }
 
-    // Default-Deny Catch-All: Block all unmatched paths completely
+    // 7. Default-Deny Catch-All: Completely block all unmatched paths & rogue collections
     match /{document=**} {
       allow read, write: if false;
     }

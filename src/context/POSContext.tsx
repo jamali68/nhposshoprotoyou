@@ -34,6 +34,15 @@ import {
 } from '../utils/suggestionMemory';
 import { handleFirestoreError, OperationType } from '../firestoreErrorHandler';
 import {
+  sanitizeTextInput,
+  validateAuthenticEmail,
+  validateAuthenticName,
+  validateAuthenticPhone,
+  validateStrongPassword,
+  generateSecurityRequestHeaders,
+  verifyStoredUserRoleIntegrity
+} from '../utils/securityShield';
+import {
   User,
   UserRole,
   ShopProfile,
@@ -333,9 +342,15 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const saved = localStorage.getItem('taj_pos_user');
     if (!saved) return null;
     try {
-      const parsed: User = JSON.parse(saved);
+      const parsed = verifyStoredUserRoleIntegrity(JSON.parse(saved) as User);
       if (parsed && parsed.role === 'super_admin' && !superAdminService.isMasterAdminEmail(parsed.email)) {
         parsed.role = 'admin';
+      }
+      if (parsed) {
+        // Strip any legacy plaintext password from cached user object
+        if ('password' in parsed) {
+          delete (parsed as any).password;
+        }
         localStorage.setItem('taj_pos_user', JSON.stringify(parsed));
       }
       return parsed;
@@ -2504,27 +2519,32 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (!pendingOtpEmail) {
       return { success: false, error: 'No pending email found.' };
     }
-    const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
-    setPendingOtpCode(newOtp);
+    setPendingOtpCode(null);
 
-    // Dispatch re-sent verification email to customer's Gmail inbox & capture server HMAC challengeToken
-    trackNetlifyFunctionCall(850);
-    fetch('/.netlify/functions/send-otp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: pendingOtpEmail, otp: newOtp })
-    })
-      .then(r => r.json())
-      .then(data => {
-        if (data?.challengeToken) {
-          setPendingOtpChallengeToken(data.challengeToken);
-        }
-      })
-      .catch(err => {
-        console.warn('Resend email dispatch note:', err);
+    try {
+      const powHeaders = await generateSecurityRequestHeaders('send-otp');
+      trackNetlifyFunctionCall(850);
+      const res = await fetch('/.netlify/functions/send-otp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...powHeaders
+        },
+        body: JSON.stringify({ email: pendingOtpEmail })
       });
-
-    return { success: true, otp: newOtp };
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success || !data?.challengeToken) {
+        return {
+          success: false,
+          error: data?.error || 'Failed to dispatch verification OTP.'
+        };
+      }
+      setPendingOtpChallengeToken(data.challengeToken);
+      return { success: true };
+    } catch (err: any) {
+      console.warn('Resend email dispatch note:', err);
+      return { success: false, error: err?.message || 'Failed to dispatch verification OTP.' };
+    }
   };
 
   const cancelOtpVerification = () => {
@@ -2874,11 +2894,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }): Promise<{ success: boolean; error?: string; alreadyRegistered?: boolean }> => {
     try {
       const cleanEmail = (data.email || '').trim().toLowerCase();
-      const cleanShopName = (data.shopName || '').trim();
-      const cleanOwnerName = (data.ownerName || '').trim() || cleanEmail.split('@')[0];
+      const cleanShopName = sanitizeTextInput(data.shopName || '', 80);
+      const cleanOwnerName = sanitizeTextInput(data.ownerName || '', 80) || cleanEmail.split('@')[0];
       const cleanPassword = (data.password || '').trim();
-      const cleanPhone = (data.phone || '').trim();
-      const cleanAddress = (data.address || '').trim();
+      const cleanPhone = sanitizeTextInput(data.phone || '', 25);
+      const cleanAddress = sanitizeTextInput(data.address || '', 140);
 
       const platformPerms = superAdminService.getModuleControlConfig().featurePermissions;
       if (!platformPerms.allowShopSignup && !MASTER_SUPER_ADMIN_EMAILS.includes(cleanEmail)) {
@@ -2888,13 +2908,28 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         };
       }
 
-      if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
-        return { success: false, error: 'برائے مہربانی درست ای میل (Email) درج کریں۔' };
+      const emailCheck = validateAuthenticEmail(cleanEmail);
+      if (!emailCheck.valid) {
+        return { success: false, error: emailCheck.errorUr || emailCheck.errorEn };
       }
-      if (!cleanShopName) {
-        return { success: false, error: 'برائے مہربانی دکان کا نام (Shop Name) درج کریں۔' };
+      const shopCheck = validateAuthenticName(cleanShopName, 'Shop Name', 'دکان کا نام');
+      if (!shopCheck.valid) {
+        return { success: false, error: shopCheck.errorUr || shopCheck.errorEn };
       }
-      if (!cleanPassword || (platformPerms.requireStrongPasswords && cleanPassword.length < 6)) {
+      const ownerCheck = validateAuthenticName(cleanOwnerName, 'Owner Name', 'دکاندار کا نام');
+      if (!ownerCheck.valid) {
+        return { success: false, error: ownerCheck.errorUr || ownerCheck.errorEn };
+      }
+      const phoneCheck = validateAuthenticPhone(cleanPhone);
+      if (!phoneCheck.valid) {
+        return { success: false, error: phoneCheck.errorUr || phoneCheck.errorEn };
+      }
+      if (platformPerms.requireStrongPasswords) {
+        const passCheck = validateStrongPassword(cleanPassword, cleanEmail, cleanOwnerName);
+        if (!passCheck.valid) {
+          return { success: false, error: passCheck.errorUr || passCheck.errorEn };
+        }
+      } else if (!cleanPassword || cleanPassword.length < 6) {
         return { success: false, error: 'پاس ورڈ کم از کم 6 ہندسوں کا ہونا ضروری ہے۔' };
       }
 
@@ -3049,7 +3084,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         owner_uid: shopId,
         google_verified: false,
         password_configured: true,
-        password: cleanPassword,
+        // Layer 8: Never persist plaintext password when PBKDF2 hash & salt are present
+        password: passwordHash && passwordSalt ? undefined : cleanPassword,
         passwordHash,
         passwordSalt,
         isLegacyPassword: false,
@@ -3066,8 +3102,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         role: assignedRole,
         isGoogleUser: false,
         shopId: shopId,
-        shopName: cleanShopName,
-        password: cleanPassword
+        shopName: cleanShopName
       };
 
       // Reset data stores to 0 for a brand new shop ONLY when it is genuinely new
@@ -3110,7 +3145,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         await authorizeDeviceForEmail(cleanEmail, 'password_auth');
       } catch {}
 
-      // Save to Firestore collections asynchronously
+      // Save to Firestore collections asynchronously (Hash-only password storage — zero plaintext)
       try {
         const nowIso = new Date().toISOString();
         const registryRecord = {
@@ -3123,9 +3158,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           email: cleanEmail,
           google_verified: false,
           password_configured: true,
-          password_hash: passwordHash || cleanPassword,
+          password_hash: passwordHash || null,
           password_salt: passwordSalt || null,
-          password: cleanPassword,
           role: assignedRole,
           account_created_at: nowIso,
           last_login: nowIso,
