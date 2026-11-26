@@ -6,15 +6,18 @@ import { generatePWAAssets } from './generate-icons.js';
 generatePWAAssets();
 
 const MANIFEST_CONTENT = {
-  name: "NH POS Shop & Cash Manager",
+  name: "NH POS Shop",
   short_name: "NH POS Shop",
   start_url: "./",
   scope: "./",
   display: "standalone",
+  launch_handler: {
+    client_mode: "focus-existing"
+  },
   background_color: "#FAF8EC",
   theme_color: "#1e5631",
   description: "NH POS Shop - Complete POS, Daily Cash Book, Easyload Ledger & Khata Management System",
-  orientation: "portrait",
+  orientation: "any",
   icons: [
     {
       src: "icon-192.png",
@@ -42,6 +45,12 @@ const MANIFEST_CONTENT = {
     }
   ]
 };
+
+const rootManifestJson = JSON.stringify(MANIFEST_CONTENT, null, 2);
+fs.writeFileSync('manifest.json', rootManifestJson, 'utf8');
+if (fs.existsSync('public')) {
+  fs.writeFileSync(path.join('public', 'manifest.json'), rootManifestJson, 'utf8');
+}
 
 const targets = ['dist', 'docs'];
 
@@ -100,7 +109,7 @@ targets.forEach((dir) => {
 
     // Extract SW_VERSION from public/sw.js
     const verMatch = swContent.match(/SW_VERSION\s*=\s*['"]([^'"]+)['"]/);
-    const appVersion = verMatch && verMatch[1] ? verMatch[1] : 'v18.1.6';
+    const appVersion = verMatch && verMatch[1] ? verMatch[1] : 'v18.1.7';
 
     swContent = swContent
       .replace(/\/\* __BUILD_ID__ \*\//g, buildId)

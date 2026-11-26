@@ -33,7 +33,8 @@ import {
   AlertTriangle,
   FileCode,
   ShieldCheck,
-  Lock
+  Lock,
+  Monitor
 } from 'lucide-react';
 import { useAppVersion, refreshAppVersion } from '../utils/version';
 import { usePOS, ActiveView } from '../context/POSContext';
@@ -43,6 +44,20 @@ import { PWAInstallGuideModal } from './PWAInstallGuideModal';
 import { SqlImportModal } from './SqlImportModal';
 import { showAppAlert } from './AppDialogHost';
 import { superAdminService } from '../superadmin/superAdminService';
+
+const PC_AUTO_OPEN_KEY = 'taj_pos_pc_auto_open';
+
+function detectIsDesktopComputer(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const ua = (navigator.userAgent || '').toLowerCase();
+  // Chromebook (CrOS) is always treated as a desktop/laptop computer
+  if (/cros/.test(ua)) return true;
+  // Exclude mobile phones and mobile tablets (Android / iPhone / iPad / iPod)
+  if (/android|iphone|ipad|ipod|iemobile|opera mini|mobile/.test(ua)) {
+    return false;
+  }
+  return true;
+}
 
 interface SidebarProps {
   isOpen: boolean;
@@ -91,6 +106,36 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
   const [relativeTimeStr, setRelativeTimeStr] = useState<string>('');
   const [moduleConfig, setModuleConfig] = useState(() => superAdminService.getModuleControlConfig());
   const [, setPermTick] = useState(0);
+
+  // PC / Laptop / Chromebook-only Auto-Open Toggle (Default: ON)
+  const [isDesktopComputer] = useState<boolean>(() => detectIsDesktopComputer());
+  const [pcAutoOpenEnabled, setPcAutoOpenEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(PC_AUTO_OPEN_KEY);
+      if (saved === null) {
+        localStorage.setItem(PC_AUTO_OPEN_KEY, 'true');
+        return true;
+      }
+      return saved !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const [pcAutoOpenNotice, setPcAutoOpenNotice] = useState<string | null>(null);
+
+  const handleTogglePcAutoOpen = () => {
+    const nextState = !pcAutoOpenEnabled;
+    setPcAutoOpenEnabled(nextState);
+    try {
+      localStorage.setItem(PC_AUTO_OPEN_KEY, nextState ? 'true' : 'false');
+    } catch {}
+    setPcAutoOpenNotice(
+      nextState
+        ? '✓ کمپیوٹر آٹو اوپن آن (ON) کر دیا گیا ہے'
+        : '✓ کمپیوٹر آٹو اوپن آف (OFF) کر دیا گیا ہے — اب پی سی آن ہونے پر ایپ خودکار اوپن نہیں ہوگی'
+    );
+    setTimeout(() => setPcAutoOpenNotice(null), 4500);
+  };
 
   useEffect(() => {
     const handleModuleUpdate = () => {
@@ -694,7 +739,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
           )}
         </nav>
 
-        {/* Footer Area: Already Installed & Logout */}
+        {/* Footer Area: PC Auto-Open Toggle (Desktop Only), Install & Logout */}
         <div className="p-3 bg-[#0d1b2a] border-t border-slate-700/60 space-y-2">
           {importNotification && (
             <div className="py-2 px-3 bg-blue-600/20 border border-blue-500/40 text-blue-200 rounded-xl text-[11px] text-center font-medium animate-in fade-in">
@@ -702,7 +747,64 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
             </div>
           )}
 
+          {/* PC / Laptop / Chromebook-Only Auto-Open ON/OFF Toggle (Default: ON, Hidden on Mobile) */}
+          {isDesktopComputer && (
+            <div className="px-3 py-2.5 bg-slate-800/75 rounded-xl border border-slate-700/80 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Monitor className={`w-4 h-4 shrink-0 ${pcAutoOpenEnabled ? 'text-emerald-400' : 'text-slate-400'}`} />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-bold text-slate-100 truncate">
+                        PC Auto-Open (آٹو اوپن)
+                      </span>
+                      <span
+                        className={`text-[9px] font-mono font-black px-1.5 py-0.2 rounded ${
+                          pcAutoOpenEnabled
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                            : 'bg-slate-700 text-slate-300 border border-slate-600'
+                        }`}
+                      >
+                        {pcAutoOpenEnabled ? 'ON' : 'OFF'}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 block truncate">
+                      {pcAutoOpenEnabled
+                        ? 'کمپیوٹر آن ہونے پر آٹو اوپن: آن'
+                        : 'کمپیوٹر آن ہونے پر آٹو اوپن: آف'}
+                    </span>
+                  </div>
+                </div>
 
+                {/* ON / OFF Toggle Switch */}
+                <button
+                  type="button"
+                  onClick={handleTogglePcAutoOpen}
+                  title={
+                    pcAutoOpenEnabled
+                      ? 'PC Auto-Open ON hai — Band (OFF) karne ke liye click karein'
+                      : 'PC Auto-Open OFF hai — Chalu (ON) karne ke liye click karein'
+                  }
+                  className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    pcAutoOpenEnabled ? 'bg-emerald-600' : 'bg-slate-700'
+                  }`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                      pcAutoOpenEnabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {pcAutoOpenNotice && (
+                <div className="py-1 px-2 bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 rounded-lg text-[10px] text-center font-bold animate-in fade-in">
+                  {pcAutoOpenNotice}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* PWA Install Button when not running standalone */}
           {!isAppInstalled && (

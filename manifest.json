@@ -1,13 +1,16 @@
 {
-  "name": "NH POS Shop & Cash Manager",
+  "name": "NH POS Shop",
   "short_name": "NH POS Shop",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  },
   "background_color": "#1b263b",
   "theme_color": "#2c3e50",
   "description": "NH POS Shop - Complete POS, Daily Cash Book, Easyload Ledger & Khata Management System",
-  "orientation": "portrait",
+  "orientation": "any",
   "icons": [
     {
       "src": "icon-192.png",
