@@ -18,10 +18,12 @@ import { usePOS } from '../context/POSContext';
 import { BottleItem } from '../types/pos';
 import { showAppAlert } from '../components/AppDialogHost';
 import { AmountInput } from '../components/AmountInput';
+import { superAdminService } from '../superadmin/superAdminService';
 
 export const BottleStockView: React.FC = () => {
   const {
     currentUser,
+    currentShop,
     bottleItems,
     stockTransactions,
     updateItemStock,
@@ -56,6 +58,14 @@ export const BottleStockView: React.FC = () => {
   const handleStockUpdate = (e: React.FormEvent) => {
     e.preventDefault();
     if (!managingItem) return;
+    const canManageStock = superAdminService.isActionUnlockedForUser('allowManageStock', {
+      ...currentUser,
+      shopId: currentShop?.id || currentUser?.shopId
+    });
+    if (!canManageStock) {
+      showAppAlert('🔒 اسٹاک جمع یا کم کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
+      return;
+    }
     const num = parseInt(qty, 10);
     if (isNaN(num) || num <= 0) {
       showAppAlert('Please enter a valid quantity!');

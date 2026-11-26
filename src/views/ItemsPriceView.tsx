@@ -18,6 +18,7 @@ import { usePOS } from '../context/POSContext';
 import { BottleItem } from '../types/pos';
 import { showAppAlert, showAppConfirm } from '../components/AppDialogHost';
 import { AmountInput } from '../components/AmountInput';
+import { superAdminService } from '../superadmin/superAdminService';
 
 export const ItemsPriceView: React.FC = () => {
   const {
@@ -26,8 +27,11 @@ export const ItemsPriceView: React.FC = () => {
     updateBottleItem,
     deleteBottleItem,
     currentUser,
+    currentShop,
     setActiveView
   } = usePOS();
+
+  const userWithShop = { ...currentUser, shopId: currentShop?.id || currentUser?.shopId };
 
   const [search, setSearch] = useState<string>('');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -47,6 +51,10 @@ export const ItemsPriceView: React.FC = () => {
   });
 
   const handleStartEdit = (item: BottleItem) => {
+    if (!superAdminService.isActionUnlockedForUser('allowManagePrices', userWithShop)) {
+      showAppAlert('🔒 ریٹ لسٹ میں تبدیلی کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
+      return;
+    }
     setEditingId(item.id);
     setEditValues({
       item_name: item.item_name,
@@ -59,6 +67,10 @@ export const ItemsPriceView: React.FC = () => {
 
   const handleSaveEdit = (item: BottleItem) => {
     if (!editingId) return;
+    if (!superAdminService.isActionUnlockedForUser('allowManagePrices', userWithShop)) {
+      showAppAlert('🔒 ریٹ لسٹ میں تبدیلی کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
+      return;
+    }
 
     const updatedItem: BottleItem = {
       ...item,
@@ -79,6 +91,13 @@ export const ItemsPriceView: React.FC = () => {
   };
 
   const handleDelete = async (id: string, name: string) => {
+    if (
+      !superAdminService.isActionUnlockedForUser('allowDeleteEntry', userWithShop) ||
+      !superAdminService.isActionUnlockedForUser('allowManagePrices', userWithShop)
+    ) {
+      showAppAlert('🔒 آئٹم ڈیلیٹ کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
+      return;
+    }
     const confirmed = await showAppConfirm({
       title: 'Delete Item',
       message: `Are you sure you want to delete "${name}"?`,
@@ -92,6 +111,10 @@ export const ItemsPriceView: React.FC = () => {
 
   const handleAddNew = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!superAdminService.isActionUnlockedForUser('allowManagePrices', userWithShop)) {
+      showAppAlert('🔒 ریٹ لسٹ میں نیا آئٹم شامل کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
+      return;
+    }
     if (!newName.trim()) return;
 
     const ret = parseFloat(newRetail) || 0;

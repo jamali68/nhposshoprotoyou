@@ -24,9 +24,12 @@ import { CustomerBill } from '../types/pos';
 import { PrintReceiptModal } from '../components/PrintReceiptModal';
 import { showAppAlert, showAppConfirm } from '../components/AppDialogHost';
 import { AmountInput } from '../components/AmountInput';
+import { superAdminService } from '../superadmin/superAdminService';
 
 export const CustomerBillsView: React.FC = () => {
   const {
+    currentUser,
+    currentShop,
     customers,
     addCustomer,
     receiveCustomerPayment,
@@ -37,6 +40,8 @@ export const CustomerBillsView: React.FC = () => {
     dailyTransactions,
     setActiveView
   } = usePOS();
+
+  const userWithShop = { ...currentUser, shopId: currentShop?.id || currentUser?.shopId };
 
   const [search, setSearch] = useState<string>('');
   const [showAddForm, setShowAddForm] = useState<boolean>(false);
@@ -68,6 +73,10 @@ export const CustomerBillsView: React.FC = () => {
   };
 
   const openEditCustomerModal = (c: CustomerBill) => {
+    if (!superAdminService.isActionUnlockedForUser('allowManageBills', userWithShop)) {
+      showAppAlert('🔒 کسٹمر کھاتہ ایڈٹ کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
+      return;
+    }
     setEditItem(c);
     setEditBillStr(c.total_bill === 0 ? '' : c.total_bill.toString());
     setEditRemainingStr(c.remaining_balance === 0 ? '' : c.remaining_balance.toString());
@@ -130,6 +139,10 @@ export const CustomerBillsView: React.FC = () => {
   };
 
   const handleReceive = async (bill: CustomerBill) => {
+    if (!superAdminService.isActionUnlockedForUser('allowManageBills', userWithShop)) {
+      showAppAlert('🔒 کسٹمر وصولی ریکارڈ کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
+      return;
+    }
     const inputVal = receiveInputs[bill.id] !== undefined ? parseFloat(receiveInputs[bill.id]) : bill.remaining_balance;
     if (isNaN(inputVal) || inputVal <= 0) {
       showAppAlert('Please enter a valid payment amount!');
@@ -164,6 +177,10 @@ export const CustomerBillsView: React.FC = () => {
   };
 
   const handleDelete = async (id: string) => {
+    if (!superAdminService.isActionUnlockedForUser('allowDeleteEntry', userWithShop)) {
+      showAppAlert('🔒 کسٹمر کھاتہ ڈیلیٹ کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
+      return;
+    }
     const confirmed = await showAppConfirm({
       title: 'Delete Customer Record',
       message: 'Are you sure you want to delete this customer record?',

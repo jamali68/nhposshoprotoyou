@@ -348,7 +348,7 @@ export const SuperAdminView: React.FC = () => {
   };
 
   // Toggle Module Lock / Unlock Globally or Per-Shop
-  const handleToggleModule = async (moduleId: ControllableModuleId) => {
+  const handleToggleModule = async (moduleId: ControllableModuleId, forceGlobal = false) => {
     const updated: PlatformModuleControlConfig = {
       ...moduleConfig,
       globalModules: { ...moduleConfig.globalModules },
@@ -356,8 +356,22 @@ export const SuperAdminView: React.FC = () => {
       updatedBy: currentUser?.email || MASTER_EMAIL
     };
 
-    if (selectedShopForModules === 'GLOBAL') {
-      updated.globalModules[moduleId] = !(updated.globalModules[moduleId] !== false);
+    const isGlobalTarget = forceGlobal || selectedShopForModules === 'GLOBAL';
+    if (isGlobalTarget) {
+      const nextGlobalState = !(updated.globalModules[moduleId] !== false);
+      updated.globalModules[moduleId] = nextGlobalState;
+      // Clear stale per-shop overrides for this module so Global Lock/Unlock applies to ALL stores immediately
+      Object.keys(updated.shopOverrides).forEach(sId => {
+        if (updated.shopOverrides[sId] && moduleId in updated.shopOverrides[sId]) {
+          const nextShopMap = { ...updated.shopOverrides[sId] };
+          delete nextShopMap[moduleId];
+          if (Object.keys(nextShopMap).length === 0) {
+            delete updated.shopOverrides[sId];
+          } else {
+            updated.shopOverrides[sId] = nextShopMap;
+          }
+        }
+      });
     } else {
       const shopOverrides = { ...(updated.shopOverrides[selectedShopForModules] || {}) };
       const currentEffective =
@@ -495,14 +509,14 @@ export const SuperAdminView: React.FC = () => {
   };
 
   // Unlock All / Lock All Modules
-  const handleEnableAllModules = async () => {
+  const handleEnableAllModules = async (forceGlobal = false) => {
     const updated: PlatformModuleControlConfig = {
       ...moduleConfig,
       globalModules: { ...moduleConfig.globalModules },
       shopOverrides: { ...moduleConfig.shopOverrides },
       updatedBy: currentUser?.email || MASTER_EMAIL
     };
-    if (selectedShopForModules === 'GLOBAL') {
+    if (forceGlobal || selectedShopForModules === 'GLOBAL') {
       ALL_CONTROLLABLE_MODULES.forEach(m => {
         updated.globalModules[m.id] = true;
       });
@@ -606,21 +620,21 @@ export const SuperAdminView: React.FC = () => {
   };
 
   return (
-    <div className="space-y-4 pb-12 animate-in fade-in duration-150">
+    <div className="w-full max-w-full overflow-x-hidden space-y-4 pb-16 animate-in fade-in duration-150">
       {/* Top Super Admin Header */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 text-white shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <button
             type="button"
             onClick={() => setActiveView('dashboard')}
-            className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl transition-colors cursor-pointer"
+            className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl transition-colors cursor-pointer shrink-0"
             title="Return to Shop POS"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
               <h1 className="text-lg sm:text-xl font-black tracking-tight text-white flex items-center gap-1.5">
                 <span>Super Admin Command Center</span>
               </h1>
@@ -628,7 +642,7 @@ export const SuperAdminView: React.FC = () => {
                 Lock / Unlock Master Control
               </span>
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <p className="text-xs text-slate-400 mt-0.5 break-all">
               Authorized Master: <span className="font-mono text-indigo-300 font-semibold">{currentUser?.email || MASTER_EMAIL}</span>
             </p>
           </div>
@@ -797,7 +811,7 @@ export const SuperAdminView: React.FC = () => {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={handleEnableAllModules}
+                  onClick={() => handleEnableAllModules(true)}
                   className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-[11px] font-black flex items-center gap-1 cursor-pointer"
                 >
                   <Unlock className="w-3.5 h-3.5" />
@@ -814,13 +828,13 @@ export const SuperAdminView: React.FC = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
               {ALL_CONTROLLABLE_MODULES.map(mod => {
                 const isUnlocked = moduleConfig.globalModules[mod.id] !== false;
                 return (
                   <div
                     key={mod.id}
-                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 transition-all ${
+                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 transition-all min-w-0 ${
                       isUnlocked
                         ? 'bg-slate-50/70 border-slate-200/90'
                         : 'bg-rose-50/50 border-rose-200'
@@ -842,7 +856,7 @@ export const SuperAdminView: React.FC = () => {
 
                     <button
                       type="button"
-                      onClick={() => handleToggleModule(mod.id)}
+                      onClick={() => handleToggleModule(mod.id, true)}
                       className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black flex items-center gap-1 shrink-0 transition-all cursor-pointer border ${
                         isUnlocked
                           ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 shadow-xs'
@@ -1130,15 +1144,15 @@ export const SuperAdminView: React.FC = () => {
                 </div>
 
                 {/* Shop Selector Dropdown */}
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                  <div className="bg-white/10 border border-white/20 rounded-xl px-3 py-1.5">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto min-w-0">
+                  <div className="bg-white/10 border border-white/20 rounded-xl px-3 py-1.5 w-full sm:w-64 max-w-full min-w-0">
                     <label className="block text-[9px] uppercase font-bold text-indigo-200">
                       Select Target Shop (دکان منتخب کریں)
                     </label>
                     <select
                       value={selectedUsageShopId}
                       onChange={e => setSelectedUsageShopId(e.target.value)}
-                      className="bg-transparent text-white font-bold text-xs focus:outline-none cursor-pointer pr-4 mt-0.5"
+                      className="w-full max-w-full min-w-0 truncate bg-transparent text-white font-bold text-xs focus:outline-none cursor-pointer pr-4 mt-0.5"
                     >
                       <option value="ALL_SHOPS" className="text-slate-900 font-bold">
                         🌍 All Shops Combined ({shops.length} Stores Total)
@@ -1723,22 +1737,22 @@ export const SuperAdminView: React.FC = () => {
           )}
 
           {/* Target Selector: Global vs Specific Store */}
-          <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div>
+          <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-3 overflow-hidden">
+            <div className="min-w-0 flex-1">
               <h2 className="text-sm font-black text-slate-900 flex items-center gap-2">
-                <Lock className="w-4 h-4 text-indigo-600" />
-                <span>Permissions &amp; Modules Master Control (Lock / Unlock)</span>
+                <Lock className="w-4 h-4 text-indigo-600 shrink-0" />
+                <span className="leading-snug">Permissions &amp; Modules Master Control (Lock / Unlock)</span>
               </h2>
-              <p className="text-[11px] text-slate-500 mt-0.5">
+              <p className="text-[11px] text-slate-500 mt-1 leading-relaxed" dir="rtl">
                 ہر آپشن کو لاک (🔒 Locked) یا ان لاک (🔓 Unlocked) کریں۔ لاک ہونے والا آپشن غائب نہیں ہوگا بلکہ مینو میں لاک آئیکن کے ساتھ نظر آئے گا۔
               </p>
             </div>
 
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="w-full lg:w-auto flex flex-col sm:flex-row sm:items-center gap-2 min-w-0">
               <select
                 value={selectedShopForModules}
                 onChange={e => setSelectedShopForModules(e.target.value)}
-                className="px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-600"
+                className="w-full sm:w-64 max-w-full min-w-0 truncate px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:border-indigo-600"
               >
                 <option value="GLOBAL">🌐 All Stores (Global Platform Lock/Unlock)</option>
                 {shops.map(s => (
@@ -1748,23 +1762,25 @@ export const SuperAdminView: React.FC = () => {
                 ))}
               </select>
 
-              <button
-                type="button"
-                onClick={handleEnableAllModules}
-                className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-black transition-colors cursor-pointer flex items-center gap-1"
-              >
-                <Unlock className="w-3.5 h-3.5" />
-                <span>Unlock All</span>
-              </button>
+              <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleEnableAllModules(false)}
+                  className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-black transition-colors cursor-pointer flex items-center justify-center gap-1"
+                >
+                  <Unlock className="w-3.5 h-3.5 shrink-0" />
+                  <span>Unlock All</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={handleLockAllModules}
-                className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-black transition-colors cursor-pointer flex items-center gap-1"
-              >
-                <Lock className="w-3.5 h-3.5" />
-                <span>Lock All</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={handleLockAllModules}
+                  className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-black transition-colors cursor-pointer flex items-center justify-center gap-1"
+                >
+                  <Lock className="w-3.5 h-3.5 shrink-0" />
+                  <span>Lock All</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1786,23 +1802,23 @@ export const SuperAdminView: React.FC = () => {
               return (
                 <div
                   key={mod.id}
-                  className={`p-4 rounded-2xl border transition-all flex flex-col justify-between gap-3 ${
+                  className={`p-4 rounded-2xl border transition-all flex flex-col justify-between gap-3 min-w-0 ${
                     isUnlocked
                       ? 'bg-white border-slate-200/90 shadow-xs'
                       : 'bg-rose-50/40 border-rose-200/80'
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
+                  <div className="flex items-start justify-between gap-2 min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
                         {isUnlocked ? (
                           <Unlock className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                         ) : (
                           <Lock className="w-3.5 h-3.5 text-rose-600 shrink-0" />
                         )}
-                        <h3 className="font-black text-xs text-slate-900">{mod.label}</h3>
+                        <h3 className="font-black text-xs text-slate-900 truncate">{mod.label}</h3>
                       </div>
-                      <span className="text-[11px] font-bold text-indigo-600 block mt-0.5">
+                      <span className="text-[11px] font-bold text-indigo-600 block mt-0.5 truncate">
                         {mod.urduLabel}
                       </span>
                       <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
@@ -1812,7 +1828,7 @@ export const SuperAdminView: React.FC = () => {
 
                     <button
                       type="button"
-                      onClick={() => handleToggleModule(mod.id)}
+                      onClick={() => handleToggleModule(mod.id, false)}
                       className={`px-3 py-1.5 rounded-xl text-[11px] font-black flex items-center gap-1.5 shrink-0 cursor-pointer transition-all border ${
                         isUnlocked
                           ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 shadow-xs'
@@ -1834,7 +1850,7 @@ export const SuperAdminView: React.FC = () => {
                     </button>
                   </div>
 
-                  <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[10px]">
+                  <div className="flex items-center justify-between flex-wrap gap-1.5 pt-2 border-t border-slate-100 text-[10px]">
                     <span className="font-mono text-slate-400">ID: {mod.id}</span>
                     <span
                       className={`px-2 py-0.5 rounded font-bold uppercase flex items-center gap-1 ${
@@ -1852,30 +1868,32 @@ export const SuperAdminView: React.FC = () => {
           </div>
 
           {/* Store Admin / Manager / Staff Role Permissions Lock/Unlock Control inside Super Admin */}
-          <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="font-black text-sm text-slate-900 flex items-center gap-2">
-                  <Lock className="w-4 h-4 text-purple-600" />
-                  <span>
+          <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200/80 shadow-xs space-y-4 overflow-hidden">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div className="min-w-0 flex-1">
+                <h3 className="font-black text-sm text-slate-900 flex items-center gap-2 flex-wrap">
+                  <Lock className="w-4 h-4 text-purple-600 shrink-0" />
+                  <span className="leading-snug">
                     Store Users &amp; Manager Role Permissions (Lock / Unlock) —{' '}
-                    {selectedShopForModules === 'GLOBAL'
-                      ? currentShop?.shop_name || 'Current Store'
-                      : shops.find(s => s.id === selectedShopForModules)?.shop_name || selectedShopForModules}
+                    <span className="text-purple-700">
+                      {selectedShopForModules === 'GLOBAL'
+                        ? currentShop?.shop_name || shops[0]?.shop_name || 'Current Store'
+                        : shops.find(s => s.id === selectedShopForModules)?.shop_name || selectedShopForModules}
+                    </span>
                   </span>
                 </h3>
-                <p className="text-[11px] text-slate-500 mt-0.5">
+                <p className="text-[11px] text-slate-500 mt-1 leading-relaxed" dir="rtl">
                   سپر ایڈمن بھی یہاں سے کسی بھی دکان کے مینیجر (Manager)، کیشیئر (Cashier) یا سیلزمین (Salesman) کے تمام آپشنز کو لاک (🔒) یا ان لاک (🔓) کر سکتا ہے۔
                 </p>
               </div>
 
-              <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+              <div className="grid grid-cols-3 sm:flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl w-full lg:w-auto shrink-0">
                 {(['manager', 'cashier', 'salesman'] as const).map(role => (
                   <button
                     key={role}
                     type="button"
                     onClick={() => setSelectedStaffRoleTarget(role)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase transition-all cursor-pointer ${
+                    className={`px-2.5 sm:px-3 py-1.5 rounded-lg text-[11px] sm:text-xs font-black uppercase transition-all cursor-pointer text-center ${
                       selectedStaffRoleTarget === role
                         ? 'bg-purple-600 text-white shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
@@ -1894,22 +1912,22 @@ export const SuperAdminView: React.FC = () => {
                 return (
                   <div
                     key={mod.id}
-                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 min-w-0 ${
                       isUnlocked
                         ? 'bg-slate-50/70 border-slate-200'
                         : 'bg-rose-50/50 border-rose-200'
                     }`}
                   >
-                    <div>
-                      <span className="font-bold text-slate-900 block">{mod.label}</span>
-                      <span className="text-[10px] font-bold text-purple-600 block">
+                    <div className="min-w-0 flex-1">
+                      <span className="font-bold text-slate-900 block truncate">{mod.label}</span>
+                      <span className="text-[10px] font-bold text-purple-600 block truncate">
                         {mod.urduLabel}
                       </span>
                     </div>
                     <button
                       type="button"
                       onClick={() => handleToggleShopStaffRoleModule(mod.id)}
-                      className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black flex items-center gap-1 cursor-pointer border ${
+                      className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black flex items-center gap-1 shrink-0 cursor-pointer border ${
                         isUnlocked
                           ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
                           : 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700'
@@ -1943,22 +1961,22 @@ export const SuperAdminView: React.FC = () => {
                   return (
                     <div
                       key={act.id}
-                      className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-2 min-w-0 ${
                         isUnlocked
                           ? 'bg-slate-50/70 border-slate-200'
                           : 'bg-rose-50/50 border-rose-200'
                       }`}
                     >
-                      <div>
-                        <span className="font-bold text-slate-900 block">{act.label}</span>
-                        <span className="text-[10px] font-bold text-indigo-600 block">
+                      <div className="min-w-0 flex-1">
+                        <span className="font-bold text-slate-900 block truncate">{act.label}</span>
+                        <span className="text-[10px] font-bold text-indigo-600 block truncate">
                           {act.urduLabel}
                         </span>
                       </div>
                       <button
                         type="button"
                         onClick={() => handleToggleShopStaffRoleAction(act.id)}
-                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black flex items-center gap-1 cursor-pointer border ${
+                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black flex items-center gap-1 shrink-0 cursor-pointer border ${
                           isUnlocked
                             ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
                             : 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700'
@@ -2173,14 +2191,14 @@ export const SuperAdminView: React.FC = () => {
                 return (
                   <div
                     key={item.key}
-                    className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 ${
+                    className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 min-w-0 ${
                       enabled
                         ? 'border-slate-200 bg-slate-50/70'
                         : 'border-rose-200 bg-rose-50/40'
                     }`}
                   >
-                    <div>
-                      <span className="font-bold text-slate-900 block">{item.title}</span>
+                    <div className="min-w-0 flex-1">
+                      <span className="font-bold text-slate-900 block leading-snug">{item.title}</span>
                       <span className="text-[10px] text-slate-500 leading-tight block mt-0.5">
                         {item.desc}
                       </span>

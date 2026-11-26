@@ -41,6 +41,7 @@ import { formatTime12h, formatRelativeTime } from '../utils/syncTime';
 import { TajLogo } from './TajLogo';
 import { PWAInstallGuideModal } from './PWAInstallGuideModal';
 import { SqlImportModal } from './SqlImportModal';
+import { showAppAlert } from './AppDialogHost';
 import { superAdminService } from '../superadmin/superAdminService';
 
 interface SidebarProps {
@@ -478,19 +479,40 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
               {isBackupOpen && (
                 <div className="mt-1 ml-3 pl-3 border-l-2 border-cyan-500/40 space-y-1 py-1">
                   {/* Download Backup Sub-menu Item */}
-                  {(userRole === 'super_admin' || moduleConfig.featurePermissions.allowDataExport) && (
-                    <button
-                      type="button"
-                      onClick={exportDataJSON}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800/70 transition-colors text-left group"
-                    >
-                      <Download className="w-3.5 h-3.5 text-emerald-400 shrink-0 group-hover:scale-110 transition-transform" />
-                      <div>
-                        <span className="block font-semibold text-slate-200">Data Backup</span>
-                        <span className="block text-[10px] text-slate-400">Download JSON backup</span>
-                      </div>
-                    </button>
-                  )}
+                  {(() => {
+                    const canExport = userRole === 'super_admin' || moduleConfig.featurePermissions.allowDataExport !== false;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!canExport) {
+                            showAppAlert('🔒 JSON Data Backup / Export سپر ایڈمن کی جانب سے لاک (Locked) ہے۔');
+                            return;
+                          }
+                          exportDataJSON();
+                        }}
+                        className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors text-left group cursor-pointer ${
+                          canExport
+                            ? 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+                            : 'text-slate-500 hover:bg-slate-800/40'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <Download className={`w-3.5 h-3.5 shrink-0 ${canExport ? 'text-emerald-400 group-hover:scale-110 transition-transform' : 'text-rose-400'}`} />
+                          <div className="min-w-0">
+                            <span className={`block font-semibold truncate ${canExport ? 'text-slate-200' : 'text-slate-400'}`}>Data Backup</span>
+                            <span className="block text-[10px] text-slate-400 truncate">Download JSON backup</span>
+                          </div>
+                        </div>
+                        {!canExport && (
+                          <span className="text-[9px] px-1.5 py-0.5 bg-rose-500/20 text-rose-300 rounded-full border border-rose-500/40 font-bold shrink-0 flex items-center gap-0.5">
+                            <Lock className="w-2.5 h-2.5" />
+                            <span>Locked</span>
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })()}
 
                   {/* Restore Backup Sub-menu Item */}
                   <label className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800/70 transition-colors cursor-pointer text-left group">
@@ -503,27 +525,46 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                   </label>
 
                   {/* Smart SQL Import (.sql) Sub-menu Item */}
-                  {(userRole === 'super_admin' || moduleConfig.featurePermissions.allowSqlImport) && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowSqlImportModal(true);
-                        onClose();
-                      }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800/70 transition-colors text-left group cursor-pointer"
-                    >
-                      <FileCode className="w-3.5 h-3.5 text-cyan-400 shrink-0 group-hover:scale-110 transition-transform" />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-semibold text-slate-200">Smart SQL Import</span>
-                          <span className="text-[9px] px-1.5 py-0.2 bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 rounded font-bold uppercase">
-                            .sql
-                          </span>
+                  {(() => {
+                    const canSqlImport = userRole === 'super_admin' || moduleConfig.featurePermissions.allowSqlImport !== false;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!canSqlImport) {
+                            showAppAlert('🔒 Smart SQL Dump Import سپر ایڈمن کی جانب سے لاک (Locked) ہے۔');
+                            return;
+                          }
+                          setShowSqlImportModal(true);
+                          onClose();
+                        }}
+                        className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors text-left group cursor-pointer ${
+                          canSqlImport
+                            ? 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+                            : 'text-slate-500 hover:bg-slate-800/40'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                          <FileCode className={`w-3.5 h-3.5 shrink-0 ${canSqlImport ? 'text-cyan-400 group-hover:scale-110 transition-transform' : 'text-rose-400'}`} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className={`font-semibold truncate ${canSqlImport ? 'text-slate-200' : 'text-slate-400'}`}>Smart SQL Import</span>
+                              <span className="text-[9px] px-1.5 py-0.2 bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 rounded font-bold uppercase shrink-0">
+                                .sql
+                              </span>
+                            </div>
+                            <span className="block text-[10px] text-slate-400 truncate">Convert & import .sql dump</span>
+                          </div>
                         </div>
-                        <span className="block text-[10px] text-slate-400 truncate">Convert & import .sql dump</span>
-                      </div>
-                    </button>
-                  )}
+                        {!canSqlImport && (
+                          <span className="text-[9px] px-1.5 py-0.5 bg-rose-500/20 text-rose-300 rounded-full border border-rose-500/40 font-bold shrink-0 flex items-center gap-0.5">
+                            <Lock className="w-2.5 h-2.5" />
+                            <span>Locked</span>
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })()}
                 </div>
               )}
             </div>

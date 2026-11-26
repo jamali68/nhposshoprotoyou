@@ -22,9 +22,12 @@ import { WholesalerBill } from '../types/pos';
 import { PrintReceiptModal } from '../components/PrintReceiptModal';
 import { showAppAlert, showAppConfirm } from '../components/AppDialogHost';
 import { AmountInput } from '../components/AmountInput';
+import { superAdminService } from '../superadmin/superAdminService';
 
 export const WholesalerBillsView: React.FC = () => {
   const {
+    currentUser,
+    currentShop,
     wholesalers,
     addWholesaler,
     payWholesaler,
@@ -35,6 +38,8 @@ export const WholesalerBillsView: React.FC = () => {
     dailyTransactions,
     setActiveView
   } = usePOS();
+
+  const userWithShop = { ...currentUser, shopId: currentShop?.id || currentUser?.shopId };
 
   const [search, setSearch] = useState<string>('');
   const [showAddForm, setShowAddForm] = useState<boolean>(false);
@@ -66,6 +71,10 @@ export const WholesalerBillsView: React.FC = () => {
   };
 
   const openEditWholesalerModal = (w: WholesalerBill) => {
+    if (!superAdminService.isActionUnlockedForUser('allowManageBills', userWithShop)) {
+      showAppAlert('🔒 ہول سیلر کھاتہ ایڈٹ کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
+      return;
+    }
     setEditItem(w);
     setEditBillStr(w.total_bill === 0 ? '' : w.total_bill.toString());
     setEditRemainingStr(w.remaining_balance === 0 ? '' : w.remaining_balance.toString());
@@ -125,6 +134,10 @@ export const WholesalerBillsView: React.FC = () => {
   };
 
   const handlePay = async (bill: WholesalerBill) => {
+    if (!superAdminService.isActionUnlockedForUser('allowManageBills', userWithShop)) {
+      showAppAlert('🔒 ہول سیلر ادائیگی ریکارڈ کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
+      return;
+    }
     const inputVal = payInputs[bill.id] !== undefined ? parseFloat(payInputs[bill.id]) : bill.remaining_balance;
     if (isNaN(inputVal) || inputVal <= 0) {
       showAppAlert('Sahi payment amount likhein!');
@@ -159,6 +172,10 @@ export const WholesalerBillsView: React.FC = () => {
   };
 
   const handleDelete = async (id: string) => {
+    if (!superAdminService.isActionUnlockedForUser('allowDeleteEntry', userWithShop)) {
+      showAppAlert('🔒 ہول سیلر کھاتہ ڈیلیٹ کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
+      return;
+    }
     const confirmed = await showAppConfirm({
       title: 'Delete Wholesaler Record',
       message: 'Are you sure you want to delete this wholesaler record?',

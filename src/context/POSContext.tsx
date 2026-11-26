@@ -94,7 +94,9 @@ import {
   revokeDevice
 } from '../utils/deviceSecurity';
 import { authApi } from '../services/authApi';
+import { showAppAlert } from '../components/AppDialogHost';
 import { superAdminService, MASTER_SUPER_ADMIN_EMAILS } from '../superadmin/superAdminService';
+import { StaffPermissionActionId } from '../superadmin/types';
 
 export type ActiveView =
   | 'dashboard'
@@ -4202,18 +4204,23 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     const platformPerms = superAdminService.getModuleControlConfig().featurePermissions;
-    if (!platformPerms.allowStaffCreation && currentUser?.role !== 'super_admin') {
+    const isMasterSuperAdmin = Boolean(
+      currentUser?.role === 'super_admin' &&
+      superAdminService.isMasterAdminEmail(currentUser?.email)
+    );
+    if (platformPerms.allowStaffCreation === false && !isMasterSuperAdmin) {
       return {
         success: false,
-        error: 'نیا اسٹاف اکاؤنٹ بنانے کی سہولت عارضی طور پر سپر ایڈمن کی جانب سے بند ہے۔'
+        error: 'نیا اسٹاف اکاؤنٹ بنانے کی سہولت عارضی طور پر سپر ایڈمن کی جانب سے لاک (Locked) ہے۔'
       };
     }
 
-    // 1. Password check: Minimum 6 characters
-    if (!accountData.password || accountData.password.trim().length < 6) {
+    // 1. Password check: Honors Super Admin Strong Password policy (6+ chars when ON, 4+ chars when OFF)
+    const minPassLen = platformPerms.requireStrongPasswords !== false ? 6 : 4;
+    if (!accountData.password || accountData.password.trim().length < minPassLen) {
       return {
         success: false,
-        error: 'پاس ورڈ کم از کم 6 ہندسوں یا حروف کا ہونا لازمی ہے (Password must be at least 6 characters)'
+        error: `پاس ورڈ کم از کم ${minPassLen} ہندسوں یا حروف کا ہونا لازمی ہے (Password must be at least ${minPassLen} characters)`
       };
     }
 
@@ -5224,10 +5231,30 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       .reduce((acc, c) => acc + (c.remaining_balance || 0), 0);
   };
 
-  // --- CRUD ACTIONS (Protected by Super Admin Configurable Data Update Delay & Loading Wheel) ---
+  // --- CRUD ACTIONS (Protected by Super Admin & Store Admin Lock/Unlock Permissions + Configurable Delay) ---
+  const ensureStaffActionUnlocked = (
+    actionId: StaffPermissionActionId,
+    lockedMsg: string
+  ): boolean => {
+    const allowed = superAdminService.isActionUnlockedForUser(actionId, {
+      ...currentUser,
+      shopId: currentShopId || currentUser?.shopId
+    });
+    if (!allowed) {
+      showAppAlert(lockedMsg);
+      return false;
+    }
+    return true;
+  };
 
   // Daily Cash (Shop Galla)
   const addDailyTransaction = (tx: Omit<DailyTransaction, 'id' | 'created_by'>) => {
+    if (
+      !isExecutingScheduledMutationRef.current &&
+      !ensureStaffActionUnlocked('allowAddEntry', '🔒 نئی انٹری شامل کرنے کی اجازت لاک (Locked) ہے۔')
+    ) {
+      return;
+    }
     rememberTextSuggestion(tx.description, 'note');
     const newTx: DailyTransaction = {
       ...tx,
@@ -5248,6 +5275,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateDailyTransaction = (id: string, newAmount: number, newDesc: string, newType?: string, newDate?: string) => {
+    if (
+      !isExecutingScheduledMutationRef.current &&
+      !ensureStaffActionUnlocked('allowEditEntry', '🔒 انٹری ایڈٹ / تبدیل کرنے کی اجازت لاک (Locked) ہے۔')
+    ) {
+      return;
+    }
     rememberTextSuggestion(newDesc, 'note');
     const cleanNewDate = newDate && /^\d{4}-\d{2}-\d{2}$/.test(newDate) ? newDate : undefined;
     scheduleDataMutation(
@@ -5310,12 +5343,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteDailyTransaction = (id: string) => {
-    if (
-      !superAdminService.isActionUnlockedForUser('allowDeleteEntry', {
-        ...currentUser,
-        shopId: currentShopId || currentUser?.shopId
-      })
-    ) {
+    if (!ensureStaffActionUnlocked('allowDeleteEntry', '🔒 انٹری ڈیلیٹ کرنے کی اجازت لاک (Locked) ہے۔')) {
       return;
     }
     const tx = dailyTransactions.find(t => t.id === id);
@@ -5383,6 +5411,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Back Cash
   const addBackCash = (tx: Omit<BackCashTransaction, 'id' | 'created_by'>) => {
+    if (
+      !isExecutingScheduledMutationRef.current &&
+      !ensureStaffActionUnlocked('allowAddEntry', '🔒 نئی انٹری شامل کرنے کی اجازت لاک (Locked) ہے۔')
+    ) {
+      return;
+    }
     rememberTextSuggestion(tx.note, 'note');
     const role = currentUser?.role || 'user';
     const name = currentUser?.name || currentUser?.username || (role.charAt(0).toUpperCase() + role.slice(1));
@@ -5409,6 +5443,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateBackCash = (id: string, newAmount: number, newNote: string, newType?: BackCashTransaction['type'], newDate?: string) => {
+    if (
+      !isExecutingScheduledMutationRef.current &&
+      !ensureStaffActionUnlocked('allowEditEntry', '🔒 انٹری ایڈٹ / تبدیل کرنے کی اجازت لاک (Locked) ہے۔')
+    ) {
+      return;
+    }
     rememberTextSuggestion(newNote, 'note');
     const cleanNewDate = newDate && /^\d{4}-\d{2}-\d{2}$/.test(newDate) ? newDate : undefined;
     const editorRole = currentUser?.role || 'user';
@@ -5480,12 +5520,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteBackCash = (id: string) => {
-    if (
-      !superAdminService.isActionUnlockedForUser('allowDeleteEntry', {
-        ...currentUser,
-        shopId: currentShopId || currentUser?.shopId
-      })
-    ) {
+    if (!ensureStaffActionUnlocked('allowDeleteEntry', '🔒 انٹری ڈیلیٹ کرنے کی اجازت لاک (Locked) ہے۔')) {
       return;
     }
     const tx = backCashTransactions.find(t => t.id === id);
@@ -5619,6 +5654,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Wholesalers Khata
   const addWholesaler = (bill: Omit<WholesalerBill, 'id' | 'remaining_balance' | 'created_date' | 'status'>) => {
+    if (!ensureStaffActionUnlocked('allowManageBills', '🔒 نیا بل یا کھاتہ بنانے کی اجازت لاک (Locked) ہے۔')) {
+      return;
+    }
     rememberTextSuggestion(bill.customer_name, 'wholesaler');
     rememberTextSuggestion(bill.customer_name, 'note');
     const isZero = (bill.total_bill || 0) <= 0;
@@ -5642,6 +5680,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const payWholesaler = (billId: string, amount: number) => {
+    if (!ensureStaffActionUnlocked('allowManageBills', '🔒 ہول سیلر کھاتہ اپڈیٹ کرنے کی اجازت لاک (Locked) ہے۔')) {
+      return;
+    }
     const target = wholesalers.find(w => w.id === billId);
     if (!target || amount <= 0) return;
 
@@ -5677,6 +5718,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const addNewBillWholesaler = (billId: string, amount: number) => {
+    if (!ensureStaffActionUnlocked('allowManageBills', '🔒 نیا بل شامل کرنے کی اجازت لاک (Locked) ہے۔')) {
+      return;
+    }
     const target = wholesalers.find(w => w.id === billId);
     if (!target || amount <= 0) return;
 
@@ -5714,6 +5758,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateWholesaler = (bill: WholesalerBill) => {
+    if (!ensureStaffActionUnlocked('allowManageBills', '🔒 کھاتہ ایڈٹ کرنے کی اجازت لاک (Locked) ہے۔')) {
+      return;
+    }
     rememberTextSuggestion(bill.customer_name, 'wholesaler');
     rememberTextSuggestion(bill.customer_name, 'note');
     scheduleDataMutation(
@@ -5728,12 +5775,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteWholesaler = (id: string) => {
-    if (
-      !superAdminService.isActionUnlockedForUser('allowDeleteEntry', {
-        ...currentUser,
-        shopId: currentShopId || currentUser?.shopId
-      })
-    ) {
+    if (!ensureStaffActionUnlocked('allowDeleteEntry', '🔒 ہول سیلر کھاتہ ڈیلیٹ کرنے کی اجازت لاک (Locked) ہے۔')) {
       return;
     }
     scheduleDataMutation(
@@ -5749,6 +5791,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Customers Khata (Udhaar)
   const addCustomer = (bill: Omit<CustomerBill, 'id' | 'remaining_balance' | 'created_date' | 'status'>) => {
+    if (!ensureStaffActionUnlocked('allowManageBills', '🔒 نیا کسٹمر کھاتہ بنانے کی اجازت لاک (Locked) ہے۔')) {
+      return;
+    }
     rememberTextSuggestion(bill.customer_name, 'customer');
     rememberTextSuggestion(bill.customer_name, 'note');
     const isZero = (bill.total_bill || 0) <= 0;
@@ -5783,6 +5828,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const receiveCustomerPayment = (billId: string, amount: number) => {
+    if (!ensureStaffActionUnlocked('allowManageBills', '🔒 کسٹمر وصولی ریکارڈ کرنے کی اجازت لاک (Locked) ہے۔')) {
+      return;
+    }
     const target = customers.find(c => c.id === billId);
     if (!target || amount <= 0) return;
 
@@ -5818,6 +5866,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const payMoreCustomer = (billId: string, amount: number) => {
+    if (!ensureStaffActionUnlocked('allowManageBills', '🔒 نیا ادھار شامل کرنے کی اجازت لاک (Locked) ہے۔')) {
+      return;
+    }
     const target = customers.find(c => c.id === billId);
     if (!target || amount <= 0) return;
 
@@ -5855,6 +5906,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateCustomer = (bill: CustomerBill) => {
+    if (!ensureStaffActionUnlocked('allowManageBills', '🔒 کسٹمر کھاتہ ایڈٹ کرنے کی اجازت لاک (Locked) ہے۔')) {
+      return;
+    }
     rememberTextSuggestion(bill.customer_name, 'customer');
     rememberTextSuggestion(bill.customer_name, 'note');
     scheduleDataMutation(
@@ -5869,12 +5923,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteCustomer = (id: string) => {
-    if (
-      !superAdminService.isActionUnlockedForUser('allowDeleteEntry', {
-        ...currentUser,
-        shopId: currentShopId || currentUser?.shopId
-      })
-    ) {
+    if (!ensureStaffActionUnlocked('allowDeleteEntry', '🔒 کسٹمر کھاتہ ڈیلیٹ کرنے کی اجازت لاک (Locked) ہے۔')) {
       return;
     }
     scheduleDataMutation(
@@ -5890,6 +5939,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Easyload Ledger
   const saveEasyloadRecord = (dateStr: string, updates: Partial<EasyloadRecord>) => {
+    if (
+      !isExecutingScheduledMutationRef.current &&
+      !ensureStaffActionUnlocked('allowEditEntry', '🔒 ایزی لوڈ ریکارڈ محفوظ / تبدیل کرنے کی اجازت لاک (Locked) ہے۔')
+    ) {
+      return;
+    }
     scheduleDataMutation(
       'edit',
       'ایزی لوڈ ریکارڈ محفوظ کیا جا رہا ہے...',
@@ -5931,6 +5986,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     amount: number,
     note?: string
   ) => {
+    if (
+      !isExecutingScheduledMutationRef.current &&
+      !ensureStaffActionUnlocked('allowAddEntry', '🔒 ایزی لوڈ انٹری شامل کرنے کی اجازت لاک (Locked) ہے۔')
+    ) {
+      return;
+    }
     if (amount <= 0) return;
     if (note) {
       rememberTextSuggestion(note, 'note');
@@ -5986,6 +6047,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Bottle Inventory
   const addBottleItem = (item: Omit<BottleItem, 'id' | 'total_stock'>) => {
+    if (!ensureStaffActionUnlocked('allowManagePrices', '🔒 ریٹ لسٹ میں نیا آئٹم شامل کرنے کی اجازت لاک (Locked) ہے۔')) {
+      return false;
+    }
     const exists = bottleItems.some(b => b.item_name.toLowerCase().trim() === item.item_name.toLowerCase().trim());
     if (exists) return false;
     rememberTextSuggestion(item.item_name, 'item');
@@ -6008,6 +6072,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateBottleItem = (item: BottleItem) => {
+    if (!ensureStaffActionUnlocked('allowManagePrices', '🔒 ریٹ لسٹ میں تبدیلی کرنے کی اجازت لاک (Locked) ہے۔')) {
+      return false;
+    }
     const dup = bottleItems.some(b => b.id !== item.id && b.item_name.toLowerCase().trim() === item.item_name.toLowerCase().trim());
     if (dup) return false;
     rememberTextSuggestion(item.item_name, 'item');
@@ -6026,10 +6093,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const deleteBottleItem = (id: string) => {
     if (
-      !superAdminService.isActionUnlockedForUser('allowDeleteEntry', {
-        ...currentUser,
-        shopId: currentShopId || currentUser?.shopId
-      })
+      !ensureStaffActionUnlocked('allowDeleteEntry', '🔒 آئٹم ڈیلیٹ کرنے کی اجازت لاک (Locked) ہے۔') ||
+      !ensureStaffActionUnlocked('allowManagePrices', '🔒 ریٹ لسٹ میں تبدیلی کرنے کی اجازت لاک (Locked) ہے۔')
     ) {
       return;
     }
@@ -6045,6 +6110,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const updateItemStock = (itemId: string, qty: number, type: 'add' | 'remove', note?: string) => {
+    if (
+      !isExecutingScheduledMutationRef.current &&
+      !ensureStaffActionUnlocked('allowManageStock', '🔒 اسٹاک جمع یا کم کرنے کی اجازت لاک (Locked) ہے۔')
+    ) {
+      return false;
+    }
     const item = bottleItems.find(b => b.id === itemId);
     if (!item) return false;
     if (note) {
@@ -6275,6 +6346,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Export / Backup
   const exportDataJSON = () => {
+    const isMasterSuper = Boolean(
+      currentUser?.role === 'super_admin' &&
+      superAdminService.isMasterAdminEmail(currentUser?.email)
+    );
+    if (!isMasterSuper && superAdminService.getModuleControlConfig().featurePermissions.allowDataExport === false) {
+      showAppAlert('🔒 JSON Data Backup / Export سپر ایڈمن کی جانب سے لاک (Locked) ہے۔');
+      return;
+    }
     const data = {
       dailyTransactions,
       backCashTransactions,
@@ -6318,6 +6397,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     records: any[];
     mode: 'append' | 'replace';
   }): { success: boolean; count: number; error?: string } => {
+    const isMasterSuper = Boolean(
+      currentUser?.role === 'super_admin' &&
+      superAdminService.isMasterAdminEmail(currentUser?.email)
+    );
+    if (!isMasterSuper && superAdminService.getModuleControlConfig().featurePermissions.allowSqlImport === false) {
+      return { success: false, count: 0, error: '🔒 Smart SQL Dump Import سپر ایڈمن کی جانب سے لاک (Locked) ہے۔' };
+    }
     const isStoreAdminUser = Boolean(currentUser?.isGoogleUser || currentUser?.role === 'admin' || currentUser?.role === 'super_admin');
     if (!isStoreAdminUser) {
       return { success: false, count: 0, error: 'صرف دکان کا اصل ایڈمن ہی ڈیٹا بیس امپورٹ کر سکتا ہے۔' };

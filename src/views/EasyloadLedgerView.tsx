@@ -9,9 +9,13 @@ import { usePOS } from '../context/POSContext';
 import { EasyloadRecord } from '../types/pos';
 import { DateNavigator } from '../components/DateNavigator';
 import { AmountInput } from '../components/AmountInput';
+import { showAppAlert } from '../components/AppDialogHost';
+import { superAdminService } from '../superadmin/superAdminService';
 
 export const EasyloadLedgerView: React.FC = () => {
   const {
+    currentUser,
+    currentShop,
     filterDate,
     setFilterDate,
     yesterdayDate,
@@ -103,6 +107,15 @@ export const EasyloadLedgerView: React.FC = () => {
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
+    if (
+      !superAdminService.isActionUnlockedForUser('allowEditEntry', {
+        ...currentUser,
+        shopId: currentShop?.id || currentUser?.shopId
+      })
+    ) {
+      showAppAlert('🔒 ایزی لوڈ ریکارڈ محفوظ / تبدیل کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
+      return;
+    }
     saveEasyloadRecord(filterDate, formData);
     setSuccessMsg(true);
     setTimeout(() => setSuccessMsg(false), 2500);
