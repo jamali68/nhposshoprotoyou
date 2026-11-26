@@ -23,7 +23,10 @@ import {
   Clock,
   Eye,
   EyeOff,
-  ChevronDown
+  ChevronDown,
+  PlusCircle,
+  MinusCircle,
+  Sparkles
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
 import { DailyTransaction } from '../types/pos';
@@ -1356,46 +1359,90 @@ export const DailyCashView: React.FC = () => {
           Add New Entry
         </h3>
 
-        {/* Quick Leen Deen / Shortcut Buttons */}
-        <div className="grid grid-cols-3 gap-1.5 sm:gap-2 pt-0.5">
+        {/* Quick Type Selection Buttons (Matches Back Cash Layout) */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => handleTypeChange('in')}
+            className={`py-2 px-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 border transition-all cursor-pointer ${
+              entryType === 'in'
+                ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+            }`}
+          >
+            <PlusCircle className="w-3.5 h-3.5 shrink-0" />
+            <span>Cash Add (+)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleTypeChange('out')}
+            className={`py-2 px-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 border transition-all cursor-pointer ${
+              entryType === 'out'
+                ? 'bg-rose-600 text-white border-rose-600 shadow-xs'
+                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+            }`}
+          >
+            <MinusCircle className="w-3.5 h-3.5 shrink-0" />
+            <span>Cash Out (-)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleTypeChange('opening')}
+            className={`py-2 px-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 border transition-all cursor-pointer ${
+              entryType === 'opening'
+                ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Opening Cash</span>
+          </button>
+
           <button
             type="button"
             onClick={() => handleTypeChange('shift_closing')}
-            className={`py-2 px-2 rounded-xl font-bold text-xs flex items-center justify-center gap-1 border transition-all ${
+            className={`py-2 px-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 border transition-all cursor-pointer ${
               entryType === 'shift_closing'
-                ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs ring-2 ring-indigo-400/30'
-                : 'bg-indigo-50/80 text-indigo-800 border-indigo-200 hover:bg-indigo-100'
+                ? 'bg-[#ea580c] text-white border-orange-600 shadow-xs'
+                : 'bg-orange-50/70 text-orange-900 border-orange-200 hover:bg-orange-100'
             }`}
           >
-            <span className="text-sm">💼</span>
+            <Briefcase className={`w-3.5 h-3.5 shrink-0 ${entryType === 'shift_closing' ? 'text-white' : 'text-orange-500'}`} />
             <span className="truncate">Shift Closing</span>
           </button>
+        </div>
 
-          <button
-            type="button"
-            onClick={() => handleTypeChange('from_back_cash')}
-            className={`py-2 px-2 rounded-xl font-bold text-xs flex items-center justify-center gap-1 border transition-all ${
-              entryType === 'from_back_cash'
-                ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
-                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-            }`}
-          >
-            <span className="text-sm">🔄</span>
-            <span className="truncate">Back se Aya (+)</span>
-          </button>
+        {/* Quick Back Cash Transfer Buttons */}
+        <div className="pt-2 border-t border-dashed border-slate-200">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => handleTypeChange('from_back_cash')}
+              className={`py-2 px-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 border transition-all cursor-pointer ${
+                entryType === 'from_back_cash'
+                  ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+              }`}
+            >
+              <span className="text-sm">🔄</span>
+              <span className="truncate">Back se Aya (+)</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => handleTypeChange('to_back_cash')}
-            className={`py-2 px-2 rounded-xl font-bold text-xs flex items-center justify-center gap-1 border transition-all ${
-              entryType === 'to_back_cash'
-                ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
-                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-            }`}
-          >
-            <span className="text-sm">🔁</span>
-            <span className="truncate">Back ko Diya (-)</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => handleTypeChange('to_back_cash')}
+              className={`py-2 px-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 border transition-all cursor-pointer ${
+                entryType === 'to_back_cash'
+                  ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+              }`}
+            >
+              <span className="text-sm">🔁</span>
+              <span className="truncate">Back ko Diya (-)</span>
+            </button>
+          </div>
         </div>
 
         <form onSubmit={handleSubmitNewEntry} className="space-y-2.5 text-xs">

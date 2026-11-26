@@ -100,7 +100,7 @@ targets.forEach((dir) => {
 
     // Extract SW_VERSION from public/sw.js
     const verMatch = swContent.match(/SW_VERSION\s*=\s*['"]([^'"]+)['"]/);
-    const appVersion = verMatch && verMatch[1] ? verMatch[1] : 'v18.1.0';
+    const appVersion = verMatch && verMatch[1] ? verMatch[1] : 'v18.1.1';
 
     swContent = swContent
       .replace(/\/\* __BUILD_ID__ \*\//g, buildId)
