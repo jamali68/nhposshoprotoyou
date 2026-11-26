@@ -29,6 +29,7 @@ import { HistoryModal } from '../components/HistoryModal';
 import { ReportModal } from '../components/ReportModal';
 import { DateNavigator } from '../components/DateNavigator';
 import { showAppAlert } from '../components/AppDialogHost';
+import { AmountInput } from '../components/AmountInput';
 import { superAdminService } from '../superadmin/superAdminService';
 
 export const BackCashView: React.FC = () => {
@@ -1171,12 +1172,10 @@ export const BackCashView: React.FC = () => {
             <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
               Amount (Raqam)
             </label>
-            <input
+            <AmountInput
               ref={amountInputRef}
-              type="number"
-              inputMode="decimal"
               value={amount}
-              onChange={e => setAmount(e.target.value)}
+              onValueChange={setAmount}
               onFocus={() => setIsFormFocused(true)}
               onBlur={() => {
                 setIsFormFocused(false);
@@ -1191,7 +1190,7 @@ export const BackCashView: React.FC = () => {
                   handleSubmitNewEntry(e);
                 }
               }}
-              placeholder="Raqam Likhein"
+              placeholder="Raqam Likhein (e.g. 10,000)"
               required
               className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-sm focus:outline-none focus:border-teal-500 focus:bg-white scroll-my-24"
             />
@@ -1450,10 +1449,9 @@ export const BackCashView: React.FC = () => {
               <div>
                 <label className="block text-[11px] font-bold text-slate-500 mb-1">Amount</label>
                 <div className="flex gap-2">
-                  <input
-                    type="number"
+                  <AmountInput
                     value={editAmount}
-                    onChange={e => setEditAmount(e.target.value)}
+                    onValueChange={setEditAmount}
                     required
                     className="flex-1 p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold text-sm"
                   />

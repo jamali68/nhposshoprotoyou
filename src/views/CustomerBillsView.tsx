@@ -23,6 +23,7 @@ import { usePOS } from '../context/POSContext';
 import { CustomerBill } from '../types/pos';
 import { PrintReceiptModal } from '../components/PrintReceiptModal';
 import { showAppAlert, showAppConfirm } from '../components/AppDialogHost';
+import { AmountInput } from '../components/AmountInput';
 
 export const CustomerBillsView: React.FC = () => {
   const {
@@ -288,13 +289,10 @@ export const CustomerBillsView: React.FC = () => {
               required
               className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-semibold"
             />
-            <input
-              type="number"
+            <AmountInput
               value={amount}
-              onChange={e => setAmount(e.target.value)}
-              placeholder="Bill / Credit Amount (0 ya raqam)"
-              min="0"
-              step="any"
+              onValueChange={setAmount}
+              placeholder="Bill / Credit Amount (e.g. 10,000)"
               className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-sm"
             />
 
@@ -449,11 +447,10 @@ export const CustomerBillsView: React.FC = () => {
                   <div className="sm:w-52 space-y-2 shrink-0 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
                     {/* Receive Payment Form */}
                     <div className="flex gap-1.5">
-                      <input
-                        type="number"
+                      <AmountInput
                         placeholder="Raqam"
                         value={receiveInputs[c.id] ?? (isPaid ? '' : c.remaining_balance.toString())}
-                        onChange={e => setReceiveInputs(prev => ({ ...prev, [c.id]: e.target.value }))}
+                        onValueChange={val => setReceiveInputs(prev => ({ ...prev, [c.id]: val }))}
                         disabled={isPaid}
                         className="w-24 p-1.5 bg-white border border-slate-300 rounded-lg text-center font-bold text-xs"
                       />
@@ -471,11 +468,10 @@ export const CustomerBillsView: React.FC = () => {
 
                     {/* Additional Credit Form */}
                     <div className="flex gap-1.5">
-                      <input
-                        type="number"
+                      <AmountInput
                         placeholder="New Bill"
                         value={payMoreInputs[c.id] || ''}
-                        onChange={e => setPayMoreInputs(prev => ({ ...prev, [c.id]: e.target.value }))}
+                        onValueChange={val => setPayMoreInputs(prev => ({ ...prev, [c.id]: val }))}
                         className="w-24 p-1.5 bg-white border border-blue-300 rounded-lg text-center font-bold text-xs"
                       />
                       <button
@@ -524,10 +520,9 @@ export const CustomerBillsView: React.FC = () => {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-500 mb-1">Total Bill</label>
-                  <input
-                    type="number"
+                  <AmountInput
                     value={editBillStr}
-                    onChange={e => setEditBillStr(sanitizeNumberInput(e.target.value))}
+                    onValueChange={val => setEditBillStr(sanitizeNumberInput(val))}
                     onFocus={e => {
                       if (e.target.value === '0') {
                         setEditBillStr('');
@@ -536,17 +531,14 @@ export const CustomerBillsView: React.FC = () => {
                       }
                     }}
                     placeholder="0"
-                    min="0"
-                    step="any"
                     className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold"
                   />
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold text-slate-500 mb-1">Remaining Balance</label>
-                  <input
-                    type="number"
+                  <AmountInput
                     value={editRemainingStr}
-                    onChange={e => setEditRemainingStr(sanitizeNumberInput(e.target.value))}
+                    onValueChange={val => setEditRemainingStr(sanitizeNumberInput(val))}
                     onFocus={e => {
                       if (e.target.value === '0') {
                         setEditRemainingStr('');
@@ -555,8 +547,6 @@ export const CustomerBillsView: React.FC = () => {
                       }
                     }}
                     placeholder="0"
-                    min="0"
-                    step="any"
                     className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold"
                   />
                 </div>

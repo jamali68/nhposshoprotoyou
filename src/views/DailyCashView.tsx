@@ -31,6 +31,7 @@ import { HistoryModal } from '../components/HistoryModal';
 import { ReportModal } from '../components/ReportModal';
 import { DateNavigator } from '../components/DateNavigator';
 import { showAppAlert } from '../components/AppDialogHost';
+import { AmountInput } from '../components/AmountInput';
 import { superAdminService } from '../superadmin/superAdminService';
 
 export const DailyCashView: React.FC = () => {
@@ -959,11 +960,10 @@ export const DailyCashView: React.FC = () => {
 
             <div>
               <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">Purchase Amount (Paid from Cash Counter)</label>
-              <input
-                type="number"
+              <AmountInput
                 value={loadAmount}
-                onChange={e => setLoadAmount(e.target.value)}
-                placeholder="e.g. 5000"
+                onValueChange={setLoadAmount}
+                placeholder="e.g. 5,000"
                 required
                 className="w-full p-2.5 bg-white border border-[#e67e22] rounded-xl font-bold focus:outline-none"
               />
@@ -1419,12 +1419,10 @@ export const DailyCashView: React.FC = () => {
             <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
               {entryType === 'shift_closing' ? 'Shift Closing Cash (دراز میں موجود گنتی کیا گیا کیش)' : 'Amount (Raqam)'}
             </label>
-            <input
+            <AmountInput
               ref={amountInputRef}
-              type="number"
-              inputMode="decimal"
               value={amount}
-              onChange={e => setAmount(e.target.value)}
+              onValueChange={setAmount}
               onFocus={() => setIsFormFocused(true)}
               onBlur={() => {
                 setIsFormFocused(false);
@@ -1439,7 +1437,7 @@ export const DailyCashView: React.FC = () => {
                   handleSubmitNewEntry(e);
                 }
               }}
-              placeholder={entryType === 'shift_closing' ? 'مثلاً 1200 یا 21000 یا 15000' : 'Raqam Likhein'}
+              placeholder={entryType === 'shift_closing' ? 'مثلاً 1,200 یا 21,000 یا 15,000' : 'Raqam Likhein (e.g. 10,000)'}
               required
               className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-sm focus:outline-none focus:border-indigo-500 focus:bg-white scroll-my-24"
             />
@@ -1826,10 +1824,9 @@ export const DailyCashView: React.FC = () => {
               <div>
                 <label className="block text-[11px] font-bold text-slate-500 mb-1">Amount</label>
                 <div className="flex gap-2">
-                  <input
-                    type="number"
+                  <AmountInput
                     value={editAmount}
-                    onChange={e => setEditAmount(e.target.value)}
+                    onValueChange={setEditAmount}
                     required
                     className="flex-1 p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold text-sm"
                   />

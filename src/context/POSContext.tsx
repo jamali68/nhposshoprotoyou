@@ -3913,9 +3913,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
         if (dirDoc && dirDoc.exists()) {
           const data = dirDoc.data() as any;
-          if (data.staff_id !== excludeStaffId && data.shop_id !== currentShopId) {
+          if (!excludeStaffId || data.staff_id !== excludeStaffId) {
             const suggested = `NH-${clean}${Math.floor(100 + Math.random() * 900)}`;
-            return { available: false, reason: `Username "${full}" is already registered in the system.`, suggested };
+            return { available: false, reason: `Username "${full}" is already taken.`, suggested };
           }
         }
       } catch (e) {

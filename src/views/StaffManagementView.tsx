@@ -10,6 +10,7 @@ import {
   Trash2,
   Edit2,
   X,
+  XCircle,
   AlertCircle,
   Copy,
   CheckCircle2,
@@ -409,7 +410,7 @@ export const StaffManagementView: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Live Real-Time Availability Check State
+  // Live Real-Time Availability Check State (Single-Check Locked — Never Loops)
   const [isCheckingAvailability, setIsCheckingAvailability] = useState<boolean>(false);
   const [availabilityStatus, setAvailabilityStatus] = useState<{
     checked: boolean;
@@ -417,7 +418,11 @@ export const StaffManagementView: React.FC = () => {
     reason?: string;
     suggested?: string;
   }>({ checked: false });
-  const checkTimeoutRef = useRef<any>(null);
+  const checkTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const checkUsernameRef = useRef(checkUsernameAvailability);
+  checkUsernameRef.current = checkUsernameAvailability;
+  const lastCheckedKeyRef = useRef<string>('');
+  const checkSeqRef = useRef<number>(0);
 
   const resetForm = () => {
     setName('');
@@ -430,6 +435,9 @@ export const StaffManagementView: React.FC = () => {
     setSuggestedSuffix(null);
     setIsSubmitting(false);
     setEditingAccount(null);
+    lastCheckedKeyRef.current = '';
+    checkSeqRef.current += 1;
+    setIsCheckingAvailability(false);
     setAvailabilityStatus({ checked: false });
   };
 
@@ -459,37 +467,63 @@ export const StaffManagementView: React.FC = () => {
     setFormError('');
     setSuggestedSuffix(null);
     setIsSubmitting(false);
+    lastCheckedKeyRef.current = `${acc.id}:${cleanSuffix.toLowerCase()}`;
+    checkSeqRef.current += 1;
+    setIsCheckingAvailability(false);
     setAvailabilityStatus({ checked: true, available: true });
     setShowAddModal(true);
   };
 
-  // Live debounced username uniqueness check
+  // Pro-level single-pass debounced username uniqueness check (locks cleanly on Green Tick or Red Taken)
   useEffect(() => {
     if (checkTimeoutRef.current) {
       clearTimeout(checkTimeoutRef.current);
+      checkTimeoutRef.current = null;
+    }
+
+    if (!showAddModal) {
+      return;
     }
 
     const clean = usernameSuffix.trim().replace(/^nh[-_]?/i, '').replace(/[^a-zA-Z0-9_-]/g, '');
     if (!clean || clean.length < 2) {
+      lastCheckedKeyRef.current = '';
+      checkSeqRef.current += 1;
       setAvailabilityStatus({ checked: false });
       setIsCheckingAvailability(false);
       return;
     }
 
-    // If editing existing account and username didn't change, no check needed
+    const checkKey = `${editingAccount?.id || 'new'}:${clean.toLowerCase()}`;
+
+    // If editing existing account and username didn't change, immediately lock Green Tick
     if (editingAccount) {
       const editClean = editingAccount.username.trim().replace(/^nh[-_]?/i, '').replace(/[^a-zA-Z0-9_-]/g, '');
       if (editClean.toLowerCase() === clean.toLowerCase()) {
+        lastCheckedKeyRef.current = checkKey;
+        checkSeqRef.current += 1;
         setAvailabilityStatus({ checked: true, available: true });
         setIsCheckingAvailability(false);
         return;
       }
     }
 
+    // Already checked this exact username — keep current Green Tick / Red Taken locked without re-checking
+    if (lastCheckedKeyRef.current === checkKey) {
+      return;
+    }
+
+    // New username typed — invalidate previous status and wait 450ms after typing stops before single cloud check
+    const seq = ++checkSeqRef.current;
+    setAvailabilityStatus({ checked: false });
+    setIsCheckingAvailability(true);
+
     checkTimeoutRef.current = setTimeout(async () => {
-      setIsCheckingAvailability(true);
       try {
-        const result = await checkUsernameAvailability(clean, editingAccount?.id);
+        const result = await checkUsernameRef.current(clean, editingAccount?.id);
+        // Ignore stale response if user kept typing
+        if (checkSeqRef.current !== seq) return;
+        lastCheckedKeyRef.current = checkKey;
         setAvailabilityStatus({
           checked: true,
           available: result.available,
@@ -497,18 +531,23 @@ export const StaffManagementView: React.FC = () => {
           suggested: result.suggested ? result.suggested.replace(/^nh[-_]?/i, '') : undefined
         });
       } catch {
+        if (checkSeqRef.current !== seq) return;
+        lastCheckedKeyRef.current = '';
         setAvailabilityStatus({ checked: false });
       } finally {
-        setIsCheckingAvailability(false);
+        if (checkSeqRef.current === seq) {
+          setIsCheckingAvailability(false);
+        }
       }
-    }, 500);
+    }, 450);
 
     return () => {
       if (checkTimeoutRef.current) {
         clearTimeout(checkTimeoutRef.current);
+        checkTimeoutRef.current = null;
       }
     };
-  }, [usernameSuffix, editingAccount?.id, editingAccount?.username, checkUsernameAvailability]);
+  }, [showAddModal, usernameSuffix, editingAccount?.id, editingAccount?.username]);
 
   // Quick generator for guaranteed unique suffix (e.g. ali284)
   const generateUniqueSuggestion = (baseName?: string) => {
@@ -1300,7 +1339,15 @@ export const StaffManagementView: React.FC = () => {
                       <span>منفرد ID</span>
                     </button>
                   </div>
-                  <div className="flex rounded-xl overflow-hidden border border-slate-300 focus-within:border-blue-600 focus-within:ring-2 focus-within:ring-blue-100 bg-slate-50 focus-within:bg-white transition-all">
+                  <div
+                    className={`flex items-center rounded-xl overflow-hidden border transition-all ${
+                      !isCheckingAvailability && availabilityStatus.checked && availabilityStatus.available
+                        ? 'border-emerald-500 ring-2 ring-emerald-100 bg-emerald-50/30'
+                        : !isCheckingAvailability && availabilityStatus.checked && !availabilityStatus.available
+                        ? 'border-rose-500 ring-2 ring-rose-100 bg-rose-50/30'
+                        : 'border-slate-300 focus-within:border-blue-600 focus-within:ring-2 focus-within:ring-blue-100 bg-slate-50 focus-within:bg-white'
+                    }`}
+                  >
                     <span className="bg-slate-200/90 text-slate-900 px-3 py-2.5 font-black text-xs select-none font-mono flex items-center border-r border-slate-300 tracking-wider">
                       NH-
                     </span>
@@ -1317,10 +1364,21 @@ export const StaffManagementView: React.FC = () => {
                       required
                       className="w-full px-3 py-2.5 bg-transparent font-bold focus:outline-none text-xs font-mono text-slate-900"
                     />
+                    <div className="pr-2.5 flex items-center shrink-0">
+                      {isCheckingAvailability && (
+                        <RefreshCw className="w-4 h-4 animate-spin text-blue-600" />
+                      )}
+                      {!isCheckingAvailability && availabilityStatus.checked && availabilityStatus.available && (
+                        <CheckCircle2 className="w-4.5 h-4.5 text-emerald-600" />
+                      )}
+                      {!isCheckingAvailability && availabilityStatus.checked && !availabilityStatus.available && (
+                        <XCircle className="w-4.5 h-4.5 text-rose-600" />
+                      )}
+                    </div>
                   </div>
 
-                  {/* Real-time Uniqueness Feedback */}
-                  <div className="mt-1 space-y-1">
+                  {/* Real-time Uniqueness Feedback (Locked Once Checked) */}
+                  <div className="mt-1.5 space-y-1">
                     <div className="flex items-center justify-between text-[10px] flex-wrap gap-1">
                       <span className="text-slate-500">
                         Login ID:{' '}
@@ -1331,35 +1389,37 @@ export const StaffManagementView: React.FC = () => {
                     </div>
 
                     {isCheckingAvailability && (
-                      <div className="flex items-center gap-1 text-[10px] text-slate-500">
-                        <RefreshCw className="w-2.5 h-2.5 animate-spin text-blue-600" />
-                        <span>Checking global uniqueness in cloud...</span>
+                      <div className="flex items-center gap-1.5 text-[10px] text-blue-700 font-semibold bg-blue-50/70 px-2 py-1 rounded-lg border border-blue-200/70">
+                        <RefreshCw className="w-3 h-3 animate-spin text-blue-600 shrink-0" />
+                        <span>Checking username availability...</span>
                       </div>
                     )}
 
                     {!isCheckingAvailability && availabilityStatus.checked && availabilityStatus.available && (
-                      <div className="flex items-center gap-1 text-[10px] text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                        <Check className="w-3 h-3 text-emerald-600" />
-                        <span>Username available (Unique in system)</span>
+                      <div className="flex items-center gap-1.5 text-[10px] text-emerald-700 font-bold bg-emerald-50 px-2 py-1 rounded-lg border border-emerald-200">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>Username Available — Unique in Database</span>
                       </div>
                     )}
 
                     {!isCheckingAvailability && availabilityStatus.checked && !availabilityStatus.available && (
-                      <div className="text-[10px] text-rose-700 font-bold bg-rose-50 p-1.5 rounded border border-rose-200 space-y-1">
-                        <div className="flex items-center gap-1">
-                          <AlertCircle className="w-3 h-3 text-rose-600 shrink-0" />
-                          <span>{availabilityStatus.reason || 'Username already taken'}</span>
+                      <div className="text-[10px] text-rose-700 font-bold bg-rose-50 p-2 rounded-lg border border-rose-200 space-y-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <XCircle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                          <span>{availabilityStatus.reason || 'Already User Taken — Ye username pehle se maujood hai'}</span>
                         </div>
                         {availabilityStatus.suggested && (
-                          <div className="flex items-center justify-between gap-1 pt-0.5 border-t border-rose-200">
-                            <span className="text-[9px] text-slate-600">Try: NH-{availabilityStatus.suggested}</span>
+                          <div className="flex items-center justify-between gap-1 pt-1 border-t border-rose-200">
+                            <span className="text-[10px] text-slate-700 font-semibold">
+                              Available Suggestion: <strong className="font-mono text-rose-700">NH-{availabilityStatus.suggested}</strong>
+                            </span>
                             <button
                               type="button"
                               onClick={() => {
                                 setUsernameSuffix(availabilityStatus.suggested!);
                                 setFormError('');
                               }}
-                              className="text-[9px] px-1.5 py-0.5 bg-rose-600 text-white rounded font-bold hover:bg-rose-700 cursor-pointer"
+                              className="text-[10px] px-2 py-0.5 bg-rose-600 text-white rounded-md font-bold hover:bg-rose-700 cursor-pointer"
                             >
                               Apply
                             </button>
@@ -1477,7 +1537,7 @@ export const StaffManagementView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting || (availabilityStatus.checked && !availabilityStatus.available)}
+                  disabled={isSubmitting || isCheckingAvailability || (availabilityStatus.checked && !availabilityStatus.available)}
                   className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold rounded-xl shadow-md transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
                 >
                   {isSubmitting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}

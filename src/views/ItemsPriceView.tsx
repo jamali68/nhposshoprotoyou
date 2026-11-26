@@ -17,6 +17,7 @@ import {
 import { usePOS } from '../context/POSContext';
 import { BottleItem } from '../types/pos';
 import { showAppAlert, showAppConfirm } from '../components/AppDialogHost';
+import { AmountInput } from '../components/AmountInput';
 
 export const ItemsPriceView: React.FC = () => {
   const {
@@ -203,35 +204,31 @@ export const ItemsPriceView: React.FC = () => {
                     {/* Retail */}
                     <td className="py-2.5 px-2 text-center">
                       {isEditing ? (
-                        <input
-                          type="number"
-                          step="0.01"
+                        <AmountInput
                           value={editValues.unit_price ?? item.unit_price}
                           onFocus={e => { if (e.target.value === '0') e.target.select(); }}
-                          onChange={e => setEditValues({ ...editValues, unit_price: parseFloat(e.target.value) || 0 })}
+                          onValueChange={val => setEditValues({ ...editValues, unit_price: parseFloat(val) || 0 })}
                           className="w-20 p-1 bg-white border border-slate-300 rounded text-center font-bold text-xs"
                         />
                       ) : (
-                        <span className="font-bold font-mono">Rs. {item.unit_price}</span>
+                        <span className="font-bold font-mono">Rs. {(item.unit_price || 0).toLocaleString()}</span>
                       )}
                     </td>
 
                     {/* Wholesale */}
                     <td className="py-2.5 px-2 text-center">
                       {isEditing ? (
-                        <input
-                          type="number"
-                          step="0.01"
+                        <AmountInput
                           value={editValues.commission_per_unit ?? item.commission_per_unit}
                           onFocus={e => { if (e.target.value === '0') e.target.select(); }}
-                          onChange={e =>
-                            setEditValues({ ...editValues, commission_per_unit: parseFloat(e.target.value) || 0 })
+                          onValueChange={val =>
+                            setEditValues({ ...editValues, commission_per_unit: parseFloat(val) || 0 })
                           }
                           className="w-20 p-1 bg-emerald-50 border border-emerald-300 rounded text-center font-bold text-xs text-emerald-800"
                         />
                       ) : (
                         <span className="font-bold font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">
-                          Rs. {item.commission_per_unit}
+                          Rs. {(item.commission_per_unit || 0).toLocaleString()}
                         </span>
                       )}
                     </td>
@@ -239,19 +236,17 @@ export const ItemsPriceView: React.FC = () => {
                     {/* Salesman */}
                     <td className="py-2.5 px-2 text-center">
                       {isEditing ? (
-                        <input
-                          type="number"
-                          step="0.01"
+                        <AmountInput
                           value={editValues.salesman_price ?? item.salesman_price}
                           onFocus={e => { if (e.target.value === '0') e.target.select(); }}
-                          onChange={e =>
-                            setEditValues({ ...editValues, salesman_price: parseFloat(e.target.value) || 0 })
+                          onValueChange={val =>
+                            setEditValues({ ...editValues, salesman_price: parseFloat(val) || 0 })
                           }
                           className="w-20 p-1 bg-amber-50 border border-amber-300 rounded text-center font-bold text-xs text-amber-800"
                         />
                       ) : (
                         <span className="font-bold font-mono text-amber-700 bg-amber-50 px-2 py-0.5 rounded">
-                          Rs. {item.salesman_price || 0}
+                          Rs. {(item.salesman_price || 0).toLocaleString()}
                         </span>
                       )}
                     </td>
@@ -320,12 +315,9 @@ export const ItemsPriceView: React.FC = () => {
           <div className="grid grid-cols-3 gap-2">
             <div>
               <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Retail Price (Rs)</label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
+              <AmountInput
                 value={newRetail}
-                onChange={e => setNewRetail(e.target.value)}
+                onValueChange={setNewRetail}
                 placeholder="0.00"
                 className="w-full p-2 bg-slate-50 border border-slate-300 rounded-xl font-bold text-center focus:outline-none"
               />
@@ -333,12 +325,9 @@ export const ItemsPriceView: React.FC = () => {
 
             <div>
               <label className="block text-[10px] font-bold text-emerald-700 uppercase mb-1">Whole Price (Rs)</label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
+              <AmountInput
                 value={newWhole}
-                onChange={e => setNewWhole(e.target.value)}
+                onValueChange={setNewWhole}
                 placeholder="0.00"
                 className="w-full p-2 bg-emerald-50 border border-emerald-300 rounded-xl font-bold text-center text-emerald-900 focus:outline-none"
               />
@@ -346,12 +335,9 @@ export const ItemsPriceView: React.FC = () => {
 
             <div>
               <label className="block text-[10px] font-bold text-amber-700 uppercase mb-1">Salesman (Rs)</label>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
+              <AmountInput
                 value={newSalesman}
-                onChange={e => setNewSalesman(e.target.value)}
+                onValueChange={setNewSalesman}
                 placeholder="0.00"
                 className="w-full p-2 bg-amber-50 border border-amber-300 rounded-xl font-bold text-center text-amber-900 focus:outline-none"
               />

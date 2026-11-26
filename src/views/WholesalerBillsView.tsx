@@ -21,6 +21,7 @@ import { usePOS } from '../context/POSContext';
 import { WholesalerBill } from '../types/pos';
 import { PrintReceiptModal } from '../components/PrintReceiptModal';
 import { showAppAlert, showAppConfirm } from '../components/AppDialogHost';
+import { AmountInput } from '../components/AmountInput';
 
 export const WholesalerBillsView: React.FC = () => {
   const {
@@ -283,13 +284,10 @@ export const WholesalerBillsView: React.FC = () => {
               required
               className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-semibold"
             />
-            <input
-              type="number"
+            <AmountInput
               value={totalBill}
-              onChange={e => setTotalBill(e.target.value)}
-              placeholder="Total Bill Amount (0 ya raqam)"
-              min="0"
-              step="any"
+              onValueChange={setTotalBill}
+              placeholder="Total Bill Amount (e.g. 50,000)"
               className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-sm"
             />
 
@@ -432,11 +430,10 @@ export const WholesalerBillsView: React.FC = () => {
                   <div className="sm:w-48 space-y-2 shrink-0 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
                     {/* Pay Form */}
                     <div className="flex gap-1.5">
-                      <input
-                        type="number"
+                      <AmountInput
                         placeholder="Raqam"
                         value={payInputs[w.id] ?? (isPaid ? '' : w.remaining_balance.toString())}
-                        onChange={e => setPayInputs(prev => ({ ...prev, [w.id]: e.target.value }))}
+                        onValueChange={val => setPayInputs(prev => ({ ...prev, [w.id]: val }))}
                         disabled={isPaid}
                         className="w-24 p-1.5 bg-white border border-slate-300 rounded-lg text-center font-bold text-xs"
                       />
@@ -454,11 +451,10 @@ export const WholesalerBillsView: React.FC = () => {
 
                     {/* Add New Bill Form */}
                     <div className="flex gap-1.5">
-                      <input
-                        type="number"
+                      <AmountInput
                         placeholder="Naya Bill"
                         value={addBillInputs[w.id] || ''}
-                        onChange={e => setAddBillInputs(prev => ({ ...prev, [w.id]: e.target.value }))}
+                        onValueChange={val => setAddBillInputs(prev => ({ ...prev, [w.id]: val }))}
                         className="w-24 p-1.5 bg-white border border-blue-300 rounded-lg text-center font-bold text-xs"
                       />
                       <button
@@ -507,10 +503,9 @@ export const WholesalerBillsView: React.FC = () => {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-[11px] font-bold text-slate-500 mb-1">Total Bill</label>
-                  <input
-                    type="number"
+                  <AmountInput
                     value={editBillStr}
-                    onChange={e => setEditBillStr(sanitizeNumberInput(e.target.value))}
+                    onValueChange={val => setEditBillStr(sanitizeNumberInput(val))}
                     onFocus={e => {
                       if (e.target.value === '0') {
                         setEditBillStr('');
@@ -519,17 +514,14 @@ export const WholesalerBillsView: React.FC = () => {
                       }
                     }}
                     placeholder="0"
-                    min="0"
-                    step="any"
                     className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold"
                   />
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold text-slate-500 mb-1">Remaining Balance</label>
-                  <input
-                    type="number"
+                  <AmountInput
                     value={editRemainingStr}
-                    onChange={e => setEditRemainingStr(sanitizeNumberInput(e.target.value))}
+                    onValueChange={val => setEditRemainingStr(sanitizeNumberInput(val))}
                     onFocus={e => {
                       if (e.target.value === '0') {
                         setEditRemainingStr('');
@@ -538,8 +530,6 @@ export const WholesalerBillsView: React.FC = () => {
                       }
                     }}
                     placeholder="0"
-                    min="0"
-                    step="any"
                     className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold"
                   />
                 </div>

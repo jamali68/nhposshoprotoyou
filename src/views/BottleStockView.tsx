@@ -17,6 +17,7 @@ import {
 import { usePOS } from '../context/POSContext';
 import { BottleItem } from '../types/pos';
 import { showAppAlert } from '../components/AppDialogHost';
+import { AmountInput } from '../components/AmountInput';
 
 export const BottleStockView: React.FC = () => {
   const {
@@ -227,10 +228,10 @@ export const BottleStockView: React.FC = () => {
                 <option value="add">Stock In (Plus +)</option>
               </select>
 
-              <input
-                type="number"
+              <AmountInput
                 value={qty}
-                onChange={e => setQty(e.target.value)}
+                onValueChange={setQty}
+                allowDecimal={false}
                 placeholder="Enter Quantity (Pets)"
                 required
                 className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-sm focus:outline-none"

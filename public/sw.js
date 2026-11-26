@@ -1,9 +1,9 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v18.0.8
+ * Version: v18.1.0
  * Smart Background Pre-Download & Non-Disruptive Offline Support (GitHub Pages + Netlify)
  */
-const SW_VERSION = 'v18.0.8';
+const SW_VERSION = 'v18.1.0';
 const BUILD_ID = '/* __BUILD_ID__ */';
 const SMART_CACHE_PREFIX = 'nh-pos-smart-';
 const CACHE_NAME =

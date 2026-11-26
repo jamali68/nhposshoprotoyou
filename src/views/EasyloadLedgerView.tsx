@@ -8,6 +8,7 @@ import { ArrowLeft, Save, CheckCircle2, Bolt, Circle, Leaf, Radio } from 'lucide
 import { usePOS } from '../context/POSContext';
 import { EasyloadRecord } from '../types/pos';
 import { DateNavigator } from '../components/DateNavigator';
+import { AmountInput } from '../components/AmountInput';
 
 export const EasyloadLedgerView: React.FC = () => {
   const {
@@ -200,12 +201,10 @@ export const EasyloadLedgerView: React.FC = () => {
               </span>
             </div>
             <div className="w-36">
-              <input
-                type="number"
-                step="any"
+              <AmountInput
                 value={activeState === 'closing' ? formData.jazz_closing || '' : formData.jazz_opening || ''}
-                onChange={e =>
-                  handleInputChange(activeState === 'closing' ? 'jazz_closing' : 'jazz_opening', e.target.value)
+                onValueChange={val =>
+                  handleInputChange(activeState === 'closing' ? 'jazz_closing' : 'jazz_opening', val)
                 }
                 placeholder="0.00"
                 className="w-full p-2 bg-slate-50 border-2 border-amber-300 rounded-xl font-bold text-right text-xs focus:outline-none"
@@ -224,12 +223,10 @@ export const EasyloadLedgerView: React.FC = () => {
               </span>
             </div>
             <div className="w-36">
-              <input
-                type="number"
-                step="any"
+              <AmountInput
                 value={activeState === 'closing' ? formData.telenor_closing || '' : formData.telenor_opening || ''}
-                onChange={e =>
-                  handleInputChange(activeState === 'closing' ? 'telenor_closing' : 'telenor_opening', e.target.value)
+                onValueChange={val =>
+                  handleInputChange(activeState === 'closing' ? 'telenor_closing' : 'telenor_opening', val)
                 }
                 placeholder="0.00"
                 className="w-full p-2 bg-slate-50 border-2 border-blue-300 rounded-xl font-bold text-right text-xs focus:outline-none"
@@ -248,12 +245,10 @@ export const EasyloadLedgerView: React.FC = () => {
               </span>
             </div>
             <div className="w-36">
-              <input
-                type="number"
-                step="any"
+              <AmountInput
                 value={activeState === 'closing' ? formData.zong_closing || '' : formData.zong_opening || ''}
-                onChange={e =>
-                  handleInputChange(activeState === 'closing' ? 'zong_closing' : 'zong_opening', e.target.value)
+                onValueChange={val =>
+                  handleInputChange(activeState === 'closing' ? 'zong_closing' : 'zong_opening', val)
                 }
                 placeholder="0.00"
                 className="w-full p-2 bg-slate-50 border-2 border-emerald-300 rounded-xl font-bold text-right text-xs focus:outline-none"
@@ -272,12 +267,10 @@ export const EasyloadLedgerView: React.FC = () => {
               </span>
             </div>
             <div className="w-36">
-              <input
-                type="number"
-                step="any"
+              <AmountInput
                 value={activeState === 'closing' ? formData.ufone_closing || '' : formData.ufone_opening || ''}
-                onChange={e =>
-                  handleInputChange(activeState === 'closing' ? 'ufone_closing' : 'ufone_opening', e.target.value)
+                onValueChange={val =>
+                  handleInputChange(activeState === 'closing' ? 'ufone_closing' : 'ufone_opening', val)
                 }
                 placeholder="0.00"
                 className="w-full p-2 bg-slate-50 border-2 border-orange-300 rounded-xl font-bold text-right text-xs focus:outline-none"
