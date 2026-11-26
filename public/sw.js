@@ -1,9 +1,9 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v18.1.1
- * Smart Background Pre-Download & Non-Disruptive Offline Support (GitHub Pages + Netlify)
+ * Version: v18.1.2
+ * Smart Background Pre-Download, Non-Disruptive Updates & True Background Cloud Sync (GitHub Pages + Netlify)
  */
-const SW_VERSION = 'v18.1.1';
+const SW_VERSION = 'v18.1.2';
 const BUILD_ID = '/* __BUILD_ID__ */';
 const SMART_CACHE_PREFIX = 'nh-pos-smart-';
 const CACHE_NAME =
@@ -337,5 +337,472 @@ self.addEventListener('message', (event) => {
   }
   if (event.data && event.data.type === 'GET_VERSION') {
     event.ports[0]?.postMessage({ version: SW_VERSION, cacheName: CACHE_NAME });
+    return;
+  }
+  if (event.data && event.data.type === 'CHECK_BG_SYNC') {
+    event.waitUntil(runAllBackgroundSyncs('message'));
   }
 });
+
+// =============================================================================
+// 5. TRUE BACKGROUND CLOUD SYNC ENGINE (v18.1.2)
+//    Uploads pending entries directly to Firestore when mobile connects to
+//    WiFi or SIM data, or when the 30-minute timer expires — even if app is closed!
+// =============================================================================
+const BG_SYNC_DB_NAME = 'nh_pos_bg_sync_db';
+const BG_SYNC_DB_VERSION = 1;
+const BG_SYNC_STORE_NAME = 'sync_state';
+const BG_SYNC_ONE_SHOT_TAG = 'nh-pos-sync-pending';
+const BG_SYNC_PERIODIC_TAG = 'nh-pos-periodic-sync';
+const BG_AUTO_SYNC_DURATION_MS = 30 * 60 * 1000;
+
+function openBgSyncDbSw() {
+  return new Promise((resolve) => {
+    try {
+      const req = self.indexedDB.open(BG_SYNC_DB_NAME, BG_SYNC_DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(BG_SYNC_STORE_NAME)) {
+          db.createObjectStore(BG_SYNC_STORE_NAME, { keyPath: 'shopId' });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+function getAllBgRecordsSw(db) {
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(BG_SYNC_STORE_NAME, 'readonly');
+      const store = tx.objectStore(BG_SYNC_STORE_NAME);
+      const req = store.getAll();
+      req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+      req.onerror = () => resolve([]);
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+function getBgRecordSw(db, shopId) {
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(BG_SYNC_STORE_NAME, 'readonly');
+      const store = tx.objectStore(BG_SYNC_STORE_NAME);
+      const req = store.get(shopId);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+function putBgRecordSw(db, record) {
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(BG_SYNC_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(BG_SYNC_STORE_NAME);
+      store.put(record);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+function cleanValueForFirestoreRest(val) {
+  if (val === undefined || typeof val === 'function' || typeof val === 'symbol') {
+    return undefined;
+  }
+  if (val === null) return null;
+  if (typeof val === 'number') {
+    return Number.isFinite(val) ? val : 0;
+  }
+  if (typeof val === 'boolean' || typeof val === 'string') {
+    return val;
+  }
+  if (Array.isArray(val)) {
+    const out = [];
+    for (let i = 0; i < val.length; i++) {
+      const cleaned = cleanValueForFirestoreRest(val[i]);
+      if (cleaned !== undefined) out.push(cleaned);
+    }
+    return out;
+  }
+  if (typeof val === 'object') {
+    const out = {};
+    const keys = Object.keys(val);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const cleaned = cleanValueForFirestoreRest(val[k]);
+      if (cleaned !== undefined) out[k] = cleaned;
+    }
+    return out;
+  }
+  return String(val);
+}
+
+function toFirestoreRestValue(val) {
+  if (val === null || val === undefined) {
+    return { nullValue: null };
+  }
+  if (typeof val === 'boolean') {
+    return { booleanValue: val };
+  }
+  if (typeof val === 'number') {
+    if (Number.isInteger(val) && Number.isSafeInteger(val)) {
+      return { integerValue: String(val) };
+    }
+    return { doubleValue: Number.isFinite(val) ? val : 0 };
+  }
+  if (typeof val === 'string') {
+    return { stringValue: val };
+  }
+  if (Array.isArray(val)) {
+    return {
+      arrayValue: {
+        values: val.map((item) => toFirestoreRestValue(item))
+      }
+    };
+  }
+  if (typeof val === 'object') {
+    return {
+      mapValue: {
+        fields: toFirestoreRestFields(val)
+      }
+    };
+  }
+  return { stringValue: String(val) };
+}
+
+function toFirestoreRestFields(obj) {
+  const fields = {};
+  const keys = Object.keys(obj || {});
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    if (obj[k] !== undefined) {
+      fields[k] = toFirestoreRestValue(obj[k]);
+    }
+  }
+  return fields;
+}
+
+function formatFirestoreFieldPath(key) {
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    return key;
+  }
+  return '`' + String(key).replace(/`/g, '\\`') + '`';
+}
+
+function buildFirestoreDocUrl(record, docPath) {
+  const dbId = record.databaseId || '(default)';
+  return (
+    'https://firestore.googleapis.com/v1/projects/' +
+    encodeURIComponent(record.projectId) +
+    '/databases/' +
+    dbId +
+    '/documents/' +
+    docPath
+  );
+}
+
+async function patchFirestoreDocSw(record, collectionName, docId, rawData) {
+  const cleanData = cleanValueForFirestoreRest(
+    Object.assign({}, rawData, { shop_id: record.shopId })
+  );
+  if (!cleanData || typeof cleanData !== 'object') {
+    return { ok: true, transient: false };
+  }
+
+  const fieldKeys = Object.keys(cleanData);
+  if (fieldKeys.length === 0) {
+    return { ok: true, transient: false };
+  }
+
+  const docPath =
+    'shops/' +
+    encodeURIComponent(record.shopId) +
+    '/' +
+    encodeURIComponent(collectionName) +
+    '/' +
+    encodeURIComponent(docId);
+
+  const maskParams = fieldKeys
+    .map((k) => 'updateMask.fieldPaths=' + encodeURIComponent(formatFirestoreFieldPath(k)))
+    .join('&');
+
+  const url =
+    buildFirestoreDocUrl(record, docPath) +
+    '?' +
+    maskParams +
+    '&key=' +
+    encodeURIComponent(record.apiKey);
+
+  try {
+    const resp = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: toFirestoreRestFields(cleanData) })
+    });
+    if (resp.ok) {
+      return { ok: true, transient: false };
+    }
+    const isTransient = resp.status >= 500 || resp.status === 429 || resp.status === 408;
+    return { ok: false, transient: isTransient, status: resp.status };
+  } catch {
+    return { ok: false, transient: true };
+  }
+}
+
+async function deleteFirestoreDocSw(record, collectionName, docId) {
+  const docPath =
+    'shops/' +
+    encodeURIComponent(record.shopId) +
+    '/' +
+    encodeURIComponent(collectionName) +
+    '/' +
+    encodeURIComponent(docId);
+
+  const url =
+    buildFirestoreDocUrl(record, docPath) +
+    '?key=' +
+    encodeURIComponent(record.apiKey);
+
+  try {
+    const resp = await fetch(url, { method: 'DELETE' });
+    if (resp.ok || resp.status === 404) {
+      return { ok: true, transient: false };
+    }
+    const isTransient = resp.status >= 500 || resp.status === 429 || resp.status === 408;
+    return { ok: false, transient: isTransient, status: resp.status };
+  } catch {
+    return { ok: false, transient: true };
+  }
+}
+
+async function broadcastShopSyncPulseSw(record, touchedCollections, pulseTs) {
+  const docPath = 'shops/' + encodeURIComponent(record.shopId);
+  const colFields = {};
+  const maskParts = [
+    'updateMask.fieldPaths=last_data_sync_at',
+    'updateMask.fieldPaths=last_data_sync_by'
+  ];
+
+  touchedCollections.forEach((col) => {
+    if (col && /^[A-Za-z0-9_]+$/.test(col)) {
+      colFields[col] = { integerValue: String(pulseTs) };
+      maskParts.push('updateMask.fieldPaths=' + encodeURIComponent('collection_sync_at.' + col));
+    }
+  });
+
+  const fields = {
+    last_data_sync_at: { integerValue: String(pulseTs) },
+    last_data_sync_by: { stringValue: record.syncBy || 'user' }
+  };
+  if (Object.keys(colFields).length > 0) {
+    fields.collection_sync_at = { mapValue: { fields: colFields } };
+  }
+
+  const url =
+    buildFirestoreDocUrl(record, docPath) +
+    '?' +
+    maskParts.join('&') +
+    '&key=' +
+    encodeURIComponent(record.apiKey);
+
+  try {
+    await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields })
+    });
+  } catch {
+    // Pulse broadcast is best-effort; data documents are already safely stored in Firestore
+  }
+}
+
+async function flushShopRecordInBackground(db, record, reason) {
+  if (
+    !record ||
+    !record.shopId ||
+    !record.projectId ||
+    !record.apiKey ||
+    !Array.isArray(record.queue) ||
+    record.queue.length === 0
+  ) {
+    return { transientFailure: false };
+  }
+
+  let windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  let hasVisibleWindow = windowClients.some((c) => c.visibilityState === 'visible');
+  let hasAnyWindow = windowClients.length > 0;
+
+  const nowMs = Date.now();
+  const isTimerExpired = nowMs >= Number(record.nextSyncAt || 0);
+  const isWaitingForOnline = Boolean(record.waitingForOnline);
+
+  // If user currently has the app visibly open on screen, delegate to foreground POSContext to avoid duplicate writes
+  if (hasVisibleWindow) {
+    if (isWaitingForOnline || isTimerExpired) {
+      for (const client of windowClients) {
+        try {
+          client.postMessage({
+            type: 'SW_TRIGGER_FOREGROUND_SYNC',
+            shopId: record.shopId,
+            reason
+          });
+        } catch {}
+      }
+    }
+    return { transientFailure: false };
+  }
+
+  // If app is minimized (hidden tab still alive) and neither offline-recovered nor 30m expired:
+  // Wait for 30m timer or app close unless periodic sync says timer expired.
+  if (hasAnyWindow && !isWaitingForOnline && !isTimerExpired) {
+    return { transientFailure: false };
+  }
+
+  // If app appears completely closed (0 windows) with unexpired timer & not offline-recovered,
+  // wait 1.5s briefly so normal page reloads don't trigger a premature flush.
+  if (!hasAnyWindow && !isWaitingForOnline && !isTimerExpired) {
+    await new Promise((r) => setTimeout(r, 1500));
+    windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    hasVisibleWindow = windowClients.some((c) => c.visibilityState === 'visible');
+    hasAnyWindow = windowClients.length > 0;
+    if (hasAnyWindow) {
+      return { transientFailure: false };
+    }
+  }
+
+  // Upload all pending entries directly to Firestore REST API
+  const flushedIds = [];
+  const flushedAtMap = {};
+  const touchedCollections = new Set();
+  let transientFailure = false;
+
+  for (let i = 0; i < record.queue.length; i++) {
+    const item = record.queue[i];
+    if (!item || !item.id || !item.collection || !item.docId) continue;
+
+    let res = { ok: false, transient: false };
+    if (item.type === 'save' && item.data) {
+      res = await patchFirestoreDocSw(record, item.collection, item.docId, item.data);
+    } else if (item.type === 'delete') {
+      res = await deleteFirestoreDocSw(record, item.collection, item.docId);
+    } else {
+      res = { ok: true, transient: false };
+    }
+
+    if (res.ok) {
+      flushedIds.push(item.id);
+      flushedAtMap[item.id] = Number(item.timestamp || Date.now());
+      touchedCollections.add(item.collection);
+    } else if (res.transient) {
+      transientFailure = true;
+    }
+  }
+
+  if (flushedIds.length > 0) {
+    const pulseTs = Date.now();
+    await broadcastShopSyncPulseSw(record, touchedCollections, pulseTs);
+
+    // Re-read latest IDB record so we never drop an item added concurrently
+    const latestRecord = (await getBgRecordSw(db, record.shopId)) || record;
+    const mergedFlushedAtMap = Object.assign(
+      {},
+      latestRecord.flushedAtMap || {},
+      flushedAtMap
+    );
+    const mergedFlushedIdsSet = new Set(
+      (Array.isArray(latestRecord.flushedIds) ? latestRecord.flushedIds : []).concat(flushedIds)
+    );
+
+    const remainingQueue = (Array.isArray(latestRecord.queue) ? latestRecord.queue : []).filter(
+      (qItem) => {
+        if (!qItem || !qItem.id) return false;
+        const flushedTs = mergedFlushedAtMap[qItem.id];
+        if (flushedTs && Number(qItem.timestamp || 0) <= flushedTs) {
+          return false;
+        }
+        return true;
+      }
+    );
+
+    const nextSyncAt = pulseTs + BG_AUTO_SYNC_DURATION_MS;
+    const updatedRecord = Object.assign({}, latestRecord, {
+      queue: remainingQueue,
+      flushedIds: Array.from(mergedFlushedIdsSet),
+      flushedAtMap: mergedFlushedAtMap,
+      waitingForOnline: remainingQueue.length > 0 && transientFailure,
+      lastBgSyncAt: pulseTs,
+      nextSyncAt,
+      updatedAt: pulseTs
+    });
+
+    await putBgRecordSw(db, updatedRecord);
+
+    // Notify any open (hidden or newly opened) app windows to reconcile localStorage immediately
+    const latestClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of latestClients) {
+      try {
+        client.postMessage({
+          type: 'BG_SYNC_COMPLETED',
+          shopId: record.shopId,
+          flushedIds,
+          flushedCount: flushedIds.length,
+          syncedAt: pulseTs,
+          nextSyncAt
+        });
+      } catch {}
+    }
+  }
+
+  return { transientFailure };
+}
+
+async function runAllBackgroundSyncs(reason) {
+  const db = await openBgSyncDbSw();
+  if (!db) return;
+
+  let anyTransientFailure = false;
+  try {
+    const records = await getAllBgRecordsSw(db);
+    for (let i = 0; i < records.length; i++) {
+      const result = await flushShopRecordInBackground(db, records[i], reason);
+      if (result && result.transientFailure) {
+        anyTransientFailure = true;
+      }
+    }
+  } finally {
+    try {
+      db.close();
+    } catch {}
+  }
+
+  // Throwing on transient network error tells Android Chrome to automatically retry Background Sync
+  if (anyTransientFailure && reason === 'sync') {
+    throw new Error('[SW] Transient network failure during background sync — scheduling retry');
+  }
+}
+
+// One-Shot OS Background Sync: fires immediately when WiFi or SIM data connects (even if app is closed)
+self.addEventListener('sync', (event) => {
+  if (event.tag === BG_SYNC_ONE_SHOT_TAG) {
+    event.waitUntil(runAllBackgroundSyncs('sync'));
+  }
+});
+
+// Periodic Background Sync: wakes SW in background on installed Android PWAs to enforce 30m deadline
+self.addEventListener('periodicsync', (event) => {
+  if (event.tag === BG_SYNC_PERIODIC_TAG) {
+    event.waitUntil(runAllBackgroundSyncs('periodic'));
+  }
+});
+

@@ -38,6 +38,12 @@ import {
   setPwaMutationBusy,
   triggerSilentPwaCheck
 } from '../utils/pwaUpdater';
+import {
+  mirrorPendingSyncToIdb,
+  consumeSwBgSyncResults,
+  registerBackgroundSync
+} from '../utils/bgSyncStore';
+import firebaseConfig from '../../firebase-applet-config.json';
 import { handleFirestoreError, OperationType } from '../firestoreErrorHandler';
 import {
   sanitizeTextInput,
@@ -726,6 +732,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return [];
     }
   });
+  const pendingSyncQueueRef = useRef<PendingSyncItem[]>(pendingSyncQueue);
 
   const AUTO_SYNC_DURATION_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -770,6 +777,87 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     waitingForOnlineSyncRef.current
   );
 
+  const syncStateToBgIdb = useCallback(
+    (
+      queueOverride?: PendingSyncItem[],
+      waitingOverride?: boolean,
+      nextSyncOverride?: number
+    ) => {
+      if (!currentShopId || isDemoMode) return;
+      const queueToSave = queueOverride !== undefined ? queueOverride : pendingSyncQueueRef.current;
+      const waitingToSave =
+        waitingOverride !== undefined ? waitingOverride : waitingForOnlineSyncRef.current;
+      const nextSyncToSave =
+        nextSyncOverride !== undefined ? nextSyncOverride : nextSyncAtRef.current;
+
+      void mirrorPendingSyncToIdb({
+        shopId: currentShopId,
+        projectId: firebaseConfig.projectId,
+        databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
+        apiKey: firebaseConfig.apiKey,
+        syncBy: currentUser?.name || currentUser?.username || currentUser?.role || 'user',
+        queue: queueToSave,
+        nextSyncAt: nextSyncToSave,
+        waitingForOnline: waitingToSave
+      });
+    },
+    [currentShopId, isDemoMode, currentUser?.name, currentUser?.username, currentUser?.role]
+  );
+
+  const reconcileSwBackgroundSync = useCallback(async (): Promise<number> => {
+    if (!currentShopId || isDemoMode) return 0;
+    const swResult = await consumeSwBgSyncResults(currentShopId);
+    if (!swResult || swResult.flushedIds.length === 0) return 0;
+
+    const flushedSet = new Set(swResult.flushedIds);
+    const flushedAtMap = swResult.flushedAtMap || {};
+    const bgSyncedAt = swResult.lastBgSyncAt || Date.now();
+
+    let remainingCount = 0;
+    setPendingSyncQueue(prev => {
+      const filtered = prev.filter(item => {
+        if (!item || !item.id) return false;
+        if (!flushedSet.has(item.id)) return true;
+        const flushedTs = flushedAtMap[item.id] || bgSyncedAt;
+        // Keep item only if the user edited it again AFTER the background sync uploaded it
+        return Number(item.timestamp || 0) > flushedTs;
+      });
+      remainingCount = filtered.length;
+      pendingSyncQueueRef.current = filtered;
+      try {
+        localStorage.setItem(`taj_pos_pending_queue_${currentShopId}`, JSON.stringify(filtered));
+      } catch {}
+      return filtered;
+    });
+
+    const syncedDate = new Date(bgSyncedAt);
+    setLastSyncTime(syncedDate);
+    try {
+      localStorage.setItem(`taj_pos_last_sync_${currentShopId}`, syncedDate.toISOString());
+    } catch {}
+
+    if (swResult.nextSyncAt && swResult.nextSyncAt > nextSyncAtRef.current) {
+      nextSyncAtRef.current = swResult.nextSyncAt;
+      setNextSyncRemainingSec(Math.max(0, Math.ceil((swResult.nextSyncAt - Date.now()) / 1000)));
+      try {
+        localStorage.setItem(`taj_pos_next_sync_${currentShopId}`, String(swResult.nextSyncAt));
+        localStorage.setItem('taj_pos_next_sync_global', String(swResult.nextSyncAt));
+      } catch {}
+    }
+
+    if (remainingCount === 0 && typeof navigator !== 'undefined' && navigator.onLine) {
+      waitingForOnlineSyncRef.current = false;
+      setIsWaitingForOnlineSync(false);
+      setIsFirebaseConnected(true);
+      setFirebaseSyncStatus('connected');
+      try {
+        localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'false');
+      } catch {}
+    }
+
+    return swResult.flushedIds.length;
+  }, [currentShopId, isDemoMode]);
+
   const resetSyncTimer30m = useCallback(() => {
     const nextTarget = Date.now() + AUTO_SYNC_DURATION_MS;
     nextSyncAtRef.current = nextTarget;
@@ -783,7 +871,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
       localStorage.setItem('taj_pos_next_sync_global', String(nextTarget));
     } catch {}
-  }, [currentShopId, AUTO_SYNC_DURATION_MS]);
+    syncStateToBgIdb(undefined, false, nextTarget);
+  }, [currentShopId, AUTO_SYNC_DURATION_MS, syncStateToBgIdb]);
 
   // Global Data Update Delayed Loading Wheel State (Super Admin Controlled, Default 1000ms = 1 sec)
   const [mutationLoader, setMutationLoader] = useState<{
@@ -905,19 +994,27 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Note: Continuous platform_settings onSnapshot removed to prevent automatic network requests on every app open.
 
-  // Sync pendingSyncQueue to localStorage whenever it changes
+  // Sync pendingSyncQueue to localStorage & IndexedDB (for SW background sync) whenever it changes
   useEffect(() => {
-    if (!currentShopId) return;
+    pendingSyncQueueRef.current = pendingSyncQueue;
+    if (!currentShopId || isDemoMode) return;
     try {
       localStorage.setItem(`taj_pos_pending_queue_${currentShopId}`, JSON.stringify(pendingSyncQueue));
     } catch {}
-  }, [pendingSyncQueue, currentShopId]);
+    syncStateToBgIdb(pendingSyncQueue);
+    if (
+      pendingSyncQueue.length > 0 &&
+      (typeof navigator !== 'undefined' && (!navigator.onLine || Date.now() >= nextSyncAtRef.current))
+    ) {
+      void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
+    }
+  }, [pendingSyncQueue, currentShopId, isDemoMode, syncStateToBgIdb]);
 
   // Strictly true only if there is at least one unsynced pending entry
   const hasPendingChanges = pendingSyncQueue.length > 0;
   const pendingSyncCount = pendingSyncQueue.length;
 
-  // Helper to persist to local queue scoped by shop (batched for 30m auto-sync, manual Sync Now, or online reconnect)
+  // Helper to persist to local queue scoped by shop (batched for 30m auto-sync, manual Sync Now, or online/background reconnect)
   const saveDocToShop = async (collectionName: string, docId: string, data: any) => {
     if (!currentShopId || isDemoMode) return;
 
@@ -931,7 +1028,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       timestamp: Date.now()
     };
 
-    if (!navigator.onLine) {
+    const isOfflineNow = typeof navigator !== 'undefined' && !navigator.onLine;
+    if (isOfflineNow) {
       setFirebaseSyncStatus('offline');
       waitingForOnlineSyncRef.current = true;
       setIsWaitingForOnlineSync(true);
@@ -940,15 +1038,20 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       } catch {}
     }
 
-    // Queue operation locally so cloud sync runs on 30-minute timer, manual Sync Now click, or instant reconnect from offline
+    // Queue operation locally AND mirror to IndexedDB so SW can upload automatically even if app is closed
     setPendingSyncQueue(prev => {
       const filtered = prev.filter(
         p => !(p.collection === collectionName && p.docId === docId) && p.id !== opId
       );
       const nextQueue = [...filtered, pendingItem];
+      pendingSyncQueueRef.current = nextQueue;
       try {
         localStorage.setItem(`taj_pos_pending_queue_${currentShopId}`, JSON.stringify(nextQueue));
       } catch {}
+      syncStateToBgIdb(nextQueue, isOfflineNow ? true : undefined);
+      if (isOfflineNow || Date.now() >= nextSyncAtRef.current) {
+        void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
+      }
       return nextQueue;
     });
   };
@@ -965,7 +1068,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       timestamp: Date.now()
     };
 
-    if (!navigator.onLine) {
+    const isOfflineNow = typeof navigator !== 'undefined' && !navigator.onLine;
+    if (isOfflineNow) {
       setFirebaseSyncStatus('offline');
       waitingForOnlineSyncRef.current = true;
       setIsWaitingForOnlineSync(true);
@@ -974,15 +1078,20 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       } catch {}
     }
 
-    // Queue delete operation locally so cloud sync runs on 30-minute timer, manual Sync Now click, or instant reconnect from offline
+    // Queue delete operation locally AND mirror to IndexedDB so SW can sync even if app is closed
     setPendingSyncQueue(prev => {
       const filtered = prev.filter(
         p => !(p.collection === collectionName && p.docId === docId) && p.id !== opId
       );
       const nextQueue = [...filtered, pendingItem];
+      pendingSyncQueueRef.current = nextQueue;
       try {
         localStorage.setItem(`taj_pos_pending_queue_${currentShopId}`, JSON.stringify(nextQueue));
       } catch {}
+      syncStateToBgIdb(nextQueue, isOfflineNow ? true : undefined);
+      if (isOfflineNow || Date.now() >= nextSyncAtRef.current) {
+        void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
+      }
       return nextQueue;
     });
   };
@@ -1422,8 +1531,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       try {
         localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
       } catch {}
+      syncStateToBgIdb(undefined, true);
+      void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
       return { success: false, error: 'انٹرنیٹ کنکشن موجود نہیں ہے — آن لائن ہوتے ہی خودکار اپڈیٹ ہو جائے گا' };
     }
+
+    // First reconcile anything already uploaded by the Service Worker in the background while app was closed/asleep
+    await reconcileSwBackgroundSync();
 
     const work = getPendingWorkForShop(currentShopId);
 
@@ -1499,12 +1613,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       }
 
-      // Cleanly flush queue so pending count resets and red line disappears
+      // Cleanly flush queue so pending count resets, red line disappears, and SW IndexedDB stays in sync
       setPendingSyncQueue(prev => {
         const nextQueue = manual ? [] : prev.filter(p => !flushedIds.has(p.id));
+        pendingSyncQueueRef.current = nextQueue;
         try {
           localStorage.setItem(`taj_pos_pending_queue_${currentShopId}`, JSON.stringify(nextQueue));
         } catch {}
+        syncStateToBgIdb(nextQueue, false);
         return nextQueue;
       });
 
@@ -1633,11 +1749,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setFirebaseSyncStatus('offline');
       waitingForOnlineSyncRef.current = true;
       setIsWaitingForOnlineSync(true);
+      try {
+        localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
+      } catch {}
+      syncStateToBgIdb(undefined, true);
+      void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
       return { success: false, error: err?.message || 'Sync failed' };
     }
   };
 
-  // Smart 30-Minute Online Auto-Sync & Offline-Wait-for-Online Instant Sync Watcher
+  // Smart 30-Minute Online Auto-Sync, Offline-Wait-for-Online Instant Sync & True SW Background Sync Watcher
   useEffect(() => {
     if (!currentShopId || isDemoMode) return;
 
@@ -1660,39 +1781,53 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     } catch {}
 
-    // 1. On initial app open / mount:
-    //    Keep the ongoing 30m timer running from where it left off!
-    //    Only trigger sync/reset if the 30m timer has actually expired, or if recovering from offline with pending work.
-    if (navigator.onLine) {
-      setIsFirebaseConnected(true);
-      setFirebaseSyncStatus('connected');
-      const initialWork = getPendingWorkForShop(currentShopId);
-      const timerExpiredOnOpen = Date.now() >= nextSyncAtRef.current;
+    // Mirror current queue & timer to IndexedDB and register Periodic Background Sync for closed-app sync
+    syncStateToBgIdb();
+    void registerBackgroundSync({
+      registerPeriodic: true,
+      registerOneShot: pendingSyncQueueRef.current.length > 0 && (!navigator.onLine || Date.now() >= nextSyncAtRef.current)
+    });
 
-      if (timerExpiredOnOpen) {
-        if (initialWork.hasAnyWork) {
+    // 1. On initial app open / mount:
+    //    First reconcile any entries already uploaded by Service Worker in the background while app was closed.
+    //    Then trigger sync if 30m timer expired or recovering from offline with pending work.
+    void (async () => {
+      await reconcileSwBackgroundSync();
+      if (navigator.onLine) {
+        setIsFirebaseConnected(true);
+        setFirebaseSyncStatus('connected');
+        const initialWork = getPendingWorkForShop(currentShopId);
+        const timerExpiredOnOpen = Date.now() >= nextSyncAtRef.current;
+
+        if (timerExpiredOnOpen) {
+          if (initialWork.hasAnyWork) {
+            syncNow(false);
+          } else {
+            waitingForOnlineSyncRef.current = false;
+            setIsWaitingForOnlineSync(false);
+            resetSyncTimer30m();
+          }
+        } else if ((waitingForOnlineSyncRef.current && initialWork.hasAnyWork) || initialWork.needsInitialHydration) {
           syncNow(false);
         } else {
           waitingForOnlineSyncRef.current = false;
           setIsWaitingForOnlineSync(false);
-          resetSyncTimer30m();
         }
-      } else if ((waitingForOnlineSyncRef.current && initialWork.hasAnyWork) || initialWork.needsInitialHydration) {
-        syncNow(false);
       } else {
-        waitingForOnlineSyncRef.current = false;
-        setIsWaitingForOnlineSync(false);
+        waitingForOnlineSyncRef.current = true;
+        setIsWaitingForOnlineSync(true);
+        setFirebaseSyncStatus('offline');
+        try {
+          localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
+        } catch {}
+        syncStateToBgIdb(undefined, true);
+        if (pendingSyncQueueRef.current.length > 0) {
+          void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
+        }
       }
-    } else {
-      waitingForOnlineSyncRef.current = true;
-      setIsWaitingForOnlineSync(true);
-      setFirebaseSyncStatus('offline');
-      try {
-        localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
-      } catch {}
-    }
+    })();
 
-    // 2. When device goes offline: enter "waiting for online" mode
+    // 2. When device goes offline: enter "waiting for online" mode & arm OS Background Sync
     const handleOfflineEvent = () => {
       waitingForOnlineSyncRef.current = true;
       setIsWaitingForOnlineSync(true);
@@ -1700,18 +1835,114 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       try {
         localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
       } catch {}
+      syncStateToBgIdb(undefined, true);
+      if (pendingSyncQueueRef.current.length > 0) {
+        void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
+      }
     };
 
-    // 3. When device comes back online:
-    //    syncNow(false) checks if there are pending entries without resetting an unexpired 30m timer.
+    // 3. When device comes back online (WiFi or SIM mobile data):
+    //    Reconcile any SW background flush, then immediately upload remaining pending entries!
     const handleOnlineEvent = () => {
       waitingForOnlineSyncRef.current = false;
       setIsWaitingForOnlineSync(false);
       syncNow(false);
     };
 
+    // 3b. Detect WiFi <-> SIM mobile data switches (navigator.connection change)
+    const handleConnectionChange = () => {
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        const shouldFlush =
+          waitingForOnlineSyncRef.current ||
+          Date.now() >= nextSyncAtRef.current;
+        if (shouldFlush && !isSyncingRef.current) {
+          waitingForOnlineSyncRef.current = false;
+          setIsWaitingForOnlineSync(false);
+          syncNow(false);
+        }
+      }
+    };
+
+    // 3c. When user leaves/minimizes/closes app: persist latest queue to IDB & arm OS Background Sync
+    //     When user returns to app: reconcile SW uploads & flush immediately if timer expired or was offline
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        syncStateToBgIdb();
+        if (pendingSyncQueueRef.current.length > 0) {
+          void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
+        }
+      } else if (document.visibilityState === 'visible') {
+        void (async () => {
+          await reconcileSwBackgroundSync();
+          if (
+            navigator.onLine &&
+            !isSyncingRef.current &&
+            (waitingForOnlineSyncRef.current || Date.now() >= nextSyncAtRef.current)
+          ) {
+            waitingForOnlineSyncRef.current = false;
+            setIsWaitingForOnlineSync(false);
+            syncNow(false);
+          }
+        })();
+      }
+    };
+
+    const handlePageHide = () => {
+      syncStateToBgIdb();
+      if (pendingSyncQueueRef.current.length > 0) {
+        void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
+      }
+    };
+
+    const handleWakeCheck = () => {
+      void (async () => {
+        await reconcileSwBackgroundSync();
+        if (
+          navigator.onLine &&
+          !isSyncingRef.current &&
+          (waitingForOnlineSyncRef.current || Date.now() >= nextSyncAtRef.current)
+        ) {
+          waitingForOnlineSyncRef.current = false;
+          setIsWaitingForOnlineSync(false);
+          syncNow(false);
+        }
+      })();
+    };
+
+    // 3d. Listen to Service Worker background sync completion & foreground delegation messages
+    const handleSwMessage = (event: MessageEvent) => {
+      const msg = event.data;
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.shopId && msg.shopId !== currentShopId) return;
+
+      if (msg.type === 'BG_SYNC_COMPLETED') {
+        void reconcileSwBackgroundSync();
+      } else if (msg.type === 'SW_TRIGGER_FOREGROUND_SYNC') {
+        if (navigator.onLine && !isSyncingRef.current) {
+          syncNow(false);
+        }
+      }
+    };
+
     window.addEventListener('offline', handleOfflineEvent);
     window.addEventListener('online', handleOnlineEvent);
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('pageshow', handleWakeCheck);
+    window.addEventListener('focus', handleWakeCheck);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    const netConnection: any =
+      typeof navigator !== 'undefined'
+        ? (navigator as any).connection || (navigator as any).mozConnection || (navigator as any).webkitConnection
+        : null;
+    if (netConnection && typeof netConnection.addEventListener === 'function') {
+      netConnection.addEventListener('change', handleConnectionChange);
+    }
+
+    const hasSwMessaging = typeof navigator !== 'undefined' && 'serviceWorker' in navigator;
+    if (hasSwMessaging) {
+      navigator.serviceWorker.addEventListener('message', handleSwMessage);
+    }
 
     // 4. 1-Second Heartbeat Watcher:
     //    - If offline: keeps checking when device comes online
@@ -1728,6 +1959,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           try {
             localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
           } catch {}
+          syncStateToBgIdb(undefined, true);
+          if (pendingSyncQueueRef.current.length > 0) {
+            void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
+          }
         }
         const rem = Math.max(0, Math.ceil((nextSyncAtRef.current - Date.now()) / 1000));
         setNextSyncRemainingSec(rem);
@@ -1763,6 +1998,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       clearInterval(watcherInterval);
       window.removeEventListener('offline', handleOfflineEvent);
       window.removeEventListener('online', handleOnlineEvent);
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('pageshow', handleWakeCheck);
+      window.removeEventListener('focus', handleWakeCheck);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (netConnection && typeof netConnection.removeEventListener === 'function') {
+        netConnection.removeEventListener('change', handleConnectionChange);
+      }
+      if (hasSwMessaging) {
+        navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+      }
     };
   }, [currentShopId, currentUser?.username, isDemoMode]);
 
