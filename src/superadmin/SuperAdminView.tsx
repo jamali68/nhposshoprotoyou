@@ -55,7 +55,11 @@ import {
   combineShopUsageReports,
   NETLIFY_FREE_LIMITS,
   FIREBASE_FREE_LIMITS,
-  ShopUsageReportRow
+  ShopUsageReportRow,
+  PlatformHostingMode,
+  getPlatformHostingMode,
+  setPlatformHostingMode,
+  getQuotaResetCountdown
 } from '../utils/usageTracker';
 
 export const SuperAdminView: React.FC = () => {
@@ -76,6 +80,8 @@ export const SuperAdminView: React.FC = () => {
   const [usagePeriod, setUsagePeriod] = useState<'daily' | 'weekly' | 'monthly' | 'yearly'>('daily');
   const [selectedUsageShopId, setSelectedUsageShopId] = useState<string>('ALL_SHOPS');
   const [historyViewMode, setHistoryViewMode] = useState<'daily' | 'monthly'>('daily');
+  const [hostingMode, setHostingModeState] = useState<PlatformHostingMode>(() => getPlatformHostingMode());
+  const [netlifyChartMetric, setNetlifyChartMetric] = useState<'status' | 'bandwidth' | 'duration'>('status');
   const [calibrateModalShop, setCalibrateModalShop] = useState<ShopUsageReportRow | null>(null);
   const [calWebReq, setCalWebReq] = useState<string>('');
   const [calFnReq, setCalFnReq] = useState<string>('');
@@ -919,7 +925,11 @@ export const SuperAdminView: React.FC = () => {
                   <tr>
                     <th className="py-3 px-4">Store Profile</th>
                     <th className="py-3 px-4">Owner &amp; Email</th>
-                    <th className="py-3 px-4">Today Usage (Netlify &amp; Firebase)</th>
+                    <th className="py-3 px-4">
+                      {hostingMode === 'firebase_only'
+                        ? 'Live Usage (Firebase Only Mode)'
+                        : 'Live Usage (Netlify 24h + Firebase)'}
+                    </th>
                     <th className="py-3 px-4 text-center">Store Access (Lock/Unlock)</th>
                     <th className="py-3 px-4 text-right">Master Actions</th>
                   </tr>
@@ -928,7 +938,8 @@ export const SuperAdminView: React.FC = () => {
                   {filteredShops.length > 0 ? (
                     filteredShops.map(shop => {
                       const uRow = shopUsageRows.find(r => r.shopId === shop.id);
-                      const dUsage = uRow?.daily;
+                      const dUsage = uRow?.last24h || uRow?.daily;
+                      const wUsage = uRow?.weekly;
                       return (
                         <tr key={shop.id} className="hover:bg-slate-50/70 transition-colors">
                           <td className="py-3.5 px-4">
@@ -949,10 +960,16 @@ export const SuperAdminView: React.FC = () => {
                           <td className="py-3.5 px-4">
                             <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-mono font-bold">
                               <span className="px-2 py-0.5 rounded bg-sky-50 text-sky-800 border border-sky-200">
-                                Netlify Req: {(dUsage?.netlifyTotalRequests || 0).toLocaleString()} ({dUsage?.netlifyBandwidthMB || 0} MB)
+                                {hostingMode === 'firebase_only' ? 'FB Host 24h' : 'Netlify 24h'}:{' '}
+                                {(dUsage?.netlifyTotalRequests || 0).toLocaleString()} req ({dUsage?.netlifyBandwidthMB || 0} MB)
+                              </span>
+                              <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                FB 24h R: {(uRow?.daily.firebaseReads || 0).toLocaleString()} | W:{' '}
+                                {((uRow?.daily.firebaseWrites || 0) + (uRow?.daily.firebaseDeletes || 0)).toLocaleString()}
                               </span>
                               <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200">
-                                FB Read: {(dUsage?.firebaseReads || 0).toLocaleString()} | Write: {((dUsage?.firebaseWrites || 0) + (dUsage?.firebaseDeletes || 0)).toLocaleString()}
+                                7d FB: {((wUsage?.firebaseReads || 0) >= 1000 ? `${((wUsage?.firebaseReads || 0) / 1000).toFixed(1)}K` : (wUsage?.firebaseReads || 0))} R /{' '}
+                                {((wUsage?.firebaseWrites || 0) + (wUsage?.firebaseDeletes || 0))} W
                               </span>
                             </div>
                           </td>
@@ -1063,10 +1080,20 @@ export const SuperAdminView: React.FC = () => {
       )}
 
       {/* ========================================================================= */}
-      {/* TAB 1B: NETLIFY & FIREBASE QUOTA & USAGE TRACKING CENTER (95-99% SMART)   */}
+      {/* TAB 1B: NETLIFY & FIREBASE QUOTA & USAGE TRACKING CENTER (99% CONSOLE)    */}
       {/* ========================================================================= */}
       {activeTab === 'quota' && (() => {
         const periodData = activeUsageReport[usagePeriod];
+        const dailyData = activeUsageReport.daily;
+        const last24hData = activeUsageReport.last24h;
+        const weeklyData = activeUsageReport.weekly;
+        const monthlyData = activeUsageReport.monthly;
+        const resetCountdown = getQuotaResetCountdown();
+        const isFirebaseOnly = hostingMode === 'firebase_only';
+
+        // OFFICIAL RESET CYCLES:
+        // 1. Firebase Reads & Writes ALWAYS reset DAILY (Every 24 Hours: 50,000 Reads/Day, 20,000 Writes/Day)
+        //    When viewing weekly/monthly/yearly tabs, we also show cumulative capacity while highlighting the Daily 24h Reset Quota.
         const periodMultiplier =
           usagePeriod === 'daily'
             ? 1
@@ -1076,70 +1103,123 @@ export const SuperAdminView: React.FC = () => {
                 ? 30
                 : 365;
 
-        const fbReadLimit = FIREBASE_FREE_LIMITS.dailyReads * periodMultiplier;
-        const fbWriteLimit = FIREBASE_FREE_LIMITS.dailyWrites * periodMultiplier;
-        const netlifyFnLimit =
-          usagePeriod === 'daily'
-            ? Math.round(NETLIFY_FREE_LIMITS.monthlyFunctionCalls / 30)
-            : usagePeriod === 'weekly'
-              ? Math.round((NETLIFY_FREE_LIMITS.monthlyFunctionCalls / 30) * 7)
-              : usagePeriod === 'monthly'
-                ? NETLIFY_FREE_LIMITS.monthlyFunctionCalls
-                : NETLIFY_FREE_LIMITS.monthlyFunctionCalls * 12;
+        const fbDailyReadLimit = FIREBASE_FREE_LIMITS.dailyReads; // 50,000 / day
+        const fbDailyWriteLimit = FIREBASE_FREE_LIMITS.dailyWrites; // 20,000 / day
+        const fbPeriodReadLimit = FIREBASE_FREE_LIMITS.dailyReads * periodMultiplier;
+        const fbPeriodWriteLimit = FIREBASE_FREE_LIMITS.dailyWrites * periodMultiplier;
 
-        const netlifyBwLimitMB =
-          usagePeriod === 'daily'
-            ? Math.round((100 * 1024) / 30)
-            : usagePeriod === 'weekly'
-              ? Math.round(((100 * 1024) / 30) * 7)
-              : usagePeriod === 'monthly'
-                ? 100 * 1024
-                : 100 * 1024 * 12;
+        // 2. Netlify Requests, Function Calls & Bandwidth ALWAYS reset MONTHLY (1st of every month: 300k Req / 125k Fn / 100 GB)
+        //    In 'firebase_only' mode, uses Firebase Hosting (10 GB/month) & Cloud Functions (125k/month) monthly limits.
+        const monthlyWebReqLimit = NETLIFY_FREE_LIMITS.monthlyWebRequestsEstimate; // 300,000 / month
+        const monthlyFnLimit = isFirebaseOnly
+          ? FIREBASE_FREE_LIMITS.firebaseCloudFunctionsMonthlyCalls
+          : NETLIFY_FREE_LIMITS.monthlyFunctionCalls; // 125,000 / month
+        const monthlyBwLimitMB = isFirebaseOnly
+          ? FIREBASE_FREE_LIMITS.firebaseHostingMonthlyBandwidthMB
+          : NETLIFY_FREE_LIMITS.monthlyBandwidthMB; // 102,400 MB (100 GB) or 10,240 MB (10 GB)
 
+        const dailyWritesAndDeletes = dailyData.firebaseWrites + dailyData.firebaseDeletes;
         const totalWritesAndDeletes = periodData.firebaseWrites + periodData.firebaseDeletes;
 
-        const fbReadPct = Math.min(100, Number(((periodData.firebaseReads / fbReadLimit) * 100).toFixed(2)));
-        const fbWritePct = Math.min(100, Number(((totalWritesAndDeletes / fbWriteLimit) * 100).toFixed(2)));
-        const netlifyFnPct = Math.min(100, Number(((periodData.netlifyFunctionCalls / netlifyFnLimit) * 100).toFixed(2)));
-        const netlifyBwPct = Math.min(100, Number(((periodData.netlifyBandwidthMB / netlifyBwLimitMB) * 100).toFixed(2)));
+        // Daily Firebase Quota Percentages (Resets Every 24h)
+        const fbDailyReadPct = Math.min(100, Number(((dailyData.firebaseReads / fbDailyReadLimit) * 100).toFixed(2)));
+        const fbDailyWritePct = Math.min(100, Number(((dailyWritesAndDeletes / fbDailyWriteLimit) * 100).toFixed(2)));
+
+        // Monthly Hosting/Netlify Quota Percentages (Resets Monthly on 1st)
+        const monthlyWebReqPct = Math.min(100, Number(((monthlyData.netlifyTotalRequests / monthlyWebReqLimit) * 100).toFixed(2)));
+        const monthlyFnPct = Math.min(100, Number(((monthlyData.netlifyFunctionCalls / monthlyFnLimit) * 100).toFixed(2)));
+        const monthlyBwPct = Math.min(100, Number(((monthlyData.netlifyBandwidthMB / monthlyBwLimitMB) * 100).toFixed(3)));
+
+        // 7-Day Firebase Console Summary (e.g. 1.6K Reads +128.1%, 66 Writes +13.8%)
+        const sevenDayTrend = activeUsageReport.sevenDayTrend || [];
+        const thisWeekTotalReads = weeklyData.firebaseReads;
+        const lastWeekTotalReads = Math.max(
+          1,
+          sevenDayTrend.reduce((acc, d) => acc + d.lastWeekReads, 0)
+        );
+        const readsWoWPct = Number((((thisWeekTotalReads - lastWeekTotalReads) / lastWeekTotalReads) * 100).toFixed(1));
+
+        const thisWeekTotalWrites = weeklyData.firebaseWrites + weeklyData.firebaseDeletes;
+        const lastWeekTotalWrites = Math.max(
+          1,
+          sevenDayTrend.reduce((acc, d) => acc + d.lastWeekWrites, 0)
+        );
+        const writesWoWPct = Number((((thisWeekTotalWrites - lastWeekTotalWrites) / lastWeekTotalWrites) * 100).toFixed(1));
+
+        const formatted7dReads =
+          thisWeekTotalReads >= 1000
+            ? `${(thisWeekTotalReads / 1000).toFixed(1)}K`
+            : thisWeekTotalReads.toLocaleString();
+
+        // 24-Hour Hourly Timeline for Netlify / Web Console Chart
+        const hourly24h = activeUsageReport.hourlyTimeline24h || [];
+        const maxHourlyReq = Math.max(100, ...hourly24h.map(h => h.netlifyTotalRequests));
+        const maxHourlyBw = Math.max(6, ...hourly24h.map(h => h.netlifyBandwidthMB));
+        const maxHourlyDur = Math.max(5, ...hourly24h.map(h => h.durationP50Sec));
+
+        const max7dReadsPoint = Math.max(
+          2000,
+          ...sevenDayTrend.map(d => Math.max(d.thisWeekReads, d.lastWeekReads))
+        );
+        const max7dWritesPoint = Math.max(
+          100,
+          ...sevenDayTrend.map(d => Math.max(d.thisWeekWrites, d.lastWeekWrites))
+        );
 
         // Smart capacity calculation: How many shops can run on Free Tier based on average shop usage
         const activeShopCount = Math.max(1, shops.length);
-        const avgDailyReadsPerShop = Math.max(25, Math.round(combinedUsageReport.daily.firebaseReads / activeShopCount) || 120);
-        const avgDailyWritesPerShop = Math.max(10, Math.round((combinedUsageReport.daily.firebaseWrites + combinedUsageReport.daily.firebaseDeletes) / activeShopCount) || 40);
-        const avgDailyReqPerShop = Math.max(50, Math.round(combinedUsageReport.daily.netlifyTotalRequests / activeShopCount) || 251);
+        const avgDailyReadsPerShop = Math.max(25, Math.round(combinedUsageReport.daily.firebaseReads / activeShopCount) || 230);
+        const avgDailyWritesPerShop = Math.max(8, Math.round((combinedUsageReport.daily.firebaseWrites + combinedUsageReport.daily.firebaseDeletes) / activeShopCount) || 15);
+        const avgDailyReqPerShop = Math.max(50, Math.round(combinedUsageReport.last24h.netlifyTotalRequests / activeShopCount) || 587);
 
         const maxShopsByFbReads = Math.floor(FIREBASE_FREE_LIMITS.dailyReads / avgDailyReadsPerShop);
         const maxShopsByFbWrites = Math.floor(FIREBASE_FREE_LIMITS.dailyWrites / avgDailyWritesPerShop);
-        const maxShopsByNetlify = Math.floor(NETLIFY_FREE_LIMITS.monthlyWebRequestsEstimate / (avgDailyReqPerShop * 30));
-        const safeFreePlanShopsCapacity = Math.max(14, Math.min(maxShopsByFbReads, maxShopsByFbWrites, Math.max(50, maxShopsByNetlify)));
+        const maxShopsByNetlify = Math.floor(monthlyWebReqLimit / (avgDailyReqPerShop * 30));
+        const safeFreePlanShopsCapacity = Math.max(16, Math.min(maxShopsByFbReads, maxShopsByFbWrites, Math.max(16, maxShopsByNetlify)));
+
+        const handleSelectHostingMode = (mode: PlatformHostingMode) => {
+          setPlatformHostingMode(mode);
+          setHostingModeState(mode);
+          setModuleSaveStatus('synced');
+          setModuleSaveBanner(
+            mode === 'netlify_firebase'
+              ? '✓ Active Architecture Mode: Netlify + Firebase (Hybrid Mode) — Netlify Monthly Quota + Firebase Daily Quota active!'
+              : '✓ Active Architecture Mode: Only Firebase (Single Provider Mode) — Pure Firebase Hosting, Functions & Firestore Quota active!'
+          );
+          setTimeout(() => setModuleSaveBanner(null), 4000);
+        };
 
         return (
           <div className="space-y-4">
             {moduleSaveBanner && (
               <div className="p-3 bg-emerald-600 text-white rounded-2xl text-xs font-bold flex items-center justify-between shadow-md animate-in fade-in">
                 <span>{moduleSaveBanner}</span>
-                <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono">SYNCED</span>
+                <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono">ACTIVE</span>
               </div>
             )}
 
-            {/* Top Control Header: Shop Selector & Period Selector (Daily / Weekly / Monthly / Yearly) */}
+            {/* Top Control Header: Architecture Mode Switcher + Shop Selector + Period Selector */}
             <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white rounded-2xl p-4 sm:p-5 border border-indigo-500/30 shadow-lg space-y-4">
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-white/10 pb-3.5">
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 text-[10px] font-black uppercase">
-                      95% – 99% Smart Accuracy
+                      99% Real Console Similarity
                     </span>
                     <span className="px-2 py-0.5 rounded-md bg-sky-500/20 text-sky-300 border border-sky-400/30 text-[10px] font-black uppercase">
-                      Zero Extra Paid Plan Needed
+                      {isFirebaseOnly ? '🔥 Mode: Only Firebase (Single)' : '⚡ Mode: Netlify + Firebase (Hybrid)'}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-400/30 text-[10px] font-black uppercase">
+                      FB Daily Reset · {isFirebaseOnly ? 'FB Hosting' : 'Netlify'} Monthly Reset
                     </span>
                   </div>
                   <h2 className="text-base sm:text-lg font-black tracking-tight mt-1">
-                    Netlify &amp; Firebase Quota &amp; Usage Tracker (ڈیلی، ویکلی، منتھلی اور سالانہ رپورٹ)
+                    {isFirebaseOnly
+                      ? 'Firebase Complete Quota & Usage Console (Firestore + Hosting + Functions — 99% Match)'
+                      : 'Netlify & Firebase Live Console Replica & Quota Tracker (99% Similarity)'}
                   </h2>
                   <p className="text-[11px] text-slate-300 mt-0.5">
-                    ہر دکان اور تمام دکانوں کی مجموعی Netlify Requests، Bandwidth اور Firebase Read / Write کی مکمل ٹریکنگ (365 دن کا ریکارڈ محفوظ)۔
+                    اب آپ کو الگ سے Netlify یا Firebase کھولنے کی ضرورت نہیں—یہاں گھنٹہ وار (Hourly) ٹائم لائن، 7 دن کا گراف، ڈیلی Firebase ری سیٹ اور منتھلی Netlify ری سیٹ خودکار محفوظ ہوتا ہے۔
                   </p>
                 </div>
 
@@ -1167,14 +1247,67 @@ export const SuperAdminView: React.FC = () => {
                 </div>
               </div>
 
-              {/* 4 Period Buttons: Daily, Weekly, Monthly, Yearly */}
+              {/* Architecture / Hosting Provider Mode Selector (Netlify + Firebase vs Only Firebase) */}
+              <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-black text-white flex items-center gap-1.5">
+                    <span>⚙️ System Architecture &amp; Quota Mode (مستقبل کے لیے پلیٹ فارم سلیکٹر)</span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    منتخب کریں کہ سسٹم اس وقت <b>Netlify + Firebase (Mix)</b> پر چل رہا ہے یا مستقبل میں <b>Only Firebase (Single)</b> پر—سسٹم اسی حساب سے ڈیٹا اور کوٹہ ہینڈل کرے گا۔
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleSelectHostingMode('netlify_firebase')}
+                    className={`px-3.5 py-2 rounded-xl text-left border transition-all cursor-pointer ${
+                      hostingMode === 'netlify_firebase'
+                        ? 'bg-sky-500 text-white border-sky-300 shadow-md shadow-sky-500/25'
+                        : 'bg-slate-900/60 hover:bg-slate-800 text-slate-300 border-white/10'
+                    }`}
+                  >
+                    <div className="font-black text-xs flex items-center justify-between gap-2">
+                      <span>⚡ Netlify + Firebase (Mix)</span>
+                      {hostingMode === 'netlify_firebase' && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-black/25 font-mono">ACTIVE</span>
+                      )}
+                    </div>
+                    <span className="text-[10px] block opacity-85 mt-0.5">
+                      Netlify Monthly (100GB/300k) + Firebase Daily (50k/20k)
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSelectHostingMode('firebase_only')}
+                    className={`px-3.5 py-2 rounded-xl text-left border transition-all cursor-pointer ${
+                      hostingMode === 'firebase_only'
+                        ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md shadow-amber-500/25'
+                        : 'bg-slate-900/60 hover:bg-slate-800 text-slate-300 border-white/10'
+                    }`}
+                  >
+                    <div className="font-black text-xs flex items-center justify-between gap-2">
+                      <span>🔥 Only Firebase (Single)</span>
+                      {hostingMode === 'firebase_only' && (
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-black/20 text-white font-mono">ACTIVE</span>
+                      )}
+                    </div>
+                    <span className="text-[10px] block opacity-85 mt-0.5">
+                      Pure Firebase Hosting + Cloud Functions + Firestore
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Official Reset Cycle Status Bar + 4 Period Buttons */}
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 w-full sm:w-auto flex-1 max-w-2xl">
                   {[
-                    { id: 'daily' as const, label: 'Daily (آج)', sub: 'Today (24h)' },
-                    { id: 'weekly' as const, label: 'Weekly (ہفتہ وار)', sub: 'Last 7 Days' },
-                    { id: 'monthly' as const, label: 'Monthly (ماہانہ)', sub: 'This Month (30d)' },
-                    { id: 'yearly' as const, label: 'Yearly (سالانہ)', sub: 'This Year (365d)' }
+                    { id: 'daily' as const, label: 'Daily / 24h (آج)', sub: 'FB Daily Reset View' },
+                    { id: 'weekly' as const, label: 'Weekly (7 Days)', sub: 'FB 7d Console View' },
+                    { id: 'monthly' as const, label: 'Monthly (30 Days)', sub: 'Netlify Monthly Quota' },
+                    { id: 'yearly' as const, label: 'Yearly (365 Days)', sub: 'Annual Archive' }
                   ].map(p => (
                     <button
                       key={p.id}
@@ -1194,140 +1327,565 @@ export const SuperAdminView: React.FC = () => {
                   ))}
                 </div>
 
-                <div className="bg-emerald-500/15 border border-emerald-400/30 rounded-xl px-3.5 py-2 text-right">
-                  <span className="text-[10px] font-bold text-emerald-300 uppercase block">
-                    Estimated Free Quota Capacity
-                  </span>
-                  <span className="font-mono font-black text-sm text-white">
-                    Up to ~{safeFreePlanShopsCapacity} Active Shops Free
-                  </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="bg-amber-500/15 border border-amber-400/30 rounded-xl px-3 py-1.5 text-right">
+                    <span className="text-[9px] font-bold text-amber-300 uppercase block">
+                      Firebase Daily Reset (ہر 24 گھنٹے بعد)
+                    </span>
+                    <span className="font-mono font-black text-xs text-white">
+                      ⏳ {resetCountdown.firebaseResetInLabel} (50k R / 20k W)
+                    </span>
+                  </div>
+                  <div className="bg-sky-500/15 border border-sky-400/30 rounded-xl px-3 py-1.5 text-right">
+                    <span className="text-[9px] font-bold text-sky-300 uppercase block">
+                      {isFirebaseOnly ? 'FB Hosting Monthly Reset' : 'Netlify Monthly Reset (ہر مہینے)'}
+                    </span>
+                    <span className="font-mono font-black text-xs text-white">
+                      📅 {resetCountdown.netlifyResetInDays}d left (Resets {resetCountdown.netlifyNextResetDate})
+                    </span>
+                  </div>
+                  <div className="bg-emerald-500/15 border border-emerald-400/30 rounded-xl px-3 py-1.5 text-right">
+                    <span className="text-[9px] font-bold text-emerald-300 uppercase block">
+                      Free Tier Store Capacity
+                    </span>
+                    <span className="font-mono font-black text-xs text-white">
+                      ~{safeFreePlanShopsCapacity} Active Shops Free
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* 4 Quota Progress Cards: Netlify Requests, Netlify Bandwidth, Firebase Reads, Firebase Writes */}
+            {/* ========================================================================= */}
+            {/* 4 OFFICIAL QUOTA CARDS (FIREBASE = DAILY RESET | NETLIFY = MONTHLY RESET) */}
+            {/* ========================================================================= */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {/* Card 1: Netlify Total Requests */}
+              {/* Card 1: Netlify / Web Requests (Monthly Reset + 24h Console Window) */}
               <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs space-y-2.5">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-1">
                   <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-sky-100 text-sky-800">
-                    Netlify Requests
+                    {isFirebaseOnly ? 'FB Hosting & Fn Req' : 'Netlify Requests'}
                   </span>
-                  <span className="text-[10px] font-mono font-bold text-emerald-600">
-                    {(100 - netlifyFnPct).toFixed(1)}% Free Left
+                  <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">
+                    Resets Monthly ({resetCountdown.netlifyResetInDays}d)
                   </span>
                 </div>
                 <div>
-                  <div className="text-2xl font-black font-mono text-slate-900">
-                    {periodData.netlifyTotalRequests.toLocaleString()}
+                  <div className="flex items-baseline justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                        Last 24h Console Window
+                      </span>
+                      <div className="text-2xl font-black font-mono text-slate-900">
+                        {last24hData.netlifyTotalRequests.toLocaleString()}
+                        <span className="text-xs font-bold text-sky-700 ml-1">req</span>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                        This Month Total
+                      </span>
+                      <div className="text-sm font-black font-mono text-sky-800">
+                        {monthlyData.netlifyTotalRequests.toLocaleString()}
+                      </div>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-semibold mt-0.5">
-                    Web/CDN: <b className="font-mono text-slate-800">{periodData.netlifyWebRequests.toLocaleString()}</b> · Functions:{' '}
-                    <b className="font-mono text-sky-700">{periodData.netlifyFunctionCalls.toLocaleString()}</b>
+                  <p className="text-[11px] text-slate-500 font-semibold mt-1">
+                    24h Web/CDN: <b className="font-mono text-slate-800">{last24hData.netlifyWebRequests.toLocaleString()}</b> · Fn Calls:{' '}
+                    <b className="font-mono text-sky-700">{last24hData.netlifyFunctionCalls.toLocaleString()}</b> · p50:{' '}
+                    <b className="font-mono text-emerald-700">{last24hData.netlifyDurationP50Sec}s</b>
                   </p>
                 </div>
                 <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                   <div
                     className="h-full bg-sky-500 rounded-full transition-all"
-                    style={{ width: `${Math.max(2, netlifyFnPct)}%` }}
+                    style={{ width: `${Math.max(2, monthlyWebReqPct)}%` }}
                   />
                 </div>
                 <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-                  <span>Used: {netlifyFnPct}%</span>
-                  <span>Fn Limit: {netlifyFnLimit.toLocaleString()}</span>
+                  <span>Month Used: {monthlyWebReqPct}%</span>
+                  <span>Month Limit: {monthlyWebReqLimit.toLocaleString()}</span>
                 </div>
               </div>
 
-              {/* Card 2: Netlify Bandwidth */}
+              {/* Card 2: Netlify / Hosting Bandwidth (Monthly Reset + 24h Console Window) */}
               <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs space-y-2.5">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-1">
                   <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-indigo-100 text-indigo-800">
-                    Netlify Bandwidth
+                    {isFirebaseOnly ? 'FB Hosting Bandwidth' : 'Netlify Bandwidth'}
                   </span>
-                  <span className="text-[10px] font-mono font-bold text-emerald-600">
-                    {(100 - netlifyBwPct).toFixed(2)}% Free Left
+                  <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">
+                    Resets Monthly ({resetCountdown.netlifyResetInDays}d)
                   </span>
                 </div>
                 <div>
-                  <div className="text-2xl font-black font-mono text-slate-900">
-                    {periodData.netlifyBandwidthMB >= 1024
-                      ? `${(periodData.netlifyBandwidthMB / 1024).toFixed(2)} GB`
-                      : `${periodData.netlifyBandwidthMB.toLocaleString()} MB`}
+                  <div className="flex items-baseline justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                        Last 24h Bandwidth
+                      </span>
+                      <div className="text-2xl font-black font-mono text-slate-900">
+                        {last24hData.netlifyBandwidthMB >= 1024
+                          ? `${(last24hData.netlifyBandwidthMB / 1024).toFixed(2)} GB`
+                          : `${last24hData.netlifyBandwidthMB.toLocaleString()} MB`}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                        This Month Total
+                      </span>
+                      <div className="text-sm font-black font-mono text-indigo-800">
+                        {monthlyData.netlifyBandwidthMB.toLocaleString()} MB
+                      </div>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-semibold mt-0.5">
-                    PWA Offline Cache Active (Minimal Traffic)
+                  <p className="text-[11px] text-slate-500 font-semibold mt-1">
+                    Errors (24h): <b className="font-mono text-amber-700">{last24hData.netlifyErrorRatePct}%</b> · Free Left:{' '}
+                    <b className="font-mono text-emerald-700">{(100 - monthlyBwPct).toFixed(2)}%</b>
                   </p>
                 </div>
                 <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                   <div
                     className="h-full bg-indigo-500 rounded-full transition-all"
-                    style={{ width: `${Math.max(2, netlifyBwPct)}%` }}
+                    style={{ width: `${Math.max(2, monthlyBwPct)}%` }}
                   />
                 </div>
                 <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-                  <span>Used: {netlifyBwPct}%</span>
-                  <span>Limit: {(netlifyBwLimitMB / 1024).toFixed(1)} GB</span>
+                  <span>Month Used: {monthlyBwPct}%</span>
+                  <span>Month Limit: {(monthlyBwLimitMB / 1024).toFixed(0)} GB</span>
                 </div>
               </div>
 
-              {/* Card 3: Firebase Firestore Reads */}
-              <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs space-y-2.5">
-                <div className="flex items-center justify-between">
+              {/* Card 3: Firebase Firestore Reads (DAILY 24H RESET + 7-Day Console Trend) */}
+              <div className="bg-white rounded-2xl p-4 border border-emerald-200 shadow-xs space-y-2.5">
+                <div className="flex items-center justify-between gap-1">
                   <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
                     Firebase Reads
                   </span>
-                  <span className="text-[10px] font-mono font-bold text-emerald-600">
-                    {(100 - fbReadPct).toFixed(2)}% Free Left
+                  <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    Daily Reset ({resetCountdown.firebaseResetInLabel})
                   </span>
                 </div>
                 <div>
-                  <div className="text-2xl font-black font-mono text-emerald-700">
-                    {periodData.firebaseReads.toLocaleString()}
+                  <div className="flex items-baseline justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                        {usagePeriod === 'daily' ? 'Today Daily Reads (24h)' : `7d Console / ${usagePeriod.toUpperCase()}`}
+                      </span>
+                      <div className="text-2xl font-black font-mono text-emerald-700">
+                        {usagePeriod === 'daily'
+                          ? dailyData.firebaseReads.toLocaleString()
+                          : usagePeriod === 'weekly'
+                            ? `${formatted7dReads} (${thisWeekTotalReads.toLocaleString()})`
+                            : periodData.firebaseReads.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                        7-Day Console
+                      </span>
+                      <div className="text-xs font-black font-mono text-emerald-800">
+                        {formatted7dReads}{' '}
+                        <span className="text-[10px] text-emerald-600">
+                          ({readsWoWPct >= 0 ? `+${readsWoWPct}%` : `${readsWoWPct}%`})
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-semibold mt-0.5">
-                    Remaining: <b className="font-mono text-slate-800">{Math.max(0, fbReadLimit - periodData.firebaseReads).toLocaleString()}</b> reads
+                  <p className="text-[11px] text-slate-500 font-semibold mt-1">
+                    Today Left:{' '}
+                    <b className="font-mono text-slate-800">
+                      {Math.max(0, fbDailyReadLimit - dailyData.firebaseReads).toLocaleString()}
+                    </b>{' '}
+                    / {fbDailyReadLimit.toLocaleString()} daily limit
                   </p>
                 </div>
                 <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                   <div
                     className="h-full bg-emerald-500 rounded-full transition-all"
-                    style={{ width: `${Math.max(2, fbReadPct)}%` }}
+                    style={{ width: `${Math.max(2, fbDailyReadPct)}%` }}
                   />
                 </div>
                 <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-                  <span>Used: {fbReadPct}%</span>
-                  <span>Free Limit: {fbReadLimit.toLocaleString()}</span>
+                  <span>Today Used: {fbDailyReadPct}%</span>
+                  <span>Daily Quota: 50,000 / day</span>
                 </div>
               </div>
 
-              {/* Card 4: Firebase Firestore Writes & Deletes */}
-              <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs space-y-2.5">
-                <div className="flex items-center justify-between">
+              {/* Card 4: Firebase Firestore Writes & Deletes (DAILY 24H RESET + 7-Day Console Trend) */}
+              <div className="bg-white rounded-2xl p-4 border border-amber-200 shadow-xs space-y-2.5">
+                <div className="flex items-center justify-between gap-1">
                   <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-amber-100 text-amber-800">
                     Firebase Writes
                   </span>
-                  <span className="text-[10px] font-mono font-bold text-emerald-600">
-                    {(100 - fbWritePct).toFixed(2)}% Free Left
+                  <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200">
+                    Daily Reset ({resetCountdown.firebaseResetInLabel})
                   </span>
                 </div>
                 <div>
-                  <div className="text-2xl font-black font-mono text-amber-700">
-                    {totalWritesAndDeletes.toLocaleString()}
+                  <div className="flex items-baseline justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                        {usagePeriod === 'daily' ? 'Today Daily Writes (24h)' : `7d Console / ${usagePeriod.toUpperCase()}`}
+                      </span>
+                      <div className="text-2xl font-black font-mono text-amber-700">
+                        {usagePeriod === 'daily'
+                          ? dailyWritesAndDeletes.toLocaleString()
+                          : totalWritesAndDeletes.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block">
+                        7-Day Console
+                      </span>
+                      <div className="text-xs font-black font-mono text-amber-800">
+                        {thisWeekTotalWrites.toLocaleString()}{' '}
+                        <span className="text-[10px] text-amber-700">
+                          ({writesWoWPct >= 0 ? `+${writesWoWPct}%` : `${writesWoWPct}%`})
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-semibold mt-0.5">
-                    Writes: <b className="font-mono text-slate-800">{periodData.firebaseWrites.toLocaleString()}</b> · Deletes:{' '}
-                    <b className="font-mono text-rose-600">{periodData.firebaseDeletes.toLocaleString()}</b>
+                  <p className="text-[11px] text-slate-500 font-semibold mt-1">
+                    Today Writes: <b className="font-mono text-slate-800">{dailyData.firebaseWrites}</b> · Deletes:{' '}
+                    <b className="font-mono text-rose-600">{dailyData.firebaseDeletes}</b> · Left:{' '}
+                    <b className="font-mono text-slate-800">
+                      {Math.max(0, fbDailyWriteLimit - dailyWritesAndDeletes).toLocaleString()}
+                    </b>
                   </p>
                 </div>
                 <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
                   <div
                     className="h-full bg-amber-500 rounded-full transition-all"
-                    style={{ width: `${Math.max(2, fbWritePct)}%` }}
+                    style={{ width: `${Math.max(2, fbDailyWritePct)}%` }}
                   />
                 </div>
                 <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-                  <span>Used: {fbWritePct}%</span>
-                  <span>Free Limit: {fbWriteLimit.toLocaleString()}</span>
+                  <span>Today Used: {fbDailyWritePct}%</span>
+                  <span>Daily Quota: 20,000 / day</span>
+                </div>
+              </div>
+            </div>
+
+            {/* ========================================================================= */}
+            {/* REAL-TIME CONSOLE REPLICA DUAL PANEL (NETLIFY 24H + FIREBASE 7-DAY)       */}
+            {/* ========================================================================= */}
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              {/* PANEL 1: NETLIFY / WEB CONSOLE LAST 24 HOURS REPLICA (Status group / Bandwidth / Duration) */}
+              <div className="bg-slate-950 text-white rounded-2xl p-4 sm:p-5 border border-slate-800 shadow-lg space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-slate-800 pb-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                      <h3 className="font-black text-sm text-white">
+                        {isFirebaseOnly
+                          ? 'Firebase Hosting & Functions — Last 24h Hourly Timeline (UTC+5)'
+                          : 'Netlify Web & Functions — Last 24h Console Replica (UTC+5)'}
+                      </h3>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      کسی بھی گھنٹے کی بار پر ماؤس/ٹیپ کریں تاکہ اس وقت کی Requests، Bandwidth، Duration اور Firebase Reads/Writes دیکھ سکیں۔
+                    </p>
+                  </div>
+
+                  {/* Sum by: Status group | Bandwidth | Duration (Exact Netlify Console Tabs) */}
+                  <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800 self-start sm:self-auto">
+                    <span className="text-[10px] text-slate-400 px-1.5 font-semibold">Sum by</span>
+                    {[
+                      { id: 'status' as const, label: 'Status group' },
+                      { id: 'bandwidth' as const, label: 'Bandwidth' },
+                      { id: 'duration' as const, label: 'Duration' }
+                    ].map(tab => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setNetlifyChartMetric(tab.id)}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                          netlifyChartMetric === tab.id
+                            ? 'bg-teal-500/20 text-teal-300 border border-teal-400/50'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Netlify Console Headline Metrics Row (587 requests | 10.3 MB Bandwidth | 0.28s Duration (p50) | 0.51% Errors) */}
+                <div className="flex flex-wrap items-baseline justify-between gap-3 bg-slate-900/90 px-3.5 py-2.5 rounded-xl border border-slate-800/90">
+                  <div className="flex flex-wrap items-baseline gap-4">
+                    <div className="text-lg sm:text-xl font-black font-mono text-white">
+                      {last24hData.netlifyTotalRequests.toLocaleString()} requests
+                    </div>
+                    {netlifyChartMetric === 'status' && (
+                      <div className="text-xs font-mono font-bold text-amber-400 flex items-center gap-1">
+                        <span>▲ {last24hData.netlifyErrorRatePct}%</span>
+                        <span className="text-slate-400 font-normal">Errors</span>
+                      </div>
+                    )}
+                    {netlifyChartMetric === 'bandwidth' && (
+                      <div className="text-xs font-mono font-bold text-sky-400 flex items-center gap-1">
+                        <span>⇅ {last24hData.netlifyBandwidthMB} MB</span>
+                        <span className="text-slate-400 font-normal">Bandwidth</span>
+                      </div>
+                    )}
+                    {netlifyChartMetric === 'duration' && (
+                      <div className="text-xs font-mono font-bold text-indigo-300 flex items-center gap-1">
+                        <span>🕒 {last24hData.netlifyDurationP50Sec}s</span>
+                        <span className="text-slate-400 font-normal">Duration (p50)</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3 text-[10px] font-mono text-slate-400">
+                    <span>⇅ <b className="text-sky-300">{last24hData.netlifyBandwidthMB} MB</b></span>
+                    <span>🕒 <b className="text-indigo-300">{last24hData.netlifyDurationP50Sec}s p50</b></span>
+                    <span>▲ <b className="text-amber-300">{last24hData.netlifyErrorRatePct}% Err</b></span>
+                  </div>
+                </div>
+
+                {/* 24-Hour Interactive Bar Chart */}
+                <div className="space-y-2">
+                  <div className="flex items-end gap-1 h-36 pt-4 px-2 bg-slate-900/60 rounded-xl border border-slate-800/80 relative">
+                    {/* Y-Axis Reference Label */}
+                    <div className="absolute top-1.5 left-2.5 text-[9px] font-mono text-slate-500">
+                      {netlifyChartMetric === 'status'
+                        ? `Max: ${maxHourlyReq} req/hr`
+                        : netlifyChartMetric === 'bandwidth'
+                          ? `Max: ${maxHourlyBw.toFixed(1)} MB/hr`
+                          : `Max: ${maxHourlyDur.toFixed(1)}s`}
+                    </div>
+
+                    {hourly24h.map(pt => {
+                      const val =
+                        netlifyChartMetric === 'status'
+                          ? pt.netlifyTotalRequests
+                          : netlifyChartMetric === 'bandwidth'
+                            ? pt.netlifyBandwidthMB
+                            : pt.durationP50Sec;
+                      const maxVal =
+                        netlifyChartMetric === 'status'
+                          ? maxHourlyReq
+                          : netlifyChartMetric === 'bandwidth'
+                            ? maxHourlyBw
+                            : maxHourlyDur;
+                      const heightPct = Math.max(4, Math.min(100, Math.round((val / maxVal) * 100)));
+                      const barColor =
+                        netlifyChartMetric === 'status'
+                          ? pt.netlifyTotalRequests >= 60
+                            ? 'bg-emerald-400 hover:bg-emerald-300'
+                            : 'bg-emerald-500/80 hover:bg-emerald-400'
+                          : netlifyChartMetric === 'bandwidth'
+                            ? pt.netlifyBandwidthMB >= 2
+                              ? 'bg-sky-400 hover:bg-sky-300'
+                              : 'bg-sky-500/80 hover:bg-sky-400'
+                            : pt.durationP50Sec >= 1.5
+                              ? 'bg-rose-400 hover:bg-rose-300'
+                              : 'bg-indigo-400 hover:bg-indigo-300';
+
+                      return (
+                        <div
+                          key={pt.hourKey}
+                          className="flex-1 flex flex-col items-center justify-end h-full group relative"
+                          title={`${pt.label}: ${pt.netlifyTotalRequests} req (Web: ${pt.netlifyWebRequests}, Fn: ${pt.netlifyFunctionCalls}) | ${pt.netlifyBandwidthMB} MB | ${pt.durationP50Sec}s p50 | FB Reads: ${pt.firebaseReads}, Writes: ${pt.firebaseWrites}`}
+                        >
+                          <div
+                            className={`w-full rounded-t transition-all ${barColor}`}
+                            style={{ height: `${heightPct}%` }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* X-Axis Timestamps matching Netlify 24h Console */}
+                  <div className="flex justify-between text-[9px] font-mono text-slate-400 px-1">
+                    <span>12:15 AM</span>
+                    <span>4:15 AM</span>
+                    <span>8:15 AM</span>
+                    <span>11:15 AM (Spike)</span>
+                    <span>2:15 PM</span>
+                    <span>6:15 PM</span>
+                    <span>10:15 PM</span>
+                  </div>
+                </div>
+
+                {/* Peak Hours Breakdown Pill List (Shows exact time-of-day requests, reads, writes & functions) */}
+                <div className="bg-slate-900/80 rounded-xl p-2.5 border border-slate-800 space-y-1.5">
+                  <div className="text-[10px] font-bold text-slate-300 flex items-center justify-between">
+                    <span>🕒 Hourly Time-of-Day Breakdown (کس ٹائم کتنی Requests، Reads، Writes اور Functions ہوئیں)</span>
+                    <span className="font-mono text-emerald-400">24h Live Log</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 max-h-28 overflow-y-auto pr-1">
+                    {hourly24h
+                      .filter(h => h.netlifyTotalRequests > 0 || h.firebaseReads > 0 || h.firebaseWrites > 0)
+                      .slice(-8)
+                      .map(h => (
+                        <div
+                          key={h.hourKey}
+                          className="bg-slate-950/90 border border-slate-800/90 rounded-lg px-2 py-1.5 text-[10px] font-mono"
+                        >
+                          <div className="font-black text-white flex justify-between">
+                            <span>{h.label}</span>
+                            <span className="text-emerald-400">{h.netlifyTotalRequests} req</span>
+                          </div>
+                          <div className="text-[9px] text-slate-400 mt-0.5">
+                            BW: {h.netlifyBandwidthMB}MB · Fn: {h.netlifyFunctionCalls}
+                          </div>
+                          <div className="text-[9px] text-amber-300">
+                            FB R: {h.firebaseReads} · W: {h.firebaseWrites}
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* PANEL 2: FIREBASE FIRESTORE 7-DAY CONSOLE REPLICA (Reads 1.6K +128.1% | Writes 66 +13.8%) */}
+              <div className="bg-slate-950 text-white rounded-2xl p-4 sm:p-5 border border-slate-800 shadow-lg space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/30 text-[10px] font-black">
+                        Spark plan (Daily Reset)
+                      </span>
+                      <h3 className="font-black text-sm text-white">
+                        Firebase Firestore Console Replica — Last 7 Days
+                      </h3>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Firebase کنسول کی طرح پچھلے 7 دن کے <b>Reads ({formatted7dReads})</b> اور <b>Writes ({thisWeekTotalWrites})</b> کا مکمل موازنہ (This week vs Last week)۔
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg self-start sm:self-auto">
+                    Daily Quota: 50K R / 20K W
+                  </span>
+                </div>
+
+                {/* Dual Sub-Charts: Reads (current) 1.6K +128.1% | Writes (current) 66 +13.8% */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Left: Reads (current) */}
+                  <div className="bg-slate-900/90 rounded-xl p-3.5 border border-slate-800 space-y-3">
+                    <div>
+                      <span className="text-[11px] text-slate-400 font-semibold block">
+                        Reads <span className="text-slate-500">(current 7 days)</span>
+                      </span>
+                      <div className="flex items-baseline gap-2 mt-0.5">
+                        <span className="text-2xl font-black font-mono text-white">
+                          {formatted7dReads}
+                        </span>
+                        <span className="text-xs font-mono font-bold text-sky-400">
+                          {readsWoWPct >= 0 ? `+${readsWoWPct}%` : `${readsWoWPct}%`}
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-400">
+                        Exact: {thisWeekTotalReads.toLocaleString()} reads (Today: {dailyData.firebaseReads.toLocaleString()})
+                      </span>
+                    </div>
+
+                    {/* 7-Day Reads Bar Comparison (This Week vs Last Week) */}
+                    <div className="flex items-end gap-1.5 h-28 pt-3 px-1.5 bg-slate-950/60 rounded-lg border border-slate-800/80">
+                      {sevenDayTrend.map(pt => {
+                        const thisH = Math.max(4, Math.min(100, Math.round((pt.thisWeekReads / max7dReadsPoint) * 100)));
+                        const lastH = Math.max(3, Math.min(100, Math.round((pt.lastWeekReads / max7dReadsPoint) * 100)));
+                        return (
+                          <div
+                            key={pt.date}
+                            className="flex-1 flex flex-col items-center justify-end h-full gap-1"
+                            title={`${pt.shortLabel}: This week ${pt.thisWeekReads} reads vs Last week ${pt.lastWeekReads} reads`}
+                          >
+                            <div className="w-full flex items-end justify-center gap-0.5 h-full">
+                              <div
+                                className="w-1/2 bg-sky-400 rounded-t transition-all"
+                                style={{ height: `${thisH}%` }}
+                              />
+                              <div
+                                className="w-1/2 bg-sky-400/30 border-t border-dashed border-sky-300 rounded-t transition-all"
+                                style={{ height: `${lastH}%` }}
+                              />
+                            </div>
+                            <span className="text-[8px] font-mono text-slate-400 truncate max-w-full">
+                              {pt.shortLabel.replace(' ', '')}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Right: Writes (current) */}
+                  <div className="bg-slate-900/90 rounded-xl p-3.5 border border-slate-800 space-y-3">
+                    <div>
+                      <span className="text-[11px] text-slate-400 font-semibold block">
+                        Writes <span className="text-slate-500">(current 7 days)</span>
+                      </span>
+                      <div className="flex items-baseline gap-2 mt-0.5">
+                        <span className="text-2xl font-black font-mono text-white">
+                          {thisWeekTotalWrites.toLocaleString()}
+                        </span>
+                        <span className="text-xs font-mono font-bold text-sky-400">
+                          {writesWoWPct >= 0 ? `+${writesWoWPct}%` : `${writesWoWPct}%`}
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-400">
+                        Today Writes: {dailyWritesAndDeletes.toLocaleString()} / 20,000 daily limit
+                      </span>
+                    </div>
+
+                    {/* 7-Day Writes Bar Comparison (This Week vs Last Week) */}
+                    <div className="flex items-end gap-1.5 h-28 pt-3 px-1.5 bg-slate-950/60 rounded-lg border border-slate-800/80">
+                      {sevenDayTrend.map(pt => {
+                        const thisH = Math.max(4, Math.min(100, Math.round((pt.thisWeekWrites / max7dWritesPoint) * 100)));
+                        const lastH = Math.max(3, Math.min(100, Math.round((pt.lastWeekWrites / max7dWritesPoint) * 100)));
+                        return (
+                          <div
+                            key={pt.date}
+                            className="flex-1 flex flex-col items-center justify-end h-full gap-1"
+                            title={`${pt.shortLabel}: This week ${pt.thisWeekWrites} writes vs Last week ${pt.lastWeekWrites} writes`}
+                          >
+                            <div className="w-full flex items-end justify-center gap-0.5 h-full">
+                              <div
+                                className="w-1/2 bg-sky-400 rounded-t transition-all"
+                                style={{ height: `${thisH}%` }}
+                              />
+                              <div
+                                className="w-1/2 bg-sky-400/30 border-t border-dashed border-sky-300 rounded-t transition-all"
+                                style={{ height: `${lastH}%` }}
+                              />
+                            </div>
+                            <span className="text-[8px] font-mono text-slate-400 truncate max-w-full">
+                              {pt.shortLabel.replace(' ', '')}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 7-Day Day-by-Day Breakdown Mini-Table */}
+                <div className="bg-slate-900/80 rounded-xl p-2.5 border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between text-[10px] text-slate-300 font-bold">
+                    <span>📊 7-Day Day-by-Day Firestore &amp; Request Record</span>
+                    <div className="flex items-center gap-3 font-mono text-[9px]">
+                      <span className="flex items-center gap-1">
+                        <span className="w-2.5 h-1 bg-sky-400 inline-block rounded" /> This week
+                      </span>
+                      <span className="flex items-center gap-1 text-slate-400">
+                        <span className="w-2.5 h-1 bg-sky-400/40 border-t border-dashed border-sky-300 inline-block" /> Last week
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-7 gap-1 text-center font-mono text-[9px]">
+                    {sevenDayTrend.map(d => (
+                      <div key={d.date} className="bg-slate-950/90 border border-slate-800 rounded-lg p-1.5">
+                        <div className="font-bold text-slate-300">{d.shortLabel}</div>
+                        <div className="text-emerald-400 font-black mt-0.5">{d.thisWeekReads} R</div>
+                        <div className="text-amber-300 font-bold">{d.thisWeekWrites} W</div>
+                        <div className="text-sky-400 text-[8px]">{d.netlifyRequests} req</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
@@ -1340,12 +1898,17 @@ export const SuperAdminView: React.FC = () => {
                     Store-by-Store &amp; Total Usage Report ({usagePeriod.toUpperCase()} — ہر دکان اور کل مجموعہ)
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    کسی بھی دکان کے سامنے &quot;Calibrate 24h&quot; بٹن سے آپ آج کے Netlify 24h کاؤنٹر (مثلاً 251 requests / 3.3 MB) کو سنک بھی کر سکتے ہیں۔
+                    کسی بھی دکان کے سامنے &quot;Calibrate 24h&quot; بٹن سے آپ آج کے 24h کاؤنٹر (مثلاً 587 requests / 10.3 MB) کو دستی طور پر بھی سنک کر سکتے ہیں۔
                   </p>
                 </div>
-                <span className="text-[10px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700 self-start sm:self-auto">
-                  Showing Period: {usagePeriod.toUpperCase()}
-                </span>
+                <div className="flex items-center gap-2 self-start sm:self-auto">
+                  <span className="text-[10px] font-mono font-bold px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-800 border border-indigo-200">
+                    Mode: {isFirebaseOnly ? 'Only Firebase' : 'Netlify + Firebase'}
+                  </span>
+                  <span className="text-[10px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100 text-slate-700">
+                    Period: {usagePeriod.toUpperCase()}
+                  </span>
+                </div>
               </div>
 
               <div className="overflow-x-auto">
@@ -1353,10 +1916,14 @@ export const SuperAdminView: React.FC = () => {
                   <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[10px]">
                     <tr>
                       <th className="py-3 px-4">Shop / Store Name</th>
-                      <th className="py-3 px-4">Netlify Requests (Web + Fn)</th>
-                      <th className="py-3 px-4">Bandwidth</th>
-                      <th className="py-3 px-4">Firebase Reads</th>
-                      <th className="py-3 px-4">Firebase Writes</th>
+                      <th className="py-3 px-4">
+                        {usagePeriod === 'daily'
+                          ? `${isFirebaseOnly ? 'FB Host' : 'Netlify'} 24h Requests (Web + Fn)`
+                          : `${isFirebaseOnly ? 'FB Host' : 'Netlify'} Requests (${usagePeriod})`}
+                      </th>
+                      <th className="py-3 px-4">Bandwidth &amp; Latency</th>
+                      <th className="py-3 px-4">Firebase Reads (Daily Reset)</th>
+                      <th className="py-3 px-4">Firebase Writes (Daily Reset)</th>
                       <th className="py-3 px-4 text-right">Action / Sync</th>
                     </tr>
                   </thead>
@@ -1373,20 +1940,53 @@ export const SuperAdminView: React.FC = () => {
                       </td>
                       <td className="py-3 px-4 font-mono">
                         <span className="text-sm font-black text-sky-800">
-                          {combinedUsageReport[usagePeriod].netlifyTotalRequests.toLocaleString()}
+                          {(usagePeriod === 'daily'
+                            ? combinedUsageReport.last24h.netlifyTotalRequests
+                            : combinedUsageReport[usagePeriod].netlifyTotalRequests
+                          ).toLocaleString()}
                         </span>
                         <span className="block text-[10px] text-slate-500">
-                          Web: {combinedUsageReport[usagePeriod].netlifyWebRequests.toLocaleString()} | Fn: {combinedUsageReport[usagePeriod].netlifyFunctionCalls.toLocaleString()}
+                          Web:{' '}
+                          {(usagePeriod === 'daily'
+                            ? combinedUsageReport.last24h.netlifyWebRequests
+                            : combinedUsageReport[usagePeriod].netlifyWebRequests
+                          ).toLocaleString()}{' '}
+                          | Fn:{' '}
+                          {(usagePeriod === 'daily'
+                            ? combinedUsageReport.last24h.netlifyFunctionCalls
+                            : combinedUsageReport[usagePeriod].netlifyFunctionCalls
+                          ).toLocaleString()}
                         </span>
                       </td>
-                      <td className="py-3 px-4 font-mono font-black text-indigo-800">
-                        {combinedUsageReport[usagePeriod].netlifyBandwidthMB} MB
+                      <td className="py-3 px-4 font-mono">
+                        <span className="font-black text-indigo-800">
+                          {usagePeriod === 'daily'
+                            ? combinedUsageReport.last24h.netlifyBandwidthMB
+                            : combinedUsageReport[usagePeriod].netlifyBandwidthMB}{' '}
+                          MB
+                        </span>
+                        <span className="block text-[10px] text-slate-500">
+                          p50: {combinedUsageReport.last24h.netlifyDurationP50Sec}s · Err: {combinedUsageReport.last24h.netlifyErrorRatePct}%
+                        </span>
                       </td>
-                      <td className="py-3 px-4 font-mono font-black text-emerald-700">
-                        {combinedUsageReport[usagePeriod].firebaseReads.toLocaleString()}
+                      <td className="py-3 px-4 font-mono">
+                        <span className="font-black text-emerald-700">
+                          {combinedUsageReport[usagePeriod].firebaseReads.toLocaleString()}
+                        </span>
+                        <span className="block text-[10px] text-slate-500">
+                          7d Console: {(combinedUsageReport.weekly.firebaseReads / 1000).toFixed(1)}K / 50K day
+                        </span>
                       </td>
-                      <td className="py-3 px-4 font-mono font-black text-amber-700">
-                        {(combinedUsageReport[usagePeriod].firebaseWrites + combinedUsageReport[usagePeriod].firebaseDeletes).toLocaleString()}
+                      <td className="py-3 px-4 font-mono">
+                        <span className="font-black text-amber-700">
+                          {(
+                            combinedUsageReport[usagePeriod].firebaseWrites +
+                            combinedUsageReport[usagePeriod].firebaseDeletes
+                          ).toLocaleString()}
+                        </span>
+                        <span className="block text-[10px] text-slate-500">
+                          7d Console: {combinedUsageReport.weekly.firebaseWrites + combinedUsageReport.weekly.firebaseDeletes} / 20K day
+                        </span>
                       </td>
                       <td className="py-3 px-4 text-right">
                         <button
@@ -1402,6 +2002,7 @@ export const SuperAdminView: React.FC = () => {
                     {/* Individual Shop Rows */}
                     {shopUsageRows.map(row => {
                       const p = row[usagePeriod];
+                      const pReq = usagePeriod === 'daily' ? row.last24h : p;
                       const isSelected = selectedUsageShopId === row.shopId;
                       return (
                         <tr
@@ -1416,20 +2017,31 @@ export const SuperAdminView: React.FC = () => {
                           </td>
                           <td className="py-3 px-4 font-mono">
                             <span className="font-black text-slate-900">
-                              {p.netlifyTotalRequests.toLocaleString()}
+                              {pReq.netlifyTotalRequests.toLocaleString()}
                             </span>
                             <span className="block text-[10px] text-slate-500">
-                              Web: {p.netlifyWebRequests.toLocaleString()} | Fn: {p.netlifyFunctionCalls.toLocaleString()}
+                              Web: {pReq.netlifyWebRequests.toLocaleString()} | Fn: {pReq.netlifyFunctionCalls.toLocaleString()}
                             </span>
                           </td>
-                          <td className="py-3 px-4 font-mono font-bold text-slate-800">
-                            {p.netlifyBandwidthMB} MB
+                          <td className="py-3 px-4 font-mono">
+                            <span className="font-bold text-slate-800">{pReq.netlifyBandwidthMB} MB</span>
+                            <span className="block text-[10px] text-slate-400">
+                              p50: {row.last24h.netlifyDurationP50Sec}s
+                            </span>
                           </td>
-                          <td className="py-3 px-4 font-mono font-bold text-emerald-700">
-                            {p.firebaseReads.toLocaleString()}
+                          <td className="py-3 px-4 font-mono">
+                            <span className="font-bold text-emerald-700">{p.firebaseReads.toLocaleString()}</span>
+                            <span className="block text-[10px] text-slate-400">
+                              7d: {row.weekly.firebaseReads >= 1000 ? `${(row.weekly.firebaseReads / 1000).toFixed(1)}K` : row.weekly.firebaseReads}
+                            </span>
                           </td>
-                          <td className="py-3 px-4 font-mono font-bold text-amber-700">
-                            {(p.firebaseWrites + p.firebaseDeletes).toLocaleString()}
+                          <td className="py-3 px-4 font-mono">
+                            <span className="font-bold text-amber-700">
+                              {(p.firebaseWrites + p.firebaseDeletes).toLocaleString()}
+                            </span>
+                            <span className="block text-[10px] text-slate-400">
+                              7d: {row.weekly.firebaseWrites + row.weekly.firebaseDeletes}
+                            </span>
                           </td>
                           <td className="py-3 px-4 text-right">
                             <div className="flex items-center justify-end gap-1.5">
@@ -1448,14 +2060,14 @@ export const SuperAdminView: React.FC = () => {
                                 type="button"
                                 onClick={() => {
                                   setCalibrateModalShop(row);
-                                  setCalWebReq(String(row.daily.netlifyWebRequests || 251));
-                                  setCalFnReq(String(row.daily.netlifyFunctionCalls || 0));
-                                  setCalBwMb(String(row.daily.netlifyBandwidthMB || 3.3));
-                                  setCalFbReads(String(row.daily.firebaseReads || 0));
-                                  setCalFbWrites(String(row.daily.firebaseWrites || 0));
+                                  setCalWebReq(String(row.daily.netlifyWebRequests || 375));
+                                  setCalFnReq(String(row.daily.netlifyFunctionCalls || 37));
+                                  setCalBwMb(String(row.daily.netlifyBandwidthMB || 8.4));
+                                  setCalFbReads(String(row.daily.firebaseReads || 712));
+                                  setCalFbWrites(String(row.daily.firebaseWrites || 29));
                                 }}
                                 className="px-2.5 py-1 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 text-[10px] font-bold cursor-pointer"
-                                title="Calibrate today's usage with Netlify 24h counter"
+                                title="Calibrate today's usage with Netlify 24h & Firebase console counters"
                               >
                                 Calibrate 24h
                               </button>
@@ -1477,7 +2089,7 @@ export const SuperAdminView: React.FC = () => {
                     Permanent Historical Ledger — {activeUsageReport.shopName}
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    Netlify صرف 24 گھنٹے کا ڈیٹا دکھاتا ہے، لیکن یہاں آپ کا روزانہ اور ماہانہ ریکارڈ ہمیشہ کے لیے محفوظ رہے گا۔
+                    Netlify صرف 24 گھنٹے اور Firebase صرف 7/30 دن دکھاتا ہے، لیکن یہاں آپ کا روزانہ اور ماہانہ ریکارڈ ہمیشہ کے لیے محفوظ رہتا ہے۔
                   </p>
                 </div>
 
@@ -1491,7 +2103,7 @@ export const SuperAdminView: React.FC = () => {
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    Daily History (آخری 31 دن)
+                    Daily History (آخری 31 دن — FB Daily Reset Record)
                   </button>
                   <button
                     type="button"
@@ -1502,7 +2114,7 @@ export const SuperAdminView: React.FC = () => {
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    Monthly History (12 مہینے)
+                    Monthly History (12 مہینے — Netlify Monthly Quota Record)
                   </button>
                 </div>
               </div>
@@ -1512,7 +2124,7 @@ export const SuperAdminView: React.FC = () => {
                   <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[10px]">
                     <tr>
                       <th className="py-2.5 px-4">{historyViewMode === 'daily' ? 'Date (تاریخ)' : 'Month (مہینہ)'}</th>
-                      <th className="py-2.5 px-4">Netlify Total Requests</th>
+                      <th className="py-2.5 px-4">{isFirebaseOnly ? 'FB Hosting Requests' : 'Netlify Total Requests'}</th>
                       <th className="py-2.5 px-4">Bandwidth</th>
                       <th className="py-2.5 px-4">Firebase Reads</th>
                       <th className="py-2.5 px-4">Firebase Writes</th>

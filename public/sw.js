@@ -1,9 +1,9 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v18.1.5
+ * Version: v18.1.6
  * Smart Background Pre-Download, Non-Disruptive Updates & True Background Cloud Sync (GitHub Pages + Netlify)
  */
-const SW_VERSION = 'v18.1.5';
+const SW_VERSION = 'v18.1.6';
 const BUILD_ID = '/* __BUILD_ID__ */';
 const SMART_CACHE_PREFIX = 'nh-pos-smart-';
 const CACHE_NAME =
@@ -57,6 +57,9 @@ self.addEventListener('install', (event) => {
       // For HTML entry files ('./', 'index.html'), append a versioned cache-buster query on the network request
       // so GitHub Pages' 10-minute CDN cache (max-age=600) is bypassed immediately, while storing under the clean key!
       const cacheBuster = encodeURIComponent(SW_VERSION + '_' + BUILD_ID);
+      let precachedHitCount = 0;
+      let precachedTotalBytes = 0;
+
       await Promise.all(
         criticalAssets.map(async (asset) => {
           const isHtmlEntry = asset === './' || asset === 'index.html';
@@ -66,6 +69,9 @@ self.addEventListener('install', (event) => {
           if (!resp || resp.status !== 200) {
             throw new Error('[SW] Failed to precache critical asset: ' + asset);
           }
+          precachedHitCount += 1;
+          const cl = Number(resp.headers.get('content-length')) || 0;
+          precachedTotalBytes += cl > 0 ? cl : isHtmlEntry ? 4800 : 165000;
           await cache.put(asset, resp);
         })
       );
@@ -73,9 +79,18 @@ self.addEventListener('install', (event) => {
       // Optional assets (icons, manifest, 404) are best-effort
       await Promise.all(
         optionalAssets.map((asset) =>
-          cache.add(asset).catch((err) => {
-            console.warn('[SW] Optional precache skipped for:', asset, err && err.message);
-          })
+          fetch(asset)
+            .then(async (resp) => {
+              if (resp && resp.status === 200) {
+                precachedHitCount += 1;
+                const cl = Number(resp.headers.get('content-length')) || 0;
+                precachedTotalBytes += cl > 0 ? cl : 18500;
+                await cache.put(asset, resp);
+              }
+            })
+            .catch((err) => {
+              console.warn('[SW] Optional precache skipped for:', asset, err && err.message);
+            })
         )
       );
 
@@ -85,6 +100,15 @@ self.addEventListener('install', (event) => {
       // - If device already has smart updater (v18.0.6+) AND user has the app open:
       //   stay silently in 'waiting' state (zero disruption) and notify tabs to apply on page switch/refresh/reopen.
       const existingClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of existingClients) {
+        try {
+          client.postMessage({
+            type: 'SW_NETLIFY_NETWORK_HIT',
+            requests: precachedHitCount + 1, // +1 for sw.js script download itself
+            bytes: precachedTotalBytes + 26500
+          });
+        } catch {}
+      }
       if (!hasSmartCache || existingClients.length === 0) {
         await self.skipWaiting();
       } else {
@@ -232,6 +256,27 @@ self.addEventListener('fetch', (event) => {
     );
   }
 
+  function notifyClientNetworkHit(requestsCount, resp, fallbackBytes) {
+    try {
+      const cl = resp && resp.headers ? Number(resp.headers.get('content-length')) || 0 : 0;
+      const bytes = cl > 0 ? cl : fallbackBytes;
+      self.clients
+        .matchAll({ type: 'window', includeUncontrolled: true })
+        .then((clients) => {
+          for (const client of clients) {
+            try {
+              client.postMessage({
+                type: 'SW_NETLIFY_NETWORK_HIT',
+                requests: requestsCount,
+                bytes
+              });
+            } catch {}
+          }
+        })
+        .catch(() => {});
+    } catch {}
+  }
+
   // A. Navigation Requests (HTML Pages / SPAs / Offline Launch / Subpath)
   const isNavigation =
     req.mode === 'navigate' ||
@@ -245,9 +290,12 @@ self.addEventListener('fetch', (event) => {
         //    Then check for SW updates in the background so slow mobile networks (e.g. 8 KB/s) NEVER hang on splash screen.
         const verifiedCached = await getVerifiedCachedHtml();
         if (verifiedCached) {
-          // Trigger background SW update check without blocking launch
+          // Trigger background SW update check without blocking launch (1 real conditional request to sw.js)
           try {
-            self.registration.update().catch(() => {});
+            self.registration
+              .update()
+              .then(() => notifyClientNetworkHit(1, null, 750))
+              .catch(() => {});
           } catch {}
           return verifiedCached;
         }
@@ -256,6 +304,7 @@ self.addEventListener('fetch', (event) => {
         try {
           const networkResp = await fetch(req);
           if (networkResp && networkResp.status === 200) {
+            notifyClientNetworkHit(1, networkResp, 4800);
             const clone = networkResp.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
             return networkResp;
@@ -285,6 +334,7 @@ self.addEventListener('fetch', (event) => {
         try {
           const networkResp = await fetch(req);
           if (networkResp && networkResp.status === 200) {
+            notifyClientNetworkHit(1, networkResp, 145000);
             const clone = networkResp.clone();
             const cache = await caches.open(CACHE_NAME);
             cache.put(req, clone);
@@ -305,6 +355,7 @@ self.addEventListener('fetch', (event) => {
         fetch(req)
           .then((networkResp) => {
             if (networkResp && (networkResp.status === 200 || networkResp.type === 'opaque')) {
+              notifyClientNetworkHit(1, networkResp, 14500);
               caches.open(CACHE_NAME).then((cache) => cache.put(req, networkResp));
             }
           })
@@ -315,6 +366,7 @@ self.addEventListener('fetch', (event) => {
       return fetch(req)
         .then((networkResp) => {
           if (networkResp && (networkResp.status === 200 || networkResp.type === 'opaque')) {
+            notifyClientNetworkHit(1, networkResp, 16500);
             const clone = networkResp.clone();
             caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
           }
