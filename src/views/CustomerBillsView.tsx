@@ -574,6 +574,16 @@ export const CustomerBillsView: React.FC = () => {
               </div>
 
               <div>
+                <label className="block text-[11px] font-bold text-slate-500 mb-1">Entry Date (تاریخ)</label>
+                <input
+                  type="date"
+                  value={editItem.created_date || ''}
+                  onChange={e => setEditItem({ ...editItem, created_date: e.target.value })}
+                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold text-slate-800"
+                />
+              </div>
+
+              <div>
                 <label className="block text-[11px] font-bold text-slate-500 mb-1">Address</label>
                 <input
                   type="text"

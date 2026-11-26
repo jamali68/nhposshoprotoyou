@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ShieldCheck,
   Building2,
@@ -99,6 +99,8 @@ export const SuperAdminView: React.FC = () => {
   const [selectedShopForModules, setSelectedShopForModules] = useState<string>('GLOBAL');
   const [moduleSaveBanner, setModuleSaveBanner] = useState<string | null>(null);
   const [moduleSaveStatus, setModuleSaveStatus] = useState<'synced' | 'error'>('synced');
+  const [hasUnsyncedCloudChanges, setHasUnsyncedCloudChanges] = useState<boolean>(false);
+  const pendingCloudConfigRef = useRef<PlatformModuleControlConfig | null>(null);
 
   // Firebase Master Google Auth Verification State (required by Firestore security rules for /platform_settings writes)
   const [firebaseAuthEmail, setFirebaseAuthEmail] = useState<string | null>(
@@ -124,6 +126,25 @@ export const SuperAdminView: React.FC = () => {
       const signedEmail = res.user?.email?.toLowerCase() || null;
       setFirebaseAuthEmail(signedEmail);
       if (signedEmail && superAdminService.isMasterAdminEmail(signedEmail)) {
+        // If Super Admin already toggled Lock/Unlock before verifying, flush those exact changes straight to Firestore first!
+        const pendingCfg = pendingCloudConfigRef.current;
+        if (pendingCfg) {
+          const flushed = await superAdminService.saveModuleControlConfig({
+            ...pendingCfg,
+            updatedBy: signedEmail
+          });
+          if (flushed) {
+            pendingCloudConfigRef.current = null;
+            setHasUnsyncedCloudChanges(false);
+            setModuleConfig(pendingCfg);
+            setModuleSaveStatus('synced');
+            setModuleSaveBanner(`✓ Master Cloud Auth verified (${signedEmail}) aur aap ke tamam Lock/Unlock changes live Cloud par sync ho gaye!`);
+            setTimeout(() => setModuleSaveBanner(null), 5000);
+            loadData();
+            return;
+          }
+        }
+        setHasUnsyncedCloudChanges(false);
         setModuleSaveStatus('synced');
         setModuleSaveBanner(`✓ Master Cloud Auth verified (${signedEmail})! Ab tamam Lock/Unlock changes real-time Firestore par sync honge.`);
         setTimeout(() => setModuleSaveBanner(null), 4000);
@@ -349,6 +370,13 @@ export const SuperAdminView: React.FC = () => {
 
     setModuleConfig(updated);
     const saved = await superAdminService.saveModuleControlConfig(updated);
+    if (!saved) {
+      pendingCloudConfigRef.current = updated;
+      setHasUnsyncedCloudChanges(true);
+    } else {
+      pendingCloudConfigRef.current = null;
+      setHasUnsyncedCloudChanges(false);
+    }
     showCloudSaveResult(saved, '✓ Permission Lock / Unlock status saved and synced across all devices!');
   };
 
@@ -366,7 +394,14 @@ export const SuperAdminView: React.FC = () => {
     };
     setModuleConfig(updated);
     const saved = await superAdminService.saveModuleControlConfig(updated);
-    showCloudSaveResult(saved, '✓ Platform security & feature Lock / Unlock updated!');
+    if (!saved) {
+      pendingCloudConfigRef.current = updated;
+      setHasUnsyncedCloudChanges(true);
+    } else {
+      pendingCloudConfigRef.current = null;
+      setHasUnsyncedCloudChanges(false);
+    }
+    showCloudSaveResult(saved, '✓ Platform security & feature Lock / Unlock synced to all devices!');
   };
 
   // Toggle Store Manager / Cashier / Salesman Module Lock/Unlock from Super Admin
@@ -446,6 +481,13 @@ export const SuperAdminView: React.FC = () => {
     };
     setModuleConfig(updated);
     const saved = await superAdminService.setDataUpdateDelayMs(clampedMs);
+    if (!saved) {
+      pendingCloudConfigRef.current = updated;
+      setHasUnsyncedCloudChanges(true);
+    } else {
+      pendingCloudConfigRef.current = null;
+      setHasUnsyncedCloudChanges(false);
+    }
     showCloudSaveResult(
       saved,
       `✓ Data Update Delay Time set to ${(clampedMs / 1000).toFixed(1)} sec (${clampedMs} ms) for ALL accounts!`
@@ -474,6 +516,13 @@ export const SuperAdminView: React.FC = () => {
     }
     setModuleConfig(updated);
     const saved = await superAdminService.saveModuleControlConfig(updated);
+    if (!saved) {
+      pendingCloudConfigRef.current = updated;
+      setHasUnsyncedCloudChanges(true);
+    } else {
+      pendingCloudConfigRef.current = null;
+      setHasUnsyncedCloudChanges(false);
+    }
     showCloudSaveResult(saved, '✓ All modules UNLOCKED (🔓)!');
   };
 
@@ -498,6 +547,13 @@ export const SuperAdminView: React.FC = () => {
     }
     setModuleConfig(updated);
     const saved = await superAdminService.saveModuleControlConfig(updated);
+    if (!saved) {
+      pendingCloudConfigRef.current = updated;
+      setHasUnsyncedCloudChanges(true);
+    } else {
+      pendingCloudConfigRef.current = null;
+      setHasUnsyncedCloudChanges(false);
+    }
     showCloudSaveResult(saved, '🔒 All controllable modules LOCKED (Visible with Lock icon)!');
   };
 
@@ -691,10 +747,38 @@ export const SuperAdminView: React.FC = () => {
       {/* ========================================================================= */}
       {activeTab === 'shops' && (
         <div className="space-y-4">
+          {!isFirebaseMasterVerified && (
+            <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-start gap-2.5 text-xs text-amber-900">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-black">Cloud Sync Verification Required (Master Google Auth)</div>
+                  <p className="text-[11px] text-amber-800 mt-0.5 leading-snug">
+                    Email/Password login ke baad Lock/Unlock sab devices par live sync karne ke liye 1 baar Master Gmail verify karein.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleVerifyMasterGoogleCloudAuth}
+                disabled={isVerifyingCloudAuth}
+                className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white rounded-xl text-xs font-black shrink-0 cursor-pointer transition-all shadow-xs"
+              >
+                {isVerifyingCloudAuth ? 'Verifying...' : '🔐 Verify Cloud Auth (Google)'}
+              </button>
+            </div>
+          )}
+
           {moduleSaveBanner && (
-            <div className="p-3 bg-emerald-600 text-white rounded-2xl text-xs font-bold flex items-center justify-between shadow-md animate-in fade-in">
+            <div
+              className={`p-3 text-white rounded-2xl text-xs font-bold flex items-center justify-between shadow-md animate-in fade-in ${
+                moduleSaveStatus === 'error' ? 'bg-rose-600' : 'bg-emerald-600'
+              }`}
+            >
               <span>{moduleSaveBanner}</span>
-              <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono">LIVE SYNCED</span>
+              <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-mono shrink-0 ml-2">
+                {moduleSaveStatus === 'error' ? 'SYNC FAILED' : 'LIVE SYNCED'}
+              </span>
             </div>
           )}
 
@@ -2025,13 +2109,31 @@ export const SuperAdminView: React.FC = () => {
 
           {/* Platform Feature & Function Permissions (Lock / Unlock Buttons) */}
           <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-4">
-            <div className="border-b border-slate-100 pb-3">
-              <h3 className="font-black text-sm text-slate-900">
-                Global Function &amp; Security Permissions (Lock / Unlock)
-              </h3>
-              <p className="text-[11px] text-slate-500">
-                Control multi-user registration, staff creation, data export, SQL imports, and password policies via Lock / Unlock.
-              </p>
+            <div className="border-b border-slate-100 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div>
+                <h3 className="font-black text-sm text-slate-900">
+                  Global Function &amp; Security Permissions (Lock / Unlock)
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  Control multi-user registration, staff creation, data export, SQL imports, and password policies via Lock / Unlock.
+                </p>
+              </div>
+              {isFirebaseMasterVerified ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-black shrink-0 self-start sm:self-auto">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Cloud Sync Active</span>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleVerifyMasterGoogleCloudAuth}
+                  disabled={isVerifyingCloudAuth}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black shrink-0 self-start sm:self-auto cursor-pointer shadow-xs"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>{isVerifyingCloudAuth ? 'Verifying...' : 'Verify Gmail to Sync Cloud'}</span>
+                </button>
+              )}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
@@ -2637,6 +2739,35 @@ export const SuperAdminView: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Sticky Bottom Cloud Sync Toast (Always visible even when scrolled down to Global Permissions!) */}
+      {(moduleSaveBanner || hasUnsyncedCloudChanges) && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 w-[94%] max-w-lg animate-in fade-in slide-in-from-bottom-3 duration-200">
+          <div
+            className={`p-3.5 rounded-2xl shadow-2xl border text-white flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
+              hasUnsyncedCloudChanges || moduleSaveStatus === 'error'
+                ? 'bg-rose-600 border-rose-400/50'
+                : 'bg-emerald-600 border-emerald-400/50'
+            }`}
+          >
+            <div className="text-xs font-bold leading-snug">
+              {hasUnsyncedCloudChanges && !isFirebaseMasterVerified
+                ? '⚠️ Lock/Unlock abhi sirf is phone par save hua hai — sab phones par live karne ke liye Master Gmail verify karein!'
+                : moduleSaveBanner}
+            </div>
+            {hasUnsyncedCloudChanges && !isFirebaseMasterVerified && (
+              <button
+                type="button"
+                onClick={handleVerifyMasterGoogleCloudAuth}
+                disabled={isVerifyingCloudAuth}
+                className="px-3 py-1.5 bg-white text-rose-700 hover:bg-rose-50 font-black text-[11px] rounded-xl shrink-0 cursor-pointer shadow-xs"
+              >
+                {isVerifyingCloudAuth ? 'Verifying...' : '🔐 Verify & Sync Now'}
+              </button>
+            )}
           </div>
         </div>
       )}

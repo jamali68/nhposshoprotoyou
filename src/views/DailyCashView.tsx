@@ -195,6 +195,8 @@ export const DailyCashView: React.FC = () => {
   const [editType, setEditType] = useState<string>('out');
   const [editAmount, setEditAmount] = useState<string>('');
   const [editDesc, setEditDesc] = useState<string>('');
+  const [editDate, setEditDate] = useState<string>(filterDate);
+  const [editOriginalDate, setEditOriginalDate] = useState<string>(filterDate);
 
   // Sub-Modals
   const [selectedHisTxId, setSelectedHisTxId] = useState<string | null>(null);
@@ -781,10 +783,13 @@ export const DailyCashView: React.FC = () => {
       showAppAlert('🔒 ایڈمن کی جانب سے انٹری ایڈٹ کرنا لاک (Locked) ہے۔');
       return;
     }
+    const txDate = t.transaction_date || filterDate;
     setEditId(t.id);
     setEditType(t.type);
     setEditAmount(t.amount.toString());
     setEditDesc(t.description);
+    setEditDate(txDate);
+    setEditOriginalDate(txDate);
   };
 
   const handleSaveEdit = (e: React.FormEvent) => {
@@ -797,7 +802,7 @@ export const DailyCashView: React.FC = () => {
     const val = parseFloat(editAmount);
     if (isNaN(val) || val <= 0) return;
 
-    updateDailyTransaction(editId, val, editDesc, editType);
+    updateDailyTransaction(editId, val, editDesc, editType, editDate);
     setEditId(null);
   };
 
@@ -1854,6 +1859,33 @@ export const DailyCashView: React.FC = () => {
             </h3>
 
             <form onSubmit={handleSaveEdit} className="space-y-3 text-xs">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] font-bold text-slate-500">Entry Date (تاریخ)</label>
+                  {editDate && editOriginalDate && editDate !== editOriginalDate && (
+                    <button
+                      type="button"
+                      onClick={() => setEditDate(editOriginalDate)}
+                      className="text-[10px] font-bold text-blue-600 hover:underline"
+                    >
+                      Asal Date ({editOriginalDate})
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="date"
+                  value={editDate}
+                  onChange={e => setEditDate(e.target.value)}
+                  required
+                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold text-slate-800"
+                />
+                {editDate && editOriginalDate && editDate !== editOriginalDate && (
+                  <p className="mt-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
+                    یہ انٹری {editOriginalDate} سے {editDate} کی تاریخ میں منتقل ہو جائے گی۔
+                  </p>
+                )}
+              </div>
+
               <div>
                 <label className="block text-[11px] font-bold text-slate-500 mb-1">Transaction Type</label>
                 <select

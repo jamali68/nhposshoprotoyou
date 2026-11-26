@@ -260,11 +260,11 @@ interface POSContextType {
 
   // CRUD Actions
   addDailyTransaction: (tx: Omit<DailyTransaction, 'id' | 'created_by'>) => void;
-  updateDailyTransaction: (id: string, newAmount: number, newDesc: string, newType?: string) => void;
+  updateDailyTransaction: (id: string, newAmount: number, newDesc: string, newType?: string, newDate?: string) => void;
   deleteDailyTransaction: (id: string) => void;
 
   addBackCash: (tx: Omit<BackCashTransaction, 'id' | 'created_by'>) => void;
-  updateBackCash: (id: string, newAmount: number, newNote: string, newType?: BackCashTransaction['type']) => void;
+  updateBackCash: (id: string, newAmount: number, newNote: string, newType?: BackCashTransaction['type'], newDate?: string) => void;
   deleteBackCash: (id: string) => void;
   transferBetweenCashAccounts: (params: {
     from: 'shop' | 'back';
@@ -294,7 +294,7 @@ interface POSContextType {
   deleteBottleItem: (id: string) => void;
   updateItemStock: (itemId: string, qty: number, type: 'add' | 'remove', note?: string) => boolean;
 
-  restoreDeletedEntry: (id: string) => void;
+  restoreDeletedEntry: (id: string, targetDate?: string) => void;
   permanentDeleteEntry: (id: string) => void;
   markAllEditsAsRead: () => void;
 
@@ -3254,6 +3254,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const cleanPhone = sanitizeTextInput(data.phone || '', 25);
       const cleanAddress = sanitizeTextInput(data.address || '', 140);
 
+      // Always check latest Cloud Super Admin permissions before allowing new shop signup
+      if (typeof navigator === 'undefined' || navigator.onLine) {
+        await superAdminService.syncModuleControlFromCloud();
+      }
       const platformPerms = superAdminService.getModuleControlConfig().featurePermissions;
       if (!platformPerms.allowShopSignup && !MASTER_SUPER_ADMIN_EMAILS.includes(cleanEmail)) {
         return {
@@ -3278,13 +3282,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (!phoneCheck.valid) {
         return { success: false, error: phoneCheck.errorUr || phoneCheck.errorEn };
       }
-      if (platformPerms.requireStrongPasswords) {
+      if (platformPerms.requireStrongPasswords !== false) {
         const passCheck = validateStrongPassword(cleanPassword, cleanEmail, cleanOwnerName);
         if (!passCheck.valid) {
           return { success: false, error: passCheck.errorUr || passCheck.errorEn };
         }
-      } else if (!cleanPassword || cleanPassword.length < 6) {
-        return { success: false, error: 'پاس ورڈ کم از کم 6 ہندسوں کا ہونا ضروری ہے۔' };
+      } else if (!cleanPassword || cleanPassword.length < 4) {
+        return { success: false, error: 'پاس ورڈ کم از کم 4 ہندسوں کا ہونا ضروری ہے۔' };
       }
 
       const cleanEmailKey = cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
@@ -5243,8 +5247,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
   };
 
-  const updateDailyTransaction = (id: string, newAmount: number, newDesc: string, newType?: string) => {
+  const updateDailyTransaction = (id: string, newAmount: number, newDesc: string, newType?: string, newDate?: string) => {
     rememberTextSuggestion(newDesc, 'note');
+    const cleanNewDate = newDate && /^\d{4}-\d{2}-\d{2}$/.test(newDate) ? newDate : undefined;
     scheduleDataMutation(
       'edit',
       'کیش ریکارڈ اپڈیٹ کیا جا رہا ہے...',
@@ -5253,7 +5258,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setDailyTransactions(prev =>
           prev.map(tx => {
             if (tx.id === id) {
-              if (tx.amount !== newAmount) {
+              const targetDate = cleanNewDate || tx.transaction_date;
+              const dateChanged = targetDate !== tx.transaction_date;
+              if (tx.amount !== newAmount || dateChanged) {
                 const log: EditHistoryRecord = {
                   id: `eh-${Date.now()}`,
                   transaction_id: id,
@@ -5263,17 +5270,21 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                   edited_by: currentUser?.role || 'user',
                   edited_at: new Date().toISOString(),
                   is_read: false,
-                  note: newDesc,
-                  transaction_date: tx.transaction_date
+                  note: dateChanged ? `${newDesc} (Date: ${tx.transaction_date} → ${targetDate})` : newDesc,
+                  transaction_date: targetDate
                 };
                 setEditHistory(h => [log, ...h]);
                 saveDocToShop('edit_history', log.id, log);
               }
-              if (tx.linked_transfer_id && newAmount !== tx.amount) {
+              if (tx.linked_transfer_id && (newAmount !== tx.amount || dateChanged)) {
                 setBackCashTransactions(prevBack =>
                   prevBack.map(b => {
                     if (b.id === tx.linked_transfer_id || b.linked_transfer_id === id) {
-                      const updatedBc = { ...b, amount: newAmount };
+                      const updatedBc = {
+                        ...b,
+                        amount: newAmount,
+                        transaction_date: targetDate
+                      };
                       saveDocToShop('back_cash_transactions', updatedBc.id, updatedBc);
                       return updatedBc;
                     }
@@ -5285,7 +5296,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 ...tx,
                 amount: newAmount,
                 description: newDesc,
-                type: (newType as any) || tx.type
+                type: (newType as any) || tx.type,
+                transaction_date: targetDate
               };
               saveDocToShop('daily_transactions', updated.id, updated);
               return updated;
@@ -5298,6 +5310,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteDailyTransaction = (id: string) => {
+    if (
+      !superAdminService.isActionUnlockedForUser('allowDeleteEntry', {
+        ...currentUser,
+        shopId: currentShopId || currentUser?.shopId
+      })
+    ) {
+      return;
+    }
     const tx = dailyTransactions.find(t => t.id === id);
     if (!tx) return;
 
@@ -5388,8 +5408,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
   };
 
-  const updateBackCash = (id: string, newAmount: number, newNote: string, newType?: BackCashTransaction['type']) => {
+  const updateBackCash = (id: string, newAmount: number, newNote: string, newType?: BackCashTransaction['type'], newDate?: string) => {
     rememberTextSuggestion(newNote, 'note');
+    const cleanNewDate = newDate && /^\d{4}-\d{2}-\d{2}$/.test(newDate) ? newDate : undefined;
     const editorRole = currentUser?.role || 'user';
     const editorName = currentUser?.name || currentUser?.username || (editorRole.charAt(0).toUpperCase() + editorRole.slice(1));
 
@@ -5401,7 +5422,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setBackCashTransactions(prev =>
           prev.map(tx => {
             if (tx.id === id) {
-              if (tx.amount !== newAmount) {
+              const targetDate = cleanNewDate || tx.transaction_date;
+              const dateChanged = targetDate !== tx.transaction_date;
+              if (tx.amount !== newAmount || dateChanged) {
                 const log: EditHistoryRecord = {
                   id: `eh-${Date.now()}`,
                   transaction_id: id,
@@ -5411,18 +5434,22 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                   edited_by: `${editorRole.toUpperCase()}${editorName ? ` (${editorName})` : ''}`,
                   edited_at: new Date().toISOString(),
                   is_read: false,
-                  note: newNote,
-                  transaction_date: tx.transaction_date
+                  note: dateChanged ? `${newNote} (Date: ${tx.transaction_date} → ${targetDate})` : newNote,
+                  transaction_date: targetDate
                 };
                 setEditHistory(h => [log, ...h]);
                 saveDocToShop('edit_history', log.id, log);
               }
 
-              if (tx.linked_transfer_id && newAmount !== tx.amount) {
+              if (tx.linked_transfer_id && (newAmount !== tx.amount || dateChanged)) {
                 setDailyTransactions(prevDaily =>
                   prevDaily.map(d => {
                     if (d.id === tx.linked_transfer_id || d.linked_transfer_id === id) {
-                      const updatedDt = { ...d, amount: newAmount };
+                      const updatedDt = {
+                        ...d,
+                        amount: newAmount,
+                        transaction_date: targetDate
+                      };
                       saveDocToShop('daily_transactions', updatedDt.id, updatedDt);
                       return updatedDt;
                     }
@@ -5436,6 +5463,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 amount: newAmount,
                 note: newNote,
                 type: newType || tx.type,
+                transaction_date: targetDate,
                 edited_by: currentUser?.username || editorRole,
                 edited_by_role: editorRole,
                 edited_by_name: editorName,
@@ -5452,6 +5480,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteBackCash = (id: string) => {
+    if (
+      !superAdminService.isActionUnlockedForUser('allowDeleteEntry', {
+        ...currentUser,
+        shopId: currentShopId || currentUser?.shopId
+      })
+    ) {
+      return;
+    }
     const tx = backCashTransactions.find(t => t.id === id);
     if (!tx) return;
 
@@ -5692,6 +5728,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteWholesaler = (id: string) => {
+    if (
+      !superAdminService.isActionUnlockedForUser('allowDeleteEntry', {
+        ...currentUser,
+        shopId: currentShopId || currentUser?.shopId
+      })
+    ) {
+      return;
+    }
     scheduleDataMutation(
       'delete',
       'ہول سیلر کھاتہ حذف کیا جا رہا ہے...',
@@ -5825,6 +5869,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteCustomer = (id: string) => {
+    if (
+      !superAdminService.isActionUnlockedForUser('allowDeleteEntry', {
+        ...currentUser,
+        shopId: currentShopId || currentUser?.shopId
+      })
+    ) {
+      return;
+    }
     scheduleDataMutation(
       'delete',
       'کسٹمر کھاتہ حذف کیا جا رہا ہے...',
@@ -5973,6 +6025,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const deleteBottleItem = (id: string) => {
+    if (
+      !superAdminService.isActionUnlockedForUser('allowDeleteEntry', {
+        ...currentUser,
+        shopId: currentShopId || currentUser?.shopId
+      })
+    ) {
+      return;
+    }
     scheduleDataMutation(
       'delete',
       'آئٹم حذف کیا جا رہا ہے...',
@@ -6025,9 +6085,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // Trash & Audit
-  const restoreDeletedEntry = (id: string) => {
+  const restoreDeletedEntry = (id: string, targetDate?: string) => {
     const item = deletedHistory.find(d => d.id === id);
     if (!item) return;
+
+    const restoreDate =
+      targetDate && /^\d{4}-\d{2}-\d{2}$/.test(targetDate)
+        ? targetDate
+        : item.transaction_date;
 
     scheduleDataMutation(
       'edit',
@@ -6039,7 +6104,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             type: item.type as any,
             amount: item.amount,
             description: item.note,
-            transaction_date: item.transaction_date,
+            transaction_date: restoreDate,
             bill_id: item.bill_id,
             party_type: item.party_type
           });
@@ -6048,14 +6113,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             type: item.type as any,
             amount: item.amount,
             note: item.note,
-            transaction_date: item.transaction_date
+            transaction_date: restoreDate
           });
         } else if (item.source === 'customer_khata') {
           addDailyTransaction({
             type: item.type as any,
             amount: item.amount,
             description: item.note,
-            transaction_date: item.transaction_date,
+            transaction_date: restoreDate,
             bill_id: item.bill_id,
             party_type: item.party_type || 'customer'
           });
@@ -6078,7 +6143,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             type: item.type as any,
             amount: item.amount,
             description: item.note,
-            transaction_date: item.transaction_date,
+            transaction_date: restoreDate,
             bill_id: item.bill_id,
             party_type: item.party_type || 'wholesaler'
           });

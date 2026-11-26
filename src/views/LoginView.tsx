@@ -44,6 +44,7 @@ import {
   recordClientAuthOutcome,
   sanitizeTextInput
 } from '../utils/securityShield';
+import { superAdminService } from '../superadmin/superAdminService';
 
 export const LoginView: React.FC = () => {
   const {
@@ -80,6 +81,24 @@ export const LoginView: React.FC = () => {
       localStorage.setItem('taj_login_lang', lang);
     } catch {}
   }, [lang]);
+
+  // Live Super Admin Global Permissions (Allow New Shop Sign Up & Password Policy)
+  const [platformPerms, setPlatformPerms] = useState(
+    () => superAdminService.getModuleControlConfig().featurePermissions
+  );
+  useEffect(() => {
+    const refreshPerms = () => {
+      setPlatformPerms(superAdminService.getModuleControlConfig().featurePermissions);
+    };
+    superAdminService.syncModuleControlFromCloud().then(cfg => {
+      if (cfg?.featurePermissions) {
+        setPlatformPerms(cfg.featurePermissions);
+      }
+    });
+    window.addEventListener('taj_module_control_updated', refreshPerms);
+    return () => window.removeEventListener('taj_module_control_updated', refreshPerms);
+  }, []);
+  const isShopSignupAllowed = platformPerms.allowShopSignup !== false;
 
   // Temporary flag to hide Google Sign In as requested by user
   const SHOW_GOOGLE_SIGNIN = false;
@@ -293,10 +312,30 @@ export const LoginView: React.FC = () => {
       return;
     }
 
-    // Layer 4: Strong Anti-AI Password Policy
-    const passCheck = validateStrongPassword(cleanPass, cleanEmail, cleanOwner);
-    if (!passCheck.valid) {
-      setError(lang === 'en' ? passCheck.errorEn! : passCheck.errorUr!);
+    // Super Admin Global Lock Check: Allow New Shop Sign Up
+    const livePerms = superAdminService.getModuleControlConfig().featurePermissions;
+    if (livePerms.allowShopSignup === false && !superAdminService.isMasterAdminEmail(cleanEmail)) {
+      setError(
+        lang === 'en'
+          ? 'New shop registration is currently locked by Super Admin.'
+          : 'نئی دکان کی رجسٹریشن (Sign Up) سپر ایڈمن کی جانب سے لاک (Locked) ہے۔'
+      );
+      return;
+    }
+
+    // Layer 4: Strong Anti-AI Password Policy (Controlled by Super Admin toggle)
+    if (livePerms.requireStrongPasswords !== false) {
+      const passCheck = validateStrongPassword(cleanPass, cleanEmail, cleanOwner);
+      if (!passCheck.valid) {
+        setError(lang === 'en' ? passCheck.errorEn! : passCheck.errorUr!);
+        return;
+      }
+    } else if (!cleanPass || cleanPass.length < 4) {
+      setError(
+        lang === 'en'
+          ? 'Password must be at least 4 characters.'
+          : 'پاس ورڈ کم از کم 4 حروف کا ہونا ضروری ہے۔'
+      );
       return;
     }
 
@@ -693,16 +732,36 @@ export const LoginView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
+                  if (!isShopSignupAllowed) {
+                    setError(
+                      isUrdu
+                        ? '🔒 نئی دکان کی رجسٹریشن (Sign Up) فی الحال سپر ایڈمن کی جانب سے لاک (Locked) ہے۔'
+                        : '🔒 New shop registration (Sign Up) is currently locked by Super Admin.'
+                    );
+                    return;
+                  }
                   setActiveTab('signup');
                   setError('');
                 }}
-                className="w-full py-3 px-4 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-2 border-emerald-300 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all shadow-xs active:scale-98 cursor-pointer"
+                className={`w-full py-3 px-4 border-2 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all shadow-xs active:scale-98 cursor-pointer ${
+                  isShopSignupAllowed
+                    ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
+                    : 'bg-rose-50 text-rose-700 border-rose-200 opacity-90'
+                }`}
               >
-                <UserPlus className="w-4 h-4 text-emerald-600" />
+                {isShopSignupAllowed ? (
+                  <UserPlus className="w-4 h-4 text-emerald-600" />
+                ) : (
+                  <Lock className="w-4 h-4 text-rose-600" />
+                )}
                 <span>
-                  {isUrdu
-                    ? '✨ نئی دکان بنائیں (Create New Shop / Sign Up)'
-                    : '✨ Create New Shop (Sign Up)'}
+                  {isShopSignupAllowed
+                    ? isUrdu
+                      ? '✨ نئی دکان بنائیں (Create New Shop / Sign Up)'
+                      : '✨ Create New Shop (Sign Up)'
+                    : isUrdu
+                    ? '🔒 نئی دکان بنانا لاک ہے (Sign Up Locked by Super Admin)'
+                    : '🔒 Create New Shop (Locked by Super Admin)'}
                 </span>
               </button>
             </div>
@@ -714,6 +773,16 @@ export const LoginView: React.FC = () => {
         {/* ======================================================== */}
         {activeTab === 'signup' && (
           <div className={`mt-5 space-y-3.5 animate-in fade-in duration-200 ${isUrdu ? 'text-right' : 'text-left'}`}>
+            {!isShopSignupAllowed && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 text-xs font-bold flex items-center gap-2">
+                <Lock className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>
+                  {isUrdu
+                    ? 'نئی دکان کی رجسٹریشن سپر ایڈمن کی جانب سے بند (Locked) ہے۔'
+                    : 'New shop registration is currently locked by Super Admin.'}
+                </span>
+              </div>
+            )}
             <div className="p-3 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 rounded-2xl">
               <div className="flex items-center gap-1.5 font-black text-emerald-900 text-xs">
                 <Sparkles className="w-4 h-4 text-emerald-600" />

@@ -535,14 +535,25 @@ export const WholesalerBillsView: React.FC = () => {
                 </div>
               </div>
 
-              <div>
-                <label className="block text-[11px] font-bold text-slate-500 mb-1">Invoice Number</label>
-                <input
-                  type="text"
-                  value={editItem.invoice_number || ''}
-                  onChange={e => setEditItem({ ...editItem, invoice_number: e.target.value })}
-                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg"
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1">Invoice Number</label>
+                  <input
+                    type="text"
+                    value={editItem.invoice_number || ''}
+                    onChange={e => setEditItem({ ...editItem, invoice_number: e.target.value })}
+                    className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1">Entry Date (تاریخ)</label>
+                  <input
+                    type="date"
+                    value={editItem.created_date || ''}
+                    onChange={e => setEditItem({ ...editItem, created_date: e.target.value })}
+                    className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold text-slate-800"
+                  />
+                </div>
               </div>
 
               <div className="flex gap-2 pt-2">

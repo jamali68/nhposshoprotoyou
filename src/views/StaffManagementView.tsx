@@ -33,7 +33,7 @@ import {
 } from 'lucide-react';
 import { usePOS, formatNHUsername } from '../context/POSContext';
 import { StaffAccount, UserRole } from '../types/pos';
-import { showAppConfirm } from '../components/AppDialogHost';
+import { showAppAlert, showAppConfirm } from '../components/AppDialogHost';
 import {
   superAdminService,
   ALL_STAFF_CONTROLLABLE_MODULES,
@@ -441,12 +441,24 @@ export const StaffManagementView: React.FC = () => {
     setAvailabilityStatus({ checked: false });
   };
 
+  const isSuperAdminAccount = Boolean(
+    currentUser?.role === 'super_admin' &&
+    superAdminService.isMasterAdminEmail(currentUser?.email)
+  );
+  const isStaffCreationAllowed =
+    isSuperAdminAccount ||
+    superAdminService.getModuleControlConfig().featurePermissions.allowStaffCreation !== false;
+
   const handleOpenAdd = () => {
     if (!isOnline) {
       handleCheckConnection();
       return;
     }
     if (!isStoreAdmin) return;
+    if (!isStaffCreationAllowed) {
+      showAppAlert('🔒 نیا اسٹاف اکاؤنٹ بنانا فی الحال سپر ایڈمن کی جانب سے لاک (Locked) ہے۔');
+      return;
+    }
     resetForm();
     setShowAddModal(true);
   };
@@ -1093,10 +1105,23 @@ export const StaffManagementView: React.FC = () => {
             <button
               type="button"
               onClick={handleOpenAdd}
-              className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-600/20 transition-all active:scale-95 cursor-pointer"
+              className={`inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold shadow-md transition-all active:scale-95 cursor-pointer ${
+                isStaffCreationAllowed
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-600/20'
+                  : 'bg-rose-100 hover:bg-rose-200 text-rose-700 border border-rose-300 shadow-none'
+              }`}
             >
-              <UserPlus className="w-4 h-4" />
-              <span>+ Create New Staff</span>
+              {isStaffCreationAllowed ? (
+                <>
+                  <UserPlus className="w-4 h-4" />
+                  <span>+ Create New Staff</span>
+                </>
+              ) : (
+                <>
+                  <Lock className="w-4 h-4" />
+                  <span>Staff Creation Locked</span>
+                </>
+              )}
             </button>
           </div>
         )}
