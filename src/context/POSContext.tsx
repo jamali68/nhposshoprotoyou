@@ -3540,6 +3540,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       const isSuperAdminUser = MASTER_SUPER_ADMIN_EMAILS.includes(cleanEmail);
       const assignedRole: UserRole = isSuperAdminUser ? 'super_admin' : 'admin';
+      const defaultFreePolicy = superAdminService.getShopEffectiveSyncPolicy();
 
       const newShop: ShopProfile = {
         id: shopId,
@@ -3559,6 +3560,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         district: cleanDistrict,
         city: cleanCity,
         address: cleanAddress || [cleanCity, cleanDistrict, cleanProvince].filter(Boolean).join(', '),
+        package_type: 'free',
+        auto_sync_interval_minutes: defaultFreePolicy.autoSyncIntervalMinutes,
+        daily_manual_bypass_limit: defaultFreePolicy.dailyManualBypassLimit,
         created_at: new Date().toISOString(),
         last_login: new Date().toISOString()
       };
@@ -3629,6 +3633,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           password_hash: passwordHash || null,
           password_salt: passwordSalt || null,
           role: assignedRole,
+          package_type: 'free',
+          auto_sync_interval_minutes: defaultFreePolicy.autoSyncIntervalMinutes,
+          daily_manual_bypass_limit: defaultFreePolicy.dailyManualBypassLimit,
           account_created_at: nowIso,
           last_login: nowIso,
           last_login_method: 'password',
