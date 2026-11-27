@@ -18,6 +18,7 @@ import { AdminProfileModal } from './components/AdminProfileModal';
 import { PWAInstallBanner } from './components/PWAInstallBanner';
 import { PWAInstallGuideModal } from './components/PWAInstallGuideModal';
 import { AppDialogHost } from './components/AppDialogHost';
+import { PushNotificationHost } from './components/PushNotificationHost';
 
 import { LoginView } from './views/LoginView';
 import { DashboardView } from './views/DashboardView';
@@ -622,6 +623,7 @@ const MainAppContent: React.FC = () => {
         onClose={() => setShowAdminProfileModal(false)}
       />
       <WhatsNewModal />
+      <PushNotificationHost />
       <MaintenanceModal />
       <IndependenceOverlay />
       <PWAInstallBanner />

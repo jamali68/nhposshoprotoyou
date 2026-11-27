@@ -28,8 +28,12 @@ import {
   Check,
   AlertTriangle,
   Copy,
-  MessageCircle
+  MessageCircle,
+  Bell,
+  MapPin
 } from 'lucide-react';
+import { SuperAdminPushPanel } from './SuperAdminPushPanel';
+import { formatShopLocationLine } from '../data/pakistanLocations';
 import { auth, googleProvider, signInWithPopup } from '../firebase';
 import { usePOS } from '../context/POSContext';
 import {
@@ -75,8 +79,33 @@ export const SuperAdminView: React.FC = () => {
     triggerMutationLoader
   } = usePOS();
 
-  // 6-Tab Master Command Center (including Quota & Usage 99% Tracker)
-  const [activeTab, setActiveTab] = useState<'shops' | 'quota' | 'modules' | 'diagnostics' | 'analytics' | 'security'>('shops');
+  // 7-Tab Master Command Center (including Quota & Usage 99% Tracker & Geo Push / Popup Ads Studio)
+  const [activeTab, setActiveTab] = useState<'shops' | 'quota' | 'modules' | 'push' | 'diagnostics' | 'analytics' | 'security'>(() => {
+    try {
+      const requested = sessionStorage.getItem('nh_superadmin_initial_tab');
+      if (requested) {
+        sessionStorage.removeItem('nh_superadmin_initial_tab');
+        if (['shops', 'quota', 'modules', 'push', 'diagnostics', 'analytics', 'security'].includes(requested)) {
+          return requested as 'shops' | 'quota' | 'modules' | 'push' | 'diagnostics' | 'analytics' | 'security';
+        }
+      }
+    } catch {}
+    return 'shops';
+  });
+
+  useEffect(() => {
+    const handleOpenTab = (e: Event) => {
+      const tab = (e as CustomEvent<string>).detail;
+      if (tab && ['shops', 'quota', 'modules', 'push', 'diagnostics', 'analytics', 'security'].includes(tab)) {
+        setActiveTab(tab as 'shops' | 'quota' | 'modules' | 'push' | 'diagnostics' | 'analytics' | 'security');
+        try {
+          sessionStorage.removeItem('nh_superadmin_initial_tab');
+        } catch {}
+      }
+    };
+    window.addEventListener('nh_superadmin_open_tab', handleOpenTab);
+    return () => window.removeEventListener('nh_superadmin_open_tab', handleOpenTab);
+  }, []);
   const [usagePeriod, setUsagePeriod] = useState<'daily' | 'weekly' | 'monthly' | 'yearly'>('daily');
   const [selectedUsageShopId, setSelectedUsageShopId] = useState<string>('ALL_SHOPS');
   const [historyViewMode, setHistoryViewMode] = useState<'daily' | 'monthly'>('daily');
@@ -267,7 +296,10 @@ export const SuperAdminView: React.FC = () => {
         s.shop_name.toLowerCase().includes(term) ||
         s.owner_name.toLowerCase().includes(term) ||
         s.owner_email.toLowerCase().includes(term) ||
-        s.id.toLowerCase().includes(term)
+        s.id.toLowerCase().includes(term) ||
+        (s.province || '').toLowerCase().includes(term) ||
+        (s.district || '').toLowerCase().includes(term) ||
+        (s.city || '').toLowerCase().includes(term)
     );
   }, [shops, searchTerm]);
 
@@ -678,8 +710,8 @@ export const SuperAdminView: React.FC = () => {
         </div>
       </div>
 
-      {/* 6-Tab Master Navigation Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-1.5 bg-slate-900/95 p-1.5 rounded-2xl border border-slate-800 shadow-sm text-xs font-bold">
+      {/* 7-Tab Master Navigation Bar */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-1.5 bg-slate-900/95 p-1.5 rounded-2xl border border-slate-800 shadow-sm text-xs font-bold">
         <button
           type="button"
           onClick={() => setActiveTab('shops')}
@@ -720,6 +752,19 @@ export const SuperAdminView: React.FC = () => {
         >
           <Lock className="w-4 h-4 shrink-0" />
           <span className="truncate">Permissions (Lock/Unlock)</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('push')}
+          className={`py-2.5 px-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+            activeTab === 'push'
+              ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30'
+              : 'text-amber-300 hover:text-white hover:bg-slate-800/60 border border-amber-500/20'
+          }`}
+        >
+          <Bell className="w-4 h-4 shrink-0" />
+          <span className="truncate">Geo Push &amp; Ads</span>
         </button>
 
         <button
@@ -944,10 +989,16 @@ export const SuperAdminView: React.FC = () => {
                         <tr key={shop.id} className="hover:bg-slate-50/70 transition-colors">
                           <td className="py-3.5 px-4">
                             <div className="font-bold text-slate-900 text-sm">{shop.shop_name}</div>
-                            <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-1.5">
+                            <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex flex-wrap items-center gap-1.5">
                               <span>ID: {shop.id.slice(0, 18)}</span>
                               {shop.phone && <span>· 📞 {shop.phone}</span>}
                             </div>
+                            {formatShopLocationLine(shop) && (
+                              <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-bold">
+                                <MapPin className="w-2.5 h-2.5 shrink-0" />
+                                <span>{formatShopLocationLine(shop)}</span>
+                              </div>
+                            )}
                           </td>
 
                           <td className="py-3.5 px-4">
@@ -3190,6 +3241,20 @@ export const SuperAdminView: React.FC = () => {
         </div>
       )}
 
+      {/* ========================================================================= */}
+      {/* TAB 7: SUPER ADMIN ONLY RICH PUSH NOTIFICATIONS STUDIO (PHASE 2)          */}
+      {/* ========================================================================= */}
+      {activeTab === 'push' && (
+        <SuperAdminPushPanel
+          shops={shops}
+          senderEmail={currentUser?.email || MASTER_EMAIL}
+          senderName={currentUser?.name || 'Super Admin'}
+          isFirebaseMasterVerified={isFirebaseMasterVerified}
+          isVerifyingCloudAuth={isVerifyingCloudAuth}
+          onVerifyMasterGoogleCloudAuth={handleVerifyMasterGoogleCloudAuth}
+        />
+      )}
+
       {/* Store Inspection Modal */}
       {inspectShop && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
@@ -3227,6 +3292,15 @@ export const SuperAdminView: React.FC = () => {
                 <span className="text-[10px] text-slate-400 font-bold uppercase block">Operating Status</span>
                 <span className={`font-bold ${inspectShop.is_active ? 'text-emerald-600' : 'text-rose-600'}`}>
                   {inspectShop.is_active ? 'Active & Running' : 'Suspended'}
+                </span>
+              </div>
+              <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl col-span-2">
+                <span className="text-[10px] text-emerald-700 font-bold uppercase block">
+                  Location (Province / District / City)
+                </span>
+                <span className="font-bold text-slate-800 flex items-center gap-1 mt-0.5">
+                  <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>{formatShopLocationLine(inspectShop) || 'Not set yet'}</span>
                 </span>
               </div>
             </div>

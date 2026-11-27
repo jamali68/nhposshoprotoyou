@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
 import { TajLogo } from './TajLogo';
+import { PAKISTAN_PROVINCES, getDistrictsForProvince } from '../data/pakistanLocations';
 
 interface AdminProfileModalProps {
   isOpen: boolean;
@@ -36,6 +37,9 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
   const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [phone, setPhone] = useState<string>('');
+  const [province, setProvince] = useState<string>('');
+  const [district, setDistrict] = useState<string>('');
+  const [city, setCity] = useState<string>('');
   const [address, setAddress] = useState<string>('');
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [successMessage, setSuccessMessage] = useState<string>('');
@@ -104,6 +108,9 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
       setOwnerName(currentShop.owner_name || currentUser?.name || '');
       setPassword(initPass);
       setPhone(currentShop.phone || '');
+      setProvince(currentShop.province || '');
+      setDistrict(currentShop.district || '');
+      setCity(currentShop.city || '');
       setAddress(currentShop.address || '');
       setSuccessMessage('');
       setError('');
@@ -145,6 +152,9 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
         owner_name: ownerName.trim(),
         ...(currentlyOnline ? { password: password.trim() || '123456' } : {}),
         phone: phone.trim(),
+        province: province.trim(),
+        district: district.trim(),
+        city: city.trim(),
         address: address.trim()
       });
 
@@ -405,6 +415,62 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
             </p>
           </div>
 
+          {/* Location: Province, District & City */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                صوبہ (Province)
+              </label>
+              <select
+                value={province}
+                onChange={e => {
+                  setProvince(e.target.value);
+                  setDistrict('');
+                }}
+                className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white text-xs cursor-pointer"
+              >
+                <option value="">-- Select Province --</option>
+                {PAKISTAN_PROVINCES.map(p => (
+                  <option key={p.name} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                ضلع (District)
+              </label>
+              <select
+                disabled={!province}
+                value={district}
+                onChange={e => setDistrict(e.target.value)}
+                className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white text-xs cursor-pointer disabled:opacity-60"
+              >
+                <option value="">-- Select District --</option>
+                {getDistrictsForProvince(province).map(d => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                شہر (City - Optional)
+              </label>
+              <input
+                type="text"
+                value={city}
+                onChange={e => setCity(e.target.value)}
+                placeholder="مثلاً: صادق آباد"
+                className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white text-xs"
+              />
+            </div>
+          </div>
+
           {/* Phone Number */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
@@ -425,7 +491,7 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
 
             <div>
               <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
-                دکان کا پتہ / شہر
+                دکان کا پتہ / بازار
               </label>
               <div className="relative">
                 <MapPin className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />

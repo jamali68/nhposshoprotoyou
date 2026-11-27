@@ -1,9 +1,9 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v18.1.7
+ * Version: v18.2.0
  * Smart Background Pre-Download, Non-Disruptive Updates & True Background Cloud Sync (GitHub Pages + Netlify)
  */
-const SW_VERSION = 'v18.1.7';
+const SW_VERSION = 'v18.2.0';
 const BUILD_ID = '/* __BUILD_ID__ */';
 const SMART_CACHE_PREFIX = 'nh-pos-smart-';
 const CACHE_NAME =
@@ -858,3 +858,46 @@ self.addEventListener('periodicsync', (event) => {
   }
 });
 
+// =============================================================================
+// 6. RICH PUSH NOTIFICATION CLICK & PUSH EVENT HANDLERS (v18.1.9)
+// =============================================================================
+self.addEventListener('push', (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    payload = { body: event.data ? event.data.text() : '' };
+  }
+  const title = payload.title || 'NH POS Shop';
+  const options = {
+    body: payload.body || '',
+    icon: 'icon-192.png',
+    badge: 'icon-192.png',
+    tag: payload.tag || 'nh-pos-push',
+    renotify: true,
+    data: { url: payload.url || './' }
+  };
+  if (payload.image && typeof payload.image === 'string' && payload.image.startsWith('https://')) {
+    options.image = payload.image;
+  }
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const targetUrl = (event.notification && event.notification.data && event.notification.data.url) || './';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      for (let i = 0; i < windowClients.length; i++) {
+        const client = windowClients[i];
+        if ('focus' in client) {
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(targetUrl);
+      }
+      return undefined;
+    })
+  );
+});

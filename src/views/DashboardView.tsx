@@ -18,6 +18,7 @@ import {
   Lock
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
+import { DateNavigator } from '../components/DateNavigator';
 import { superAdminService } from '../superadmin/superAdminService';
 import { ControllableModuleId } from '../superadmin/types';
 
@@ -169,29 +170,29 @@ export const DashboardView: React.FC = () => {
           </div>
         </div>
 
-        {/* Dynamic Date Filter Picker */}
-        <div className="flex items-center gap-2">
-          <div className="relative">
-            <input
-              type="date"
-              value={filterDate}
-              onChange={e => setFilterDate(e.target.value)}
-              className="w-[155px] py-1.5 px-3 bg-slate-50 border-2 border-slate-200 text-slate-700 font-bold text-xs rounded-full shadow-xs cursor-pointer focus:outline-none focus:border-emerald-600 transition-colors text-center"
-            />
-          </div>
-
-          <button
-            type="button"
-            onClick={handleMasterPrivacyToggle}
-            title={areAllHidden ? 'Show All Values' : 'Hide All Values (Privacy)'}
-            className={`p-2 rounded-full text-xs font-bold transition-colors shrink-0 ${
-              areAllHidden
-                ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            {areAllHidden ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-          </button>
+        {/* Dynamic Date Navigator (< Date > + Today + Eye on Right) */}
+        <div className="w-full sm:w-auto">
+          <DateNavigator
+            value={filterDate}
+            onChange={setFilterDate}
+            accentColor="emerald"
+            compact
+            rightSlot={
+              <button
+                type="button"
+                onClick={handleMasterPrivacyToggle}
+                title={areAllHidden ? 'Show All Values' : 'Hide All Values (Privacy)'}
+                aria-label={areAllHidden ? 'Show All Values' : 'Hide All Values'}
+                className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-xs font-bold transition-colors shrink-0 cursor-pointer border ${
+                  areAllHidden
+                    ? 'bg-amber-100 text-amber-800 border-amber-200 hover:bg-amber-200'
+                    : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
+                }`}
+              >
+                {areAllHidden ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            }
+          />
         </div>
       </div>
 
@@ -528,31 +529,37 @@ export const DashboardView: React.FC = () => {
         </div>
 
         <div className="space-y-1.5 text-xs sm:text-sm">
-          <div className="flex justify-between">
+          <div className="flex items-center justify-between gap-2">
             <span className="text-white/90">
-              Load Profit (2.4% of Rs. {bachat.dayBeforeLoadSale.toLocaleString()}):
+              Load Profit (2.4% of Rs. {Math.round(bachat.dayBeforeLoadSale).toLocaleString()}):
             </span>
-            <b className="font-mono">Rs. {bachat.calculatedLoadBachat.toFixed(2)}</b>
+            <b className="font-mono whitespace-nowrap shrink-0">
+              Rs. {Math.round(bachat.calculatedLoadBachat).toLocaleString()}
+            </b>
           </div>
 
-          <div className="flex justify-between">
+          <div className="flex items-center justify-between gap-2">
             <span className="text-white/90">
-              Shop Profit (8% of Rs. {bachat.calculatedShopSale.toLocaleString()}):
+              Shop Profit (8% of Rs. {Math.round(bachat.calculatedShopSale).toLocaleString()}):
             </span>
-            <b className="font-mono">Rs. {bachat.calculatedShopBachat.toFixed(2)}</b>
+            <b className="font-mono whitespace-nowrap shrink-0">
+              Rs. {Math.round(bachat.calculatedShopBachat).toLocaleString()}
+            </b>
           </div>
 
-          <div className="flex justify-between">
+          <div className="flex items-center justify-between gap-2">
             <span className="text-white/90">
-              Sending &amp; Receiving Profit (100% of Rs. {bachat.dayBeforeCommission.toLocaleString()}):
+              Sending &amp; Receiving Profit:
             </span>
-            <b className="font-mono text-emerald-200">Rs. {bachat.commissionBachat.toFixed(2)}</b>
+            <b className="font-mono text-emerald-200 whitespace-nowrap shrink-0">
+              Rs. {Math.round(bachat.commissionBachat).toLocaleString()}
+            </b>
           </div>
 
-          <div className="flex items-center justify-between text-sm sm:text-base border-t border-dashed border-white/30 pt-2.5 mt-2">
+          <div className="flex items-center justify-between gap-2 text-sm sm:text-base border-t border-dashed border-white/30 pt-2.5 mt-2">
             <span className="font-bold">Total Net Profit:</span>
-            <b className="text-[#f1c40f] font-mono text-lg font-black drop-shadow-xs">
-              Rs. {bachat.totalNetBachat.toFixed(2)}
+            <b className="text-[#f1c40f] font-mono text-lg font-black drop-shadow-xs whitespace-nowrap shrink-0">
+              Rs. {Math.round(bachat.totalNetBachat).toLocaleString()}
             </b>
           </div>
 

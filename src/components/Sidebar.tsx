@@ -34,7 +34,9 @@ import {
   FileCode,
   ShieldCheck,
   Lock,
-  Monitor
+  Monitor,
+  Bell,
+  Megaphone
 } from 'lucide-react';
 import { useAppVersion, refreshAppVersion } from '../utils/version';
 import { usePOS, ActiveView } from '../context/POSContext';
@@ -44,6 +46,7 @@ import { PWAInstallGuideModal } from './PWAInstallGuideModal';
 import { SqlImportModal } from './SqlImportModal';
 import { showAppAlert } from './AppDialogHost';
 import { superAdminService } from '../superadmin/superAdminService';
+import { getOsNotificationPermission, requestOsNotificationPermission } from '../utils/pushNotifications';
 
 const PC_AUTO_OPEN_KEY = 'taj_pos_pc_auto_open';
 
@@ -174,9 +177,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     }
   };
 
+  const [osNotifPerm, setOsNotifPerm] = useState<NotificationPermission | 'unsupported'>(() =>
+    getOsNotificationPermission()
+  );
+
   useEffect(() => {
     if (isOpen) {
       refreshAppVersion();
+      setOsNotifPerm(getOsNotificationPermission());
     }
   }, [isOpen]);
 
@@ -625,6 +633,33 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                 </span>
               </div>
 
+              {/* Super Admin ONLY: Geo Audience, Rich Push Alerts & Private Popup Ads Studio */}
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    sessionStorage.setItem('nh_superadmin_initial_tab', 'push');
+                  } catch {}
+                  window.dispatchEvent(new CustomEvent('nh_superadmin_open_tab', { detail: 'push' }));
+                  setActiveView('super_admin');
+                  onClose();
+                }}
+                className="w-full flex items-center justify-between px-3.5 py-2.5 text-xs font-bold text-rose-200 bg-gradient-to-r from-rose-950/60 via-amber-950/40 to-indigo-950/60 hover:from-rose-900/70 hover:to-indigo-900/70 border border-rose-500/30 rounded-xl transition-all"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <Megaphone className="w-4 h-4 text-rose-400 shrink-0" />
+                  <div className="text-left min-w-0">
+                    <span className="block truncate text-white font-bold">Geo Push &amp; Popup Ads</span>
+                    <span className="block text-[10px] text-amber-300/90 truncate">
+                      Province / District / City Targeting
+                    </span>
+                  </div>
+                </div>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-rose-500/30 text-rose-200 font-black uppercase shrink-0">
+                  Ads
+                </span>
+              </button>
+
               {/* What's New trigger */}
               <button
                 type="button"
@@ -804,6 +839,21 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                 </div>
               )}
             </div>
+          )}
+
+          {/* 1-Tap Enable Phone Push Alerts (shown cleanly only when permission is default) */}
+          {osNotifPerm === 'default' && (
+            <button
+              type="button"
+              onClick={async () => {
+                const res = await requestOsNotificationPermission();
+                setOsNotifPerm(res);
+              }}
+              className="w-full py-2 px-3 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/35 text-amber-200 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+            >
+              <Bell className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+              <span>🔔 Enable Phone Alerts (نوٹیفکیشن آن کریں)</span>
+            </button>
           )}
 
           {/* PWA Install Button when not running standalone */}

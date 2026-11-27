@@ -20,6 +20,9 @@ export interface ShopProfile {
   passwordSalt?: string; // Cryptographic salt
   isLegacyPassword?: boolean; // Flagged true when account uses temporary 123456 migration password
   phone?: string;
+  province?: string;
+  district?: string;
+  city?: string;
   address?: string;
   owner_name_updated_date?: string; // YYYY-MM-DD from which updated owner_name applies
   created_at: string;

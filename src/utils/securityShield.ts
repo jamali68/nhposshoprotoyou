@@ -408,17 +408,112 @@ export async function generateSecurityRequestHeaders(action: string): Promise<Pr
 }
 
 /**
- * Layer 6: Client-Side Exponential Brute-Force Lockout & Rapid-Fire Circuit Breaker
+ * Layer 6: Client-Side Progressive Brute-Force Lockout & Live Countdown Timer
+ * Schedule:
+ * - First 4 wrong attempts -> 1 minute (60s)
+ * - Next every 3 wrong attempts:
+ *   - 7th fail  -> 5 minutes
+ *   - 10th fail -> 15 minutes
+ *   - 13th fail -> 30 minutes
+ *   - 16th fail -> 3 hours
+ *   - 19th+ (every 3rd fail) -> 24 hours
  */
 interface ClientLockRecord {
   failures: number;
   lockUntil: number;
   lastAttemptAt: number;
+  tierLabel?: string;
+}
+
+export interface ClientLockoutStatus {
+  locked: boolean;
+  remainingMs: number;
+  remainingSec: number;
+  failures: number;
+  lockUntil: number;
+  tierLabel: string;
+  formattedCountdown: string;
+}
+
+const PROGRESSIVE_LOCKOUT_TIERS: Array<{ threshold: number; durationMs: number; labelEn: string; labelUr: string }> = [
+  { threshold: 4, durationMs: 1 * 60 * 1000, labelEn: '1 minute', labelUr: '1 منٹ' },
+  { threshold: 7, durationMs: 5 * 60 * 1000, labelEn: '5 minutes', labelUr: '5 منٹ' },
+  { threshold: 10, durationMs: 15 * 60 * 1000, labelEn: '15 minutes', labelUr: '15 منٹ' },
+  { threshold: 13, durationMs: 30 * 60 * 1000, labelEn: '30 minutes', labelUr: '30 منٹ' },
+  { threshold: 16, durationMs: 3 * 60 * 60 * 1000, labelEn: '3 hours', labelUr: '3 گھنٹے' },
+  { threshold: 19, durationMs: 24 * 60 * 60 * 1000, labelEn: '24 hours', labelUr: '24 گھنٹے' }
+];
+
+export function formatLockoutCountdown(remainingMs: number): string {
+  const totalSec = Math.max(0, Math.ceil(remainingMs / 1000));
+  const hrs = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (hrs > 0) {
+    return `${pad(hrs)}h ${pad(mins)}m ${pad(secs)}s`;
+  }
+  if (mins > 0) {
+    return `${pad(mins)}m ${pad(secs)}s`;
+  }
+  return `${secs}s`;
 }
 
 function getLockKey(scope: string, identifier: string): string {
   const safeId = (identifier || 'global').toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 60);
   return `${LOCKOUT_STORAGE_PREFIX}${scope}_${safeId}`;
+}
+
+export function getClientLockoutStatus(scope: string, identifier: string): ClientLockoutStatus {
+  const empty: ClientLockoutStatus = {
+    locked: false,
+    remainingMs: 0,
+    remainingSec: 0,
+    failures: 0,
+    lockUntil: 0,
+    tierLabel: '',
+    formattedCountdown: '0s'
+  };
+  if (!identifier || !identifier.trim()) return empty;
+
+  try {
+    const raw = localStorage.getItem(getLockKey(scope, identifier));
+    if (!raw) return empty;
+    const rec = JSON.parse(raw) as ClientLockRecord;
+    const now = Date.now();
+
+    if (rec.lockUntil && now < rec.lockUntil) {
+      const remainingMs = rec.lockUntil - now;
+      return {
+        locked: true,
+        remainingMs,
+        remainingSec: Math.ceil(remainingMs / 1000),
+        failures: rec.failures || 0,
+        lockUntil: rec.lockUntil,
+        tierLabel: rec.tierLabel || '',
+        formattedCountdown: formatLockoutCountdown(remainingMs)
+      };
+    }
+
+    // Clear stale counter only after 24 hours of complete inactivity beyond any lock period
+    const lastRelevantTs = Math.max(rec.lastAttemptAt || 0, rec.lockUntil || 0);
+    if (lastRelevantTs && now - lastRelevantTs > 24 * 60 * 60 * 1000) {
+      localStorage.removeItem(getLockKey(scope, identifier));
+      return empty;
+    }
+
+    return {
+      locked: false,
+      remainingMs: 0,
+      remainingSec: 0,
+      failures: rec.failures || 0,
+      lockUntil: 0,
+      tierLabel: rec.tierLabel || '',
+      formattedCountdown: '0s'
+    };
+  } catch {
+    return empty;
+  }
 }
 
 export function checkClientSecurityThrottle(scope: string, identifier: string): ValidationResult {
@@ -437,38 +532,34 @@ export function checkClientSecurityThrottle(scope: string, identifier: string): 
   }
   recentAuthCalls.push(now);
 
-  try {
-    const raw = localStorage.getItem(getLockKey(scope, identifier));
-    if (!raw) return { valid: true };
-    const rec = JSON.parse(raw) as ClientLockRecord;
-
-    if (rec.lockUntil && now < rec.lockUntil) {
-      const waitSec = Math.ceil((rec.lockUntil - now) / 1000);
-      const waitLabel = waitSec >= 60 ? `${Math.ceil(waitSec / 60)} min` : `${waitSec}s`;
-      return {
-        valid: false,
-        errorEn: `Security Shield Lockout: Too many failed attempts. Try again in ${waitLabel}.`,
-        errorUr: `سیکیورٹی شیلڈ لاک: بہت زیادہ غلط کوششوں کے باعث اکاؤنٹ عارضی طور پر بند ہے۔ براہِ کرم ${waitLabel} بعد دوبارہ کوشش کریں۔`
-      };
-    }
-
-    // Reset stale counter after 30 minutes of inactivity
-    if (rec.lastAttemptAt && now - rec.lastAttemptAt > 30 * 60 * 1000) {
-      localStorage.removeItem(getLockKey(scope, identifier));
-    }
-  } catch {
-    // ignore storage errors
+  const status = getClientLockoutStatus(scope, identifier);
+  if (status.locked) {
+    return {
+      valid: false,
+      errorEn: `Security Shield Lockout: Too many failed attempts. Try again in ${status.formattedCountdown}.`,
+      errorUr: `سیکیورٹی شیلڈ لاک: بہت زیادہ غلط کوششوں کے باعث اکاؤنٹ عارضی طور پر بند ہے۔ براہِ کرم ${status.formattedCountdown} بعد دوبارہ کوشش کریں۔`
+    };
   }
 
   return { valid: true };
 }
 
-export function recordClientAuthOutcome(scope: string, identifier: string, success: boolean): void {
+export function recordClientAuthOutcome(scope: string, identifier: string, success: boolean): ClientLockoutStatus {
   const key = getLockKey(scope, identifier);
+  const empty: ClientLockoutStatus = {
+    locked: false,
+    remainingMs: 0,
+    remainingSec: 0,
+    failures: 0,
+    lockUntil: 0,
+    tierLabel: '',
+    formattedCountdown: '0s'
+  };
+
   try {
     if (success) {
       localStorage.removeItem(key);
-      return;
+      return empty;
     }
 
     const now = Date.now();
@@ -480,23 +571,30 @@ export function recordClientAuthOutcome(scope: string, identifier: string, succe
       } catch {}
     }
 
-    rec.failures += 1;
+    // If previous record is older than 24h beyond lockUntil, start fresh
+    const lastRelevantTs = Math.max(rec.lastAttemptAt || 0, rec.lockUntil || 0);
+    if (lastRelevantTs && now - lastRelevantTs > 24 * 60 * 60 * 1000) {
+      rec = { failures: 0, lockUntil: 0, lastAttemptAt: now };
+    }
+
+    rec.failures = (rec.failures || 0) + 1;
     rec.lastAttemptAt = now;
 
-    // Escalating exponential cooldowns: 3 fails -> 30s, 5 -> 2m, 8 -> 15m, 12+ -> 60m
-    if (rec.failures >= 12) {
-      rec.lockUntil = now + 60 * 60 * 1000;
-    } else if (rec.failures >= 8) {
-      rec.lockUntil = now + 15 * 60 * 1000;
-    } else if (rec.failures >= 5) {
-      rec.lockUntil = now + 2 * 60 * 1000;
-    } else if (rec.failures >= 3) {
-      rec.lockUntil = now + 30 * 1000;
+    // Exact progressive lockout trigger:
+    // 4th fail -> 1m | 7th -> 5m | 10th -> 15m | 13th -> 30m | 16th -> 3h | 19th, 22nd, 25th... -> 24h
+    const exactTier = PROGRESSIVE_LOCKOUT_TIERS.find(t => t.threshold === rec.failures);
+    if (exactTier) {
+      rec.lockUntil = now + exactTier.durationMs;
+      rec.tierLabel = exactTier.labelEn;
+    } else if (rec.failures > 19 && (rec.failures - 19) % 3 === 0) {
+      rec.lockUntil = now + 24 * 60 * 60 * 1000;
+      rec.tierLabel = '24 hours';
     }
 
     localStorage.setItem(key, JSON.stringify(rec));
+    return getClientLockoutStatus(scope, identifier);
   } catch {
-    // ignore
+    return empty;
   }
 }
 

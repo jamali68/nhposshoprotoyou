@@ -49,6 +49,9 @@ export interface TenantShopInfo {
   owner_name: string;
   owner_email: string;
   phone?: string;
+  province?: string;
+  district?: string;
+  city?: string;
   address?: string;
   created_at: string;
   is_active: boolean;

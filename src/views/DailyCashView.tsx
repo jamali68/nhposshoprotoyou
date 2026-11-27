@@ -44,6 +44,7 @@ export const DailyCashView: React.FC = () => {
     yesterdayDate,
     currentUser,
     currentShop,
+    staffAccounts,
     systemSettings,
     setSystemSettings,
     dailyTransactions,
@@ -316,6 +317,18 @@ export const DailyCashView: React.FC = () => {
   const effectiveOpening = stats.opening > 0 ? stats.opening : yesterdayBal;
   const totalOutPurchases = stats.cashOut;
 
+  // Shop Admin/Owner default name (always default selection for missed closing popup)
+  const shopAdminDefaultName = useMemo(() => {
+    const ownerName = (currentShop?.owner_name || '').trim();
+    if (ownerName) return ownerName;
+    if (currentUser?.role === 'admin' || currentUser?.role === 'super_admin') {
+      return (currentUser.name || 'Admin').trim();
+    }
+    return 'Admin';
+  }, [currentShop?.owner_name, currentUser?.role, currentUser?.name]);
+
+  const [selectedYesterdayClosingUser, setSelectedYesterdayClosingUser] = useState<string>('');
+
   // Check if yesterday had activity and is missing shift closing (Single User vs Multi-Shift)
   const yesterdayMissingClosingInfo = useMemo(() => {
     const yTxs = dailyTransactions.filter(t => t.transaction_date === yesterdayDate);
@@ -327,7 +340,7 @@ export const DailyCashView: React.FC = () => {
         morningUser: null,
         yesterdayOperators: [],
         isSingleShiftDay: true,
-        targetYesterdayUser: currentUser?.name || (currentUser?.role === 'admin' ? 'Admin' : 'Staff')
+        targetYesterdayUser: shopAdminDefaultName
       };
     }
 
@@ -340,16 +353,15 @@ export const DailyCashView: React.FC = () => {
 
     const isMissing = yShiftTxs.length === 0 || (!hasNightClosing && yShiftTxs.length < 2);
     const morningClosing = yShiftTxs.length > 0 ? yShiftTxs[0].amount : null;
-    const morningUser = yShiftTxs.length > 0 ? (yShiftTxs[0].created_by_name || (yShiftTxs[0].created_by === 'admin' ? 'Admin' : 'Staff')) : null;
+    const morningUser = yShiftTxs.length > 0 ? (yShiftTxs[0].created_by_name || (yShiftTxs[0].created_by === 'admin' ? shopAdminDefaultName : 'Staff')) : null;
 
     // Detect unique users who operated or logged transactions yesterday
     const yOperators = Array.from(new Set(
-      yTxs.map(t => t.created_by_name || (t.created_by === 'admin' ? 'Admin' : 'Staff')).filter(Boolean)
+      yTxs.map(t => t.created_by_name || (t.created_by === 'admin' ? shopAdminDefaultName : 'Staff')).filter(Boolean)
     ));
     const isSingleShiftDay = yShiftTxs.length === 0;
-    const targetYesterdayUser = isSingleShiftDay
-      ? (yOperators[0] || currentUser?.name || (currentUser?.role === 'admin' ? 'Admin' : 'Staff'))
-      : (currentUser?.name || (currentUser?.role === 'admin' ? 'Admin' : 'Staff'));
+    // Always default to Shop Admin/Owner first; user can switch to any Staff member via dropdown in popup
+    const targetYesterdayUser = shopAdminDefaultName;
 
     return {
       isMissing,
@@ -360,7 +372,52 @@ export const DailyCashView: React.FC = () => {
       isSingleShiftDay,
       targetYesterdayUser
     };
-  }, [dailyTransactions, yesterdayDate, currentUser]);
+  }, [dailyTransactions, yesterdayDate, shopAdminDefaultName]);
+
+  // Build dropdown options for Missed Closing popup: Default Admin first, followed by all shop staff members
+  const yesterdayClosingUserOptions = useMemo(() => {
+    const options: Array<{ value: string; label: string; role: string }> = [
+      { value: shopAdminDefaultName, label: `${shopAdminDefaultName} (Admin)`, role: 'admin' }
+    ];
+    const seen = new Set<string>([shopAdminDefaultName.toLowerCase()]);
+
+    const formatRoleLabel = (role?: string) => {
+      const r = (role || 'staff').trim().toLowerCase();
+      if (r === 'admin' || r === 'super_admin') return 'Admin';
+      return r.charAt(0).toUpperCase() + r.slice(1);
+    };
+
+    (staffAccounts || []).forEach(acc => {
+      if (acc.is_active === false) return;
+      const cleanName = (acc.name || acc.username || '').trim();
+      if (!cleanName) return;
+      const key = cleanName.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      options.push({
+        value: cleanName,
+        label: `${cleanName} (${formatRoleLabel(acc.role)})`,
+        role: acc.role || 'staff'
+      });
+    });
+
+    // Also include current logged-in staff member if not already in staffAccounts list
+    if (currentUser?.name && currentUser.role !== 'admin' && currentUser.role !== 'super_admin') {
+      const cleanCurr = currentUser.name.trim();
+      if (cleanCurr && !seen.has(cleanCurr.toLowerCase())) {
+        seen.add(cleanCurr.toLowerCase());
+        options.push({
+          value: cleanCurr,
+          label: `${cleanCurr} (${formatRoleLabel(currentUser.role)})`,
+          role: currentUser.role || 'staff'
+        });
+      }
+    }
+
+    return options;
+  }, [shopAdminDefaultName, staffAccounts, currentUser?.name, currentUser?.role]);
+
+  const effectiveYesterdayClosingUser = selectedYesterdayClosingUser || shopAdminDefaultName;
 
   // Transfers between Shop Cash and Back Cash for current filterDate
   const backCashTransfers = useMemo(() => {
@@ -658,6 +715,7 @@ export const DailyCashView: React.FC = () => {
       if (yesterdayMissingClosingInfo.isMissing) {
         setPendingOpeningAmount(val);
         setPendingOpeningDesc(description.trim() || 'Today Opening Cash ⭐');
+        setSelectedYesterdayClosingUser(shopAdminDefaultName);
         setShowYesterdayClosingPrompt(true);
         return;
       }
@@ -701,9 +759,13 @@ export const DailyCashView: React.FC = () => {
     const yOut = yStats.cashOut;
     const ySale = (val + yOut) - yOpening;
 
-    // Attribution: identify if this is a Single User Full Day Shop or a Multi-Shift Shop
-    const { isSingleShiftDay, targetYesterdayUser } = yesterdayMissingClosingInfo;
-    const uName = targetYesterdayUser || currentUser?.name || (currentUser?.role === 'admin' ? 'Admin' : 'Staff');
+    // Attribution: use selected Admin/Staff user from dropdown (defaults to Shop Admin)
+    const { isSingleShiftDay } = yesterdayMissingClosingInfo;
+    const uName = effectiveYesterdayClosingUser;
+    const matchedOpt = yesterdayClosingUserOptions.find(
+      opt => opt.value.toLowerCase() === uName.toLowerCase()
+    );
+    const attributedRole = matchedOpt?.role || 'admin';
     const closingDesc = isSingleShiftDay
       ? `${uName} - Full Day Shift Closing (مکمل دن کی کلوزنگ و سیل)`
       : `${uName} - 2nd Shift Closing Balance (دوسری شفٹ کلوزنگ)`;
@@ -720,11 +782,12 @@ export const DailyCashView: React.FC = () => {
       extra_fields: {
         shift_time: shiftTime,
         user_name: uName,
+        user_role: attributedRole,
         opening_cash: yOpening,
         out_purchases: yOut,
         calculated_sale: ySale
       }
-    });
+    } as any);
 
     setAmount('');
     setDescription('');
@@ -889,26 +952,6 @@ export const DailyCashView: React.FC = () => {
             className="text-white/80 hover:text-white p-1 text-sm font-black"
           >
             ✕
-          </button>
-        </div>
-      )}
-
-      {/* Admin Delete Permission Box */}
-      {isStoreAdmin && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center justify-between text-xs">
-          <div className="flex items-center gap-2 font-bold text-amber-900">
-            {systemSettings.user_can_delete ? <Unlock className="w-4 h-4 text-emerald-600" /> : <Lock className="w-4 h-4 text-rose-600" />}
-            <span>User Delete Permission: </span>
-            <span className={systemSettings.user_can_delete ? 'text-emerald-700 font-black' : 'text-rose-700 font-black'}>
-              {systemSettings.user_can_delete ? 'ALLOWED' : 'LOCKED'}
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={toggleUserDeletePerm}
-            className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold text-[11px] transition-colors"
-          >
-            Change
           </button>
         </div>
       )}
@@ -1666,7 +1709,9 @@ export const DailyCashView: React.FC = () => {
                     : `Kal (${yesterdayDate}) 2nd Shift Closing Missing:`}
                 </span>
                 <span className="text-[10px] text-indigo-800">
-                  Save karne par popup aayega. "Haan / Yes" dabane par kal ki closing aur 100% sale {yesterdayMissingClosingInfo.targetYesterdayUser} ke naam par darj ho jayegi.
+                  {yesterdayClosingUserOptions.length > 1
+                    ? `Save karne par popup aayega jahan by default ${shopAdminDefaultName} (Admin) select hoga, ya aap dropdown se kisi bhi staff member ke khate mein kal ki closing aur 100% sale add kar sakte hain.`
+                    : `Save karne par popup aayega. "Haan / Yes" dabane par kal ki closing aur 100% sale ${shopAdminDefaultName} ke naam par darj ho jayegi.`}
                 </span>
               </div>
             </div>
@@ -2069,18 +2114,33 @@ export const DailyCashView: React.FC = () => {
 
             {/* Prompt Question */}
             <div className="bg-indigo-50/70 border border-indigo-100 rounded-2xl p-3.5 space-y-2 text-xs">
-              <div className="flex items-center justify-between pb-1 border-b border-indigo-100">
-                <span className="font-bold text-indigo-900">
-                  {yesterdayMissingClosingInfo.isSingleShiftDay ? '⭐ 1 User Shop (Full Day Shift)' : '👥 2nd / Night Shift'}
+              <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-indigo-100">
+                <span className="font-bold text-indigo-900 shrink-0">
+                  {yesterdayMissingClosingInfo.isSingleShiftDay ? '⭐ Full Day Shift' : '👥 2nd / Night Shift'}
                 </span>
-                <span className="text-[10px] bg-indigo-200/80 text-indigo-900 font-bold px-2 py-0.5 rounded-md font-mono">
-                  {yesterdayMissingClosingInfo.targetYesterdayUser}
-                </span>
+                {yesterdayClosingUserOptions.length > 1 ? (
+                  <select
+                    value={effectiveYesterdayClosingUser}
+                    onChange={e => setSelectedYesterdayClosingUser(e.target.value)}
+                    aria-label="Select 2nd shift user"
+                    className="max-w-[185px] text-[11px] bg-white border border-indigo-300 text-indigo-950 font-extrabold px-2.5 py-1 rounded-lg shadow-2xs focus:outline-none focus:border-indigo-600 cursor-pointer truncate"
+                  >
+                    {yesterdayClosingUserOptions.map(opt => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="text-[10px] bg-indigo-200/80 text-indigo-900 font-bold px-2 py-0.5 rounded-md font-mono">
+                    {effectiveYesterdayClosingUser}
+                  </span>
+                )}
               </div>
               <p className="text-slate-800 leading-relaxed font-semibold">
                 {yesterdayMissingClosingInfo.isSingleShiftDay ? (
                   <>
-                    Kal <span className="font-bold text-indigo-900 font-mono">({yesterdayDate})</span> poora din <span className="font-bold text-slate-900 underline">{yesterdayMissingClosingInfo.targetYesterdayUser}</span> ne shop operate ki thi.
+                    Kal <span className="font-bold text-indigo-900 font-mono">({yesterdayDate})</span> ki closing missing hai (Selected: <span className="font-bold text-slate-900 underline">{effectiveYesterdayClosingUser}</span>).
                   </>
                 ) : (
                   <>
@@ -2091,11 +2151,11 @@ export const DailyCashView: React.FC = () => {
               <p className="text-slate-600 text-[11px] leading-relaxed">
                 {yesterdayMissingClosingInfo.isSingleShiftDay ? (
                   <>
-                    Kya ye cash (<span className="font-mono font-black text-indigo-700">Rs. {pendingOpeningAmount.toLocaleString()}</span>) kal ki <strong>Full Day Closing</strong> maan kar darj kar dein? Is se kal ki <strong>100% sale aur profit {yesterdayMissingClosingInfo.targetYesterdayUser}</strong> ke naam par count ho jayegi!
+                    Kya ye cash (<span className="font-mono font-black text-indigo-700">Rs. {pendingOpeningAmount.toLocaleString()}</span>) kal ki <strong>Full Day Closing</strong> maan kar darj kar dein? Is se kal ki <strong>100% sale aur profit {effectiveYesterdayClosingUser}</strong> ke naam par count ho jayegi!
                   </>
                 ) : (
                   <>
-                    Kya ye cash (<span className="font-mono font-black text-indigo-700">Rs. {pendingOpeningAmount.toLocaleString()}</span>) 2nd shift ki closing maan kar <strong>{yesterdayMissingClosingInfo.targetYesterdayUser}</strong> ke naam par darj kar dein?
+                    Kya ye cash (<span className="font-mono font-black text-indigo-700">Rs. {pendingOpeningAmount.toLocaleString()}</span>) 2nd shift ki closing maan kar <strong>{effectiveYesterdayClosingUser}</strong> ke khate mein darj kar dein?
                   </>
                 )}
               </p>

@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "18.1.7",
+  "version": "18.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

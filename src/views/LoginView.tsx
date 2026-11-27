@@ -42,9 +42,12 @@ import {
   validateStrongPassword,
   checkClientSecurityThrottle,
   recordClientAuthOutcome,
+  getClientLockoutStatus,
+  ClientLockoutStatus,
   sanitizeTextInput
 } from '../utils/securityShield';
 import { superAdminService } from '../superadmin/superAdminService';
+import { PAKISTAN_PROVINCES, getDistrictsForProvince } from '../data/pakistanLocations';
 
 export const LoginView: React.FC = () => {
   const {
@@ -127,6 +130,9 @@ export const LoginView: React.FC = () => {
   const [signupPassword, setSignupPassword] = useState<string>('');
   const [showSignupPassword, setShowSignupPassword] = useState<boolean>(false);
   const [signupPhone, setSignupPhone] = useState<string>('');
+  const [signupProvince, setSignupProvince] = useState<string>('');
+  const [signupDistrict, setSignupDistrict] = useState<string>('');
+  const [signupCity, setSignupCity] = useState<string>('');
   const [signupAddress, setSignupAddress] = useState<string>('');
   const [isSignupLoading, setIsSignupLoading] = useState<boolean>(false);
 
@@ -150,11 +156,47 @@ export const LoginView: React.FC = () => {
   const formOpenedAtRef = React.useRef<number>(Date.now());
   const hasInteractedRef = React.useRef<boolean>(false);
 
+  // Layer 6: Live Progressive Lockout Countdown Timer (4 fails -> 1m, then every 3 -> 5m, 15m, 30m, 3h, 24h)
+  const activeLockScope =
+    activeTab === 'staff_login'
+      ? 'staff_login'
+      : activeTab === 'signup'
+      ? 'shop_signup'
+      : 'owner_login';
+  const activeLockIdentifier =
+    activeTab === 'staff_login'
+      ? staffUsername.trim()
+      : activeTab === 'signup'
+      ? signupEmail.trim().toLowerCase()
+      : gmailInput.trim().toLowerCase();
+
+  const [lockoutStatus, setLockoutStatus] = useState<ClientLockoutStatus>(() =>
+    getClientLockoutStatus('owner_login', getStoredAuthorizedEmail() || '')
+  );
+
+  useEffect(() => {
+    setLockoutStatus(getClientLockoutStatus(activeLockScope, activeLockIdentifier));
+  }, [activeLockScope, activeLockIdentifier]);
+
+  useEffect(() => {
+    if (!lockoutStatus.locked) return;
+    const interval = window.setInterval(() => {
+      const next = getClientLockoutStatus(activeLockScope, activeLockIdentifier);
+      setLockoutStatus(next);
+      if (!next.locked) {
+        setError(prev =>
+          prev.includes('Lockout') || prev.includes('سیکیورٹی شیلڈ لاک') ? '' : prev
+        );
+      }
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [lockoutStatus.locked, activeLockScope, activeLockIdentifier]);
+
   useEffect(() => {
     formOpenedAtRef.current = Date.now();
   }, [activeTab]);
 
-  const activeError = error || authRedirectError || '';
+  const activeError = lockoutStatus.locked && activeTab !== 'demo_store' ? '' : (error || authRedirectError || '');
 
   const handleGoogleSignIn = async () => {
     setError('');
@@ -248,6 +290,7 @@ export const LoginView: React.FC = () => {
 
     const throttleCheck = checkClientSecurityThrottle('owner_login', cleanEmail);
     if (!throttleCheck.valid) {
+      setLockoutStatus(getClientLockoutStatus('owner_login', cleanEmail));
       setError(lang === 'en' ? throttleCheck.errorEn! : throttleCheck.errorUr!);
       return;
     }
@@ -257,10 +300,16 @@ export const LoginView: React.FC = () => {
     setIsGmailLoading(false);
 
     if (!result.success) {
-      recordClientAuthOutcome('owner_login', cleanEmail, false);
-      setError(result.error || (lang === 'en' ? 'Login failed. Please check your email and password.' : 'لاگ ان کرنے میں مسئلہ پیش آیا۔ ای میل اور پاس ورڈ چیک کریں۔'));
+      const nextLock = recordClientAuthOutcome('owner_login', cleanEmail, false);
+      setLockoutStatus(nextLock);
+      if (nextLock.locked) {
+        setError('');
+      } else {
+        setError(result.error || (lang === 'en' ? 'Login failed. Please check your email and password.' : 'لاگ ان کرنے میں مسئلہ پیش آیا۔ ای میل اور پاس ورڈ چیک کریں۔'));
+      }
     } else {
-      recordClientAuthOutcome('owner_login', cleanEmail, true);
+      const cleared = recordClientAuthOutcome('owner_login', cleanEmail, true);
+      setLockoutStatus(cleared);
       try {
         localStorage.setItem('taj_pos_saved_login_email', cleanEmail);
       } catch {}
@@ -288,9 +337,12 @@ export const LoginView: React.FC = () => {
     const cleanOwner = sanitizeTextInput(signupOwnerName, 80);
     const cleanPass = signupPassword.trim();
     const cleanPhone = sanitizeTextInput(signupPhone, 25);
+    const cleanProvince = sanitizeTextInput(signupProvince, 60);
+    const cleanDistrict = sanitizeTextInput(signupDistrict, 60);
+    const cleanCity = sanitizeTextInput(signupCity, 60);
     const cleanAddress = sanitizeTextInput(signupAddress, 140);
 
-    // Layer 3: Authentic Shop Name, Owner Name, Email (Anti-Disposable/Fake) & Phone Check
+    // Layer 3: Authentic Shop Name, Owner Name, Email (Anti-Disposable/Fake), Phone & Location Check
     const shopCheck = validateAuthenticName(cleanShop, 'Shop Name', 'دکان کا نام');
     if (!shopCheck.valid) {
       setError(lang === 'en' ? shopCheck.errorEn! : shopCheck.errorUr!);
@@ -309,6 +361,22 @@ export const LoginView: React.FC = () => {
     const phoneCheck = validateAuthenticPhone(cleanPhone);
     if (!phoneCheck.valid) {
       setError(lang === 'en' ? phoneCheck.errorEn! : phoneCheck.errorUr!);
+      return;
+    }
+    if (!cleanProvince) {
+      setError(
+        lang === 'en'
+          ? 'Please select your Province (Required).'
+          : 'برائے مہربانی اپنا صوبہ (Province) منتخب کریں — یہ لازمی ہے۔'
+      );
+      return;
+    }
+    if (!cleanDistrict) {
+      setError(
+        lang === 'en'
+          ? 'Please select your District (Required).'
+          : 'برائے مہربانی اپنا ضلع (District) منتخب کریں — یہ لازمی ہے۔'
+      );
       return;
     }
 
@@ -342,6 +410,7 @@ export const LoginView: React.FC = () => {
     // Layer 6: Signup Flood Throttle
     const throttleCheck = checkClientSecurityThrottle('shop_signup', cleanEmail);
     if (!throttleCheck.valid) {
+      setLockoutStatus(getClientLockoutStatus('shop_signup', cleanEmail));
       setError(lang === 'en' ? throttleCheck.errorEn! : throttleCheck.errorUr!);
       return;
     }
@@ -353,15 +422,24 @@ export const LoginView: React.FC = () => {
       email: cleanEmail,
       password: cleanPass,
       phone: cleanPhone,
+      province: cleanProvince,
+      district: cleanDistrict,
+      city: cleanCity,
       address: cleanAddress
     });
     setIsSignupLoading(false);
 
     if (!result.success) {
-      recordClientAuthOutcome('shop_signup', cleanEmail, false);
-      setError(result.error || (lang === 'en' ? 'Failed to register shop. Please try again.' : 'دکان رجسٹر کرنے میں مسئلہ پیش آیا۔ دوبارہ کوشش کریں۔'));
+      const nextLock = recordClientAuthOutcome('shop_signup', cleanEmail, false);
+      setLockoutStatus(nextLock);
+      if (nextLock.locked) {
+        setError('');
+      } else {
+        setError(result.error || (lang === 'en' ? 'Failed to register shop. Please try again.' : 'دکان رجسٹر کرنے میں مسئلہ پیش آیا۔ دوبارہ کوشش کریں۔'));
+      }
     } else {
-      recordClientAuthOutcome('shop_signup', cleanEmail, true);
+      const cleared = recordClientAuthOutcome('shop_signup', cleanEmail, true);
+      setLockoutStatus(cleared);
       try {
         localStorage.setItem('taj_pos_saved_login_email', cleanEmail);
       } catch {}
@@ -396,6 +474,7 @@ export const LoginView: React.FC = () => {
 
     const throttleCheck = checkClientSecurityThrottle('staff_login', cleanUser);
     if (!throttleCheck.valid) {
+      setLockoutStatus(getClientLockoutStatus('staff_login', cleanUser));
       setError(lang === 'en' ? throttleCheck.errorEn! : throttleCheck.errorUr!);
       return;
     }
@@ -404,10 +483,16 @@ export const LoginView: React.FC = () => {
     const result = await loginStaff(cleanUser, cleanPass);
     setIsStaffLoading(false);
     if (!result.success) {
-      recordClientAuthOutcome('staff_login', cleanUser, false);
-      setError(result.error || (lang === 'en' ? 'Invalid credentials. Contact the shop owner for details.' : 'درج کردہ تفصیلات غلط ہیں۔ دکان کے مالک سے درست تفصیلات حاصل کریں۔'));
+      const nextLock = recordClientAuthOutcome('staff_login', cleanUser, false);
+      setLockoutStatus(nextLock);
+      if (nextLock.locked) {
+        setError('');
+      } else {
+        setError(result.error || (lang === 'en' ? 'Invalid credentials. Contact the shop owner for details.' : 'درج کردہ تفصیلات غلط ہیں۔ دکان کے مالک سے درست تفصیلات حاصل کریں۔'));
+      }
     } else {
-      recordClientAuthOutcome('staff_login', cleanUser, true);
+      const cleared = recordClientAuthOutcome('staff_login', cleanUser, true);
+      setLockoutStatus(cleared);
     }
   };
 
@@ -574,8 +659,29 @@ export const LoginView: React.FC = () => {
           </button>
         </div>
 
-        {/* Error Notice */}
-        {activeError ? (
+        {/* Live Progressive Wrong-Password Countdown Lockout Banner */}
+        {lockoutStatus.locked && activeTab !== 'demo_store' ? (
+          <div className="mt-3.5 p-3.5 bg-gradient-to-r from-rose-50 via-red-50 to-amber-50 text-rose-800 border-2 border-rose-300 rounded-2xl text-xs font-bold text-left flex items-center gap-3 animate-in fade-in shadow-sm">
+            <div className="w-10 h-10 rounded-xl bg-rose-100 border border-rose-200 flex items-center justify-center text-xl shrink-0 animate-pulse">
+              ⏳
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-black text-rose-900">
+                  {isUrdu ? 'سیکیورٹی شیلڈ لاک (انتظار کریں)' : 'Security Shield Lockout'}
+                </span>
+                <span className="px-2 py-0.5 bg-rose-600 text-white rounded-lg font-mono text-xs font-black tracking-tight shadow-xs whitespace-nowrap">
+                  ⏳ {lockoutStatus.formattedCountdown}
+                </span>
+              </div>
+              <p className="text-[11px] text-rose-700 mt-1 leading-snug">
+                {isUrdu
+                  ? `مسلسل ${lockoutStatus.failures} غلط کوششوں کی وجہ سے لاگ ان عارضی طور پر بند ہے۔ براہِ کرم ٹائمر ختم ہونے کا انتظار کریں۔`
+                  : `Too many wrong password attempts (${lockoutStatus.failures}). Please wait for the countdown timer to finish before trying again.`}
+              </p>
+            </div>
+          </div>
+        ) : activeError ? (
           <div className="mt-3.5 p-3 bg-rose-50 text-rose-700 border-2 border-rose-300 rounded-2xl text-xs font-bold text-left flex items-start gap-2.5 animate-in fade-in shadow-xs">
             <AlertCircle className="w-5 h-5 shrink-0 text-rose-600 mt-0.5" />
             <div className="space-y-1.5 flex-1">
@@ -715,15 +821,17 @@ export const LoginView: React.FC = () => {
 
               <button
                 type="submit"
-                disabled={isGmailLoading || !gmailInput.trim() || !ownerPassword.trim()}
-                className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black rounded-xl shadow-md shadow-blue-600/25 text-sm flex items-center justify-center gap-2 transition-all active:scale-98 cursor-pointer disabled:opacity-60"
+                disabled={isGmailLoading || lockoutStatus.locked || !gmailInput.trim() || !ownerPassword.trim()}
+                className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-black rounded-xl shadow-md shadow-blue-600/25 text-sm flex items-center justify-center gap-2 transition-all active:scale-98 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <span>
-                  {isGmailLoading
+                  {lockoutStatus.locked
+                    ? (isUrdu ? `⏳ انتظار کریں (${lockoutStatus.formattedCountdown})` : `⏳ Wait ${lockoutStatus.formattedCountdown}`)
+                    : isGmailLoading
                     ? (isUrdu ? 'داخل ہو رہے ہیں...' : 'Signing in...')
                     : (isUrdu ? 'ایڈمن لاگ ان کریں (Sign In)' : 'Sign In to Shop')}
                 </span>
-                <ArrowRight className="w-4 h-4" />
+                {!lockoutStatus.locked && <ArrowRight className="w-4 h-4" />}
               </button>
             </form>
 
@@ -908,7 +1016,91 @@ export const LoginView: React.FC = () => {
                 </div>
               </div>
 
+              {/* Location: Province (Required) & District (Required) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isUrdu ? 'صوبہ (Province) *' : 'Province *'}
+                  </label>
+                  <div className="relative">
+                    <MapPin className="w-4 h-4 text-emerald-600 absolute left-3 top-2.5 pointer-events-none" />
+                    <select
+                      required
+                      value={signupProvince}
+                      onChange={e => {
+                        hasInteractedRef.current = true;
+                        setSignupProvince(e.target.value);
+                        setSignupDistrict('');
+                        setError('');
+                      }}
+                      className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-xs sm:text-sm cursor-pointer"
+                    >
+                      <option value="">
+                        {isUrdu ? '-- صوبہ منتخب کریں --' : '-- Select Province --'}
+                      </option>
+                      {PAKISTAN_PROVINCES.map(p => (
+                        <option key={p.name} value={p.name}>
+                          {isUrdu ? `${p.name} (${p.urduName})` : p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isUrdu ? 'ضلع (District) *' : 'District *'}
+                  </label>
+                  <div className="relative">
+                    <MapPin className="w-4 h-4 text-emerald-600 absolute left-3 top-2.5 pointer-events-none" />
+                    <select
+                      required
+                      disabled={!signupProvince}
+                      value={signupDistrict}
+                      onChange={e => {
+                        hasInteractedRef.current = true;
+                        setSignupDistrict(e.target.value);
+                        setError('');
+                      }}
+                      className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-xs sm:text-sm cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      <option value="">
+                        {!signupProvince
+                          ? isUrdu
+                            ? '-- پہلے صوبہ منتخب کریں --'
+                            : '-- Select Province First --'
+                          : isUrdu
+                          ? '-- ضلع منتخب کریں --'
+                          : '-- Select District --'}
+                      </option>
+                      {getDistrictsForProvince(signupProvince).map(d => (
+                        <option key={d} value={d}>
+                          {d}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* City (Optional) & Phone (Optional) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    {isUrdu ? 'شہر / قصبہ (اختیاری)' : 'City / Town (Optional)'}
+                  </label>
+                  <div className="relative">
+                    <MapPin className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                    <input
+                      type="text"
+                      value={signupCity}
+                      onChange={e => setSignupCity(e.target.value)}
+                      placeholder={isUrdu ? 'مثلاً: صادق آباد' : 'e.g. Sadiqabad'}
+                      className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm"
+                    />
+                  </div>
+                </div>
+
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
                     {isUrdu ? 'فون یا واٹس ایپ نمبر' : 'Phone / WhatsApp (Optional)'}
@@ -925,32 +1117,43 @@ export const LoginView: React.FC = () => {
                     />
                   </div>
                 </div>
+              </div>
 
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    {isUrdu ? 'شہر یا پتہ' : 'City / Address (Optional)'}
-                  </label>
-                  <div className="relative">
-                    <MapPin className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                    <input
-                      type="text"
-                      value={signupAddress}
-                      onChange={e => setSignupAddress(e.target.value)}
-                      placeholder={isUrdu ? 'مثلاً: مین بازار، صادق آباد' : 'e.g. Main Bazar, Sadiqabad'}
-                      className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm"
-                    />
-                  </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  {isUrdu ? 'دکان کا مکمل پتہ (اختیاری)' : 'Shop Address / Bazar (Optional)'}
+                </label>
+                <div className="relative">
+                  <MapPin className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                  <input
+                    type="text"
+                    value={signupAddress}
+                    onChange={e => setSignupAddress(e.target.value)}
+                    placeholder={isUrdu ? 'مثلاً: مین بازار، غلہ منڈی' : 'e.g. Main Bazar, Ghalla Mandi'}
+                    className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm"
+                  />
                 </div>
               </div>
 
               <button
                 type="submit"
-                disabled={isSignupLoading || !signupShopName.trim() || !signupOwnerName.trim() || !signupEmail.trim() || !signupPassword.trim()}
-                className="w-full mt-2 py-3.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white font-black rounded-xl shadow-lg shadow-emerald-600/30 text-sm flex items-center justify-center gap-2 transition-all active:scale-98 cursor-pointer disabled:opacity-60"
+                disabled={
+                  isSignupLoading ||
+                  lockoutStatus.locked ||
+                  !signupShopName.trim() ||
+                  !signupOwnerName.trim() ||
+                  !signupEmail.trim() ||
+                  !signupPassword.trim() ||
+                  !signupProvince.trim() ||
+                  !signupDistrict.trim()
+                }
+                className="w-full mt-2 py-3.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white font-black rounded-xl shadow-lg shadow-emerald-600/30 text-sm flex items-center justify-center gap-2 transition-all active:scale-98 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <Sparkles className="w-4 h-4 text-yellow-300" />
                 <span>
-                  {isSignupLoading
+                  {lockoutStatus.locked
+                    ? (isUrdu ? `⏳ انتظار کریں (${lockoutStatus.formattedCountdown})` : `⏳ Wait ${lockoutStatus.formattedCountdown}`)
+                    : isSignupLoading
                     ? (isUrdu ? 'دکان رجسٹر ہو رہی ہے...' : 'Registering shop...')
                     : (isUrdu ? '🚀 دکان رجسٹر کریں اور داخل ہوں' : '🚀 Register & Launch Shop')}
                 </span>
@@ -1086,12 +1289,14 @@ export const LoginView: React.FC = () => {
 
             <button
               type="submit"
-              disabled={isStaffLoading}
-              className="w-full py-3.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-lg shadow-purple-600/30 text-sm flex items-center justify-center gap-2 transition-all active:scale-98 cursor-pointer disabled:opacity-60"
+              disabled={isStaffLoading || lockoutStatus.locked}
+              className="w-full py-3.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl shadow-lg shadow-purple-600/30 text-sm flex items-center justify-center gap-2 transition-all active:scale-98 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              <LogIn className="w-4 h-4" />
+              {!lockoutStatus.locked && <LogIn className="w-4 h-4" />}
               <span>
-                {isStaffLoading
+                {lockoutStatus.locked
+                  ? (isUrdu ? `⏳ انتظار کریں (${lockoutStatus.formattedCountdown})` : `⏳ Wait ${lockoutStatus.formattedCountdown}`)
+                  : isStaffLoading
                   ? (isUrdu ? 'تصدیق ہو رہی ہے...' : 'Checking Credentials...')
                   : (isUrdu ? 'اسٹاف لاگ ان' : 'Staff Login')}
               </span>

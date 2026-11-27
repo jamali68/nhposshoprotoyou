@@ -144,6 +144,9 @@ interface POSContextType {
     email: string;
     password: string;
     phone?: string;
+    province: string;
+    district: string;
+    city?: string;
     address?: string;
   }) => Promise<{ success: boolean; error?: string; alreadyRegistered?: boolean }>;
   completeShopSetup: (shopName: string, phone?: string, address?: string, ownerName?: string, password?: string) => Promise<boolean>;
@@ -3246,6 +3249,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     email: string;
     password: string;
     phone?: string;
+    province: string;
+    district: string;
+    city?: string;
     address?: string;
   }): Promise<{ success: boolean; error?: string; alreadyRegistered?: boolean }> => {
     try {
@@ -3254,7 +3260,17 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const cleanOwnerName = sanitizeTextInput(data.ownerName || '', 80) || cleanEmail.split('@')[0];
       const cleanPassword = (data.password || '').trim();
       const cleanPhone = sanitizeTextInput(data.phone || '', 25);
+      const cleanProvince = sanitizeTextInput(data.province || '', 60);
+      const cleanDistrict = sanitizeTextInput(data.district || '', 60);
+      const cleanCity = sanitizeTextInput(data.city || '', 60);
       const cleanAddress = sanitizeTextInput(data.address || '', 140);
+
+      if (!cleanProvince || !cleanDistrict) {
+        return {
+          success: false,
+          error: 'صوبہ (Province) اور ضلع (District) منتخب کرنا لازمی ہے۔ (Please select both Province and District).'
+        };
+      }
 
       // Always check latest Cloud Super Admin permissions before allowing new shop signup
       if (typeof navigator === 'undefined' || navigator.onLine) {
@@ -3450,7 +3466,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         passwordSalt,
         isLegacyPassword: false,
         phone: cleanPhone,
-        address: cleanAddress,
+        province: cleanProvince,
+        district: cleanDistrict,
+        city: cleanCity,
+        address: cleanAddress || [cleanCity, cleanDistrict, cleanProvince].filter(Boolean).join(', '),
         created_at: new Date().toISOString(),
         last_login: new Date().toISOString()
       };
@@ -3525,7 +3544,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           last_login: nowIso,
           last_login_method: 'password',
           phone: cleanPhone,
-          address: cleanAddress
+          province: cleanProvince,
+          district: cleanDistrict,
+          city: cleanCity,
+          address: cleanAddress || [cleanCity, cleanDistrict, cleanProvince].filter(Boolean).join(', ')
         };
 
         await Promise.allSettled([
@@ -3788,6 +3810,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           owner_name: updated.owner_name,
           owner_name_updated_date: updated.owner_name_updated_date,
           phone: updated.phone || '',
+          province: updated.province || '',
+          district: updated.district || '',
+          city: updated.city || '',
           address: updated.address || '',
           owner_email: cleanEmail,
           updated_at: new Date().toISOString()
@@ -5259,8 +5284,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const newTx: DailyTransaction = {
       ...tx,
       id: `dt-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      created_by: currentUser?.role || 'user',
-      created_by_name: currentUser?.name || currentUser?.username || (currentUser?.role === 'admin' ? 'Admin' : 'Staff'),
+      created_by: (tx as Partial<DailyTransaction>).created_by || currentUser?.role || 'user',
+      created_by_name: tx.created_by_name || currentUser?.name || currentUser?.username || (currentUser?.role === 'admin' ? 'Admin' : 'Staff'),
       created_at: tx.created_at || new Date().toISOString()
     };
     scheduleDataMutation(

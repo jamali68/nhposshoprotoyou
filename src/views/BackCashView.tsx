@@ -615,26 +615,6 @@ export const BackCashView: React.FC = () => {
         )}
       </div>
 
-      {/* Admin Permission Card */}
-      {isStoreAdmin && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center justify-between text-xs">
-          <div className="flex items-center gap-2 font-bold text-amber-900">
-            {systemSettings.user_can_delete ? <Unlock className="w-4 h-4 text-emerald-600" /> : <Lock className="w-4 h-4 text-rose-600" />}
-            <span>User Delete: </span>
-            <span className={systemSettings.user_can_delete ? 'text-emerald-700 font-black' : 'text-rose-700 font-black'}>
-              {systemSettings.user_can_delete ? 'ALLOWED' : 'LOCKED'}
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={toggleUserDeletePerm}
-            className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold text-[11px] transition-colors"
-          >
-            Change
-          </button>
-        </div>
-      )}
-
       {/* Date Filter */}
       <DateNavigator
         value={filterDate}
