@@ -42,7 +42,8 @@ import {
   MASTER_SUPER_ADMIN_EMAILS,
   ALL_CONTROLLABLE_MODULES,
   ALL_STAFF_CONTROLLABLE_MODULES,
-  ALL_STAFF_CONTROLLABLE_ACTIONS
+  ALL_STAFF_CONTROLLABLE_ACTIONS,
+  DEFAULT_PACKAGE_POLICIES
 } from './superAdminService';
 import {
   TenantShopInfo,
@@ -52,7 +53,8 @@ import {
   PlatformModuleControlConfig,
   ModuleHealthTestResult,
   ShopStaffPermissionsConfig,
-  StaffPermissionActionId
+  StaffPermissionActionId,
+  ShopPackageType
 } from './types';
 import {
   buildShopUsageReportRow,
@@ -208,6 +210,100 @@ export const SuperAdminView: React.FC = () => {
   const [shopStaffPermConfig, setShopStaffPermConfig] = useState<ShopStaffPermissionsConfig>(() =>
     superAdminService.getShopStaffPermissions(targetShopIdForStaffPerms)
   );
+
+  // 3-Tier Package & Sync System Control State (Free / Basic / Pro, Auto Sync Timer, Shared Daily Bypass Limit)
+  const [selectedPackageTier, setSelectedPackageTier] = useState<ShopPackageType>('free');
+  const [pkgSyncMinutes, setPkgSyncMinutes] = useState<number>(30);
+  const [pkgDailyBypassLimit, setPkgDailyBypassLimit] = useState<number>(10);
+  const [pkgAllowDriveVault, setPkgAllowDriveVault] = useState<boolean>(true);
+  const [isSavingPkgPolicy, setIsSavingPkgPolicy] = useState<boolean>(false);
+  const [bypassRefreshTick, setBypassRefreshTick] = useState<number>(0);
+
+  useEffect(() => {
+    const onBypassUpdate = () => setBypassRefreshTick(t => t + 1);
+    window.addEventListener('taj_shop_bypass_updated', onBypassUpdate);
+    return () => window.removeEventListener('taj_shop_bypass_updated', onBypassUpdate);
+  }, []);
+
+  useEffect(() => {
+    if (selectedShopForModules === 'GLOBAL') {
+      const tierCfg =
+        moduleConfig.packageDefaults?.[selectedPackageTier] ||
+        DEFAULT_PACKAGE_POLICIES[selectedPackageTier];
+      setPkgSyncMinutes(tierCfg.autoSyncIntervalMinutes);
+      setPkgDailyBypassLimit(tierCfg.dailyManualBypassLimit);
+      setPkgAllowDriveVault(tierCfg.allowGoogleDriveVault !== false);
+    } else {
+      const eff = superAdminService.getShopEffectiveSyncPolicy(selectedShopForModules);
+      setSelectedPackageTier(eff.packageType);
+      setPkgSyncMinutes(eff.autoSyncIntervalMinutes);
+      setPkgDailyBypassLimit(eff.dailyManualBypassLimit);
+      setPkgAllowDriveVault(eff.allowGoogleDriveVault);
+    }
+  }, [selectedShopForModules, moduleConfig]);
+
+  const handleSelectPackageTierCard = (tier: ShopPackageType) => {
+    setSelectedPackageTier(tier);
+    const tierDefaults =
+      moduleConfig.packageDefaults?.[tier] || DEFAULT_PACKAGE_POLICIES[tier];
+    if (selectedShopForModules === 'GLOBAL') {
+      setPkgSyncMinutes(tierDefaults.autoSyncIntervalMinutes);
+      setPkgDailyBypassLimit(tierDefaults.dailyManualBypassLimit);
+      setPkgAllowDriveVault(tierDefaults.allowGoogleDriveVault !== false);
+    } else {
+      const shopOvr = moduleConfig.shopPackageOverrides?.[selectedShopForModules];
+      if (shopOvr && shopOvr.packageType === tier) {
+        setPkgSyncMinutes(shopOvr.autoSyncIntervalMinutes ?? tierDefaults.autoSyncIntervalMinutes);
+        setPkgDailyBypassLimit(shopOvr.dailyManualBypassLimit ?? tierDefaults.dailyManualBypassLimit);
+        setPkgAllowDriveVault(shopOvr.allowGoogleDriveVault ?? (tierDefaults.allowGoogleDriveVault !== false));
+      } else {
+        setPkgSyncMinutes(tierDefaults.autoSyncIntervalMinutes);
+        setPkgDailyBypassLimit(tierDefaults.dailyManualBypassLimit);
+        setPkgAllowDriveVault(tierDefaults.allowGoogleDriveVault !== false);
+      }
+    }
+  };
+
+  const handleSavePackageAndSyncPolicy = async () => {
+    setIsSavingPkgPolicy(true);
+    try {
+      const ok = await superAdminService.saveShopPackageAndSyncPolicy(selectedShopForModules, {
+        packageType: selectedPackageTier,
+        autoSyncIntervalMinutes: pkgSyncMinutes,
+        dailyManualBypassLimit: pkgDailyBypassLimit,
+        allowGoogleDriveVault: pkgAllowDriveVault,
+        updatedBy: currentUser?.email || MASTER_EMAIL
+      });
+      const latestCfg = superAdminService.getModuleControlConfig();
+      setModuleConfig(latestCfg);
+      setBypassRefreshTick(t => t + 1);
+      if (!ok) {
+        pendingCloudConfigRef.current = latestCfg;
+        setHasUnsyncedCloudChanges(true);
+      } else {
+        pendingCloudConfigRef.current = null;
+        setHasUnsyncedCloudChanges(false);
+      }
+      showCloudSaveResult(
+        ok,
+        selectedShopForModules === 'GLOBAL'
+          ? `✓ ${selectedPackageTier.toUpperCase()} Package Default Policy saved (${pkgSyncMinutes}m Auto Timer · ${pkgDailyBypassLimit} Daily Shared Bypass Counts)!`
+          : `✓ Store Assigned to ${selectedPackageTier.toUpperCase()} Package (${pkgSyncMinutes}m Auto Timer · ${pkgDailyBypassLimit} Shared Daily Bypasses for all users of this shop)!`
+      );
+    } finally {
+      setIsSavingPkgPolicy(false);
+    }
+  };
+
+  const handleResetShopTodayBypassCounter = async (shopIdToReset: string) => {
+    const ok = await superAdminService.resetShopDailyBypassCounter(shopIdToReset);
+    setBypassRefreshTick(t => t + 1);
+    showCloudSaveResult(
+      ok,
+      `✓ Shared Daily Manual Bypass Counter reset to Full (${pkgDailyBypassLimit}/${pkgDailyBypassLimit} Remaining) for all users of this shop!`,
+      false
+    );
+  };
 
   useEffect(() => {
     setShopStaffPermConfig(superAdminService.getShopStaffPermissions(targetShopIdForStaffPerms));
@@ -999,6 +1095,28 @@ export const SuperAdminView: React.FC = () => {
                                 <span>{formatShopLocationLine(shop)}</span>
                               </div>
                             )}
+                            {(() => {
+                              const bStatus = superAdminService.getShopDailyBypassStatus(shop.id);
+                              const pkgBadgeColor =
+                                bStatus.packageType === 'pro'
+                                  ? 'bg-amber-100 text-amber-800 border-amber-300'
+                                  : bStatus.packageType === 'basic'
+                                  ? 'bg-indigo-100 text-indigo-800 border-indigo-300'
+                                  : 'bg-slate-100 text-slate-700 border-slate-300';
+                              return (
+                                <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] font-bold">
+                                  <span className={`px-2 py-0.5 rounded-md border uppercase ${pkgBadgeColor}`}>
+                                    📦 {bStatus.packageType}
+                                  </span>
+                                  <span className="px-2 py-0.5 rounded-md bg-cyan-50 text-cyan-800 border border-cyan-200 font-mono">
+                                    ⏱️ Auto: {bStatus.autoSyncIntervalMinutes}m (Unlimited)
+                                  </span>
+                                  <span className="px-2 py-0.5 rounded-md bg-purple-50 text-purple-800 border border-purple-200 font-mono">
+                                    🔄 Bypass: {bStatus.remainingCount}/{bStatus.dailyLimit} Rem
+                                  </span>
+                                </div>
+                              );
+                            })()}
                           </td>
 
                           <td className="py-3.5 px-4">
@@ -2447,6 +2565,268 @@ export const SuperAdminView: React.FC = () => {
             </div>
           </div>
 
+          {/* ========================================================================= */}
+          {/* 3-TIER PACKAGE & SYNC SYSTEM MASTER CONTROL (FREE / BASIC / PRO)          */}
+          {/* ========================================================================= */}
+          {(() => {
+            const activeTargetShopId =
+              selectedShopForModules !== 'GLOBAL'
+                ? selectedShopForModules
+                : currentShop?.id || shops[0]?.id || 'default_shop';
+            const liveBypassStatus = superAdminService.getShopDailyBypassStatus(activeTargetShopId);
+            void bypassRefreshTick;
+
+            return (
+              <div className="bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white rounded-2xl p-4 sm:p-5 border border-indigo-500/30 shadow-lg space-y-4">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-white/10 pb-3.5">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 text-[10px] font-black uppercase">
+                        Package &amp; Sync Timer Engine
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-400/30 text-cyan-300 text-[10px] font-mono font-bold">
+                        Target:{' '}
+                        {selectedShopForModules === 'GLOBAL'
+                          ? `Global ${selectedPackageTier.toUpperCase()} Tier Defaults`
+                          : shops.find(s => s.id === selectedShopForModules)?.shop_name || selectedShopForModules}
+                      </span>
+                    </div>
+                    <h3 className="font-black text-sm sm:text-base text-white mt-1.5">
+                      3-Tier Packages (Free · Basic · Pro), Auto Sync Timer &amp; Shared Daily Bypass Counter
+                    </h3>
+                    <p className="text-[11px] text-slate-300 mt-0.5 leading-relaxed">
+                      ہر پیکج یا دکان کیلئے آٹو سنک ٹائمر (Default 30m سے کم یا زیادہ — آٹو ٹائمر کی کوئی لمٹ نہیں ہوگی) اور روزانہ مینوئل &quot;Update Now&quot; بائی پاس کاؤنٹ مقرر کریں۔ بائی پاس کاؤنٹ پوری دکان (Admin + تمام Staff) کیلئے مشترکہ (Shared) ہوگا۔
+                    </p>
+                  </div>
+
+                  {/* Live Shared Counter Badge for Active Store */}
+                  <div className="bg-slate-950/70 border border-cyan-500/30 rounded-2xl px-3.5 py-2.5 shrink-0 flex items-center justify-between sm:justify-end gap-3">
+                    <div>
+                      <span className="text-[10px] text-slate-400 font-bold uppercase block">
+                        Shared Shop Bypass Today ({shops.find(s => s.id === activeTargetShopId)?.shop_name || 'Current Shop'})
+                      </span>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="font-mono font-black text-sm text-amber-300">
+                          {liveBypassStatus.remainingCount} / {liveBypassStatus.dailyLimit} Remaining
+                        </span>
+                        <span className="text-[10px] text-cyan-300 font-mono">
+                          (Used: {liveBypassStatus.usedCount})
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleResetShopTodayBypassCounter(activeTargetShopId)}
+                      className="px-2.5 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl text-[10px] font-black cursor-pointer transition-colors shrink-0"
+                      title="Reset today's used bypass count back to full remaining for all users of this shop"
+                    >
+                      🔄 Reset Count
+                    </button>
+                  </div>
+                </div>
+
+                {/* 3 Package Tier Selector Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {(['free', 'basic', 'pro'] as ShopPackageType[]).map(tier => {
+                    const tierDef =
+                      moduleConfig.packageDefaults?.[tier] || DEFAULT_PACKAGE_POLICIES[tier];
+                    const isSelected = selectedPackageTier === tier;
+                    return (
+                      <button
+                        key={tier}
+                        type="button"
+                        onClick={() => handleSelectPackageTierCard(tier)}
+                        className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2 ${
+                          isSelected
+                            ? tier === 'pro'
+                              ? 'bg-gradient-to-br from-amber-500/25 to-orange-600/20 border-amber-400 shadow-md shadow-amber-500/10'
+                              : tier === 'basic'
+                              ? 'bg-gradient-to-br from-indigo-500/25 to-cyan-600/20 border-indigo-400 shadow-md shadow-indigo-500/10'
+                              : 'bg-gradient-to-br from-emerald-500/25 to-teal-600/20 border-emerald-400 shadow-md shadow-emerald-500/10'
+                            : 'bg-slate-900/70 border-slate-800 hover:border-slate-600'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 w-full">
+                          <div>
+                            <span className="text-xs font-black uppercase tracking-wide text-white block">
+                              📦 {tierDef.label}
+                            </span>
+                            <span className="text-[11px] font-bold text-amber-300 block">
+                              {tierDef.urduLabel}
+                            </span>
+                          </div>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                              isSelected
+                                ? 'bg-emerald-500 text-slate-950'
+                                : 'bg-slate-800 text-slate-400'
+                            }`}
+                          >
+                            {isSelected ? 'Selected' : 'Select'}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-1.5 pt-2 border-t border-white/10 text-[10px] font-mono">
+                          <div className="bg-black/25 px-2 py-1 rounded-lg">
+                            <span className="text-slate-400 block">Auto Timer:</span>
+                            <span className="text-cyan-300 font-bold">
+                              Every {isSelected ? pkgSyncMinutes : tierDef.autoSyncIntervalMinutes}m (No Limit)
+                            </span>
+                          </div>
+                          <div className="bg-black/25 px-2 py-1 rounded-lg">
+                            <span className="text-slate-400 block">Daily Bypass:</span>
+                            <span className="text-amber-300 font-bold">
+                              {isSelected ? pkgDailyBypassLimit : tierDef.dailyManualBypassLimit} Shared / Day
+                            </span>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Auto Sync Timer & Shared Daily Bypass Count Controls */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-1">
+                  {/* Left: Auto Sync Interval Minutes (Default 30m, Unlimited Auto Cycles) */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3.5 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-xs font-black text-white block">
+                          ⏱️ Auto Sync Timer Interval (خودکار سنک ٹائمر)
+                        </span>
+                        <span className="text-[10px] text-slate-400 block">
+                          Default 30m — کم یا زیادہ کریں (ریمیننگ ٹائم آٹو سنک کی کوئی لمٹ نہیں ہوگی)
+                        </span>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-xl bg-cyan-500/20 border border-cyan-400/30 font-mono font-black text-xs text-cyan-300">
+                        Every {pkgSyncMinutes} min
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5">
+                      {[5, 10, 15, 20, 30, 45, 60, 120].map(mins => (
+                        <button
+                          key={mins}
+                          type="button"
+                          onClick={() => setPkgSyncMinutes(mins)}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
+                            pkgSyncMinutes === mins
+                              ? 'bg-cyan-500 text-slate-950 border-cyan-300 font-black'
+                              : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800'
+                          }`}
+                        >
+                          {mins === 30 ? '30m (Default)' : `${mins}m`}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <span className="text-[10px] text-slate-400 font-bold shrink-0">Custom (Min):</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={360}
+                        value={pkgSyncMinutes}
+                        onChange={e => setPkgSyncMinutes(Math.max(1, Math.min(360, Number(e.target.value) || 30)))}
+                        className="w-24 px-2.5 py-1 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono font-bold text-white"
+                      />
+                      <span className="text-[10px] text-emerald-400 font-semibold">
+                        ✓ Unlimited Auto-Sync Cycles
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Right: Shared Daily Manual Bypass Limit (Admin + All Staff Share Same Counter) */}
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3.5 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-xs font-black text-white block">
+                          🔄 Shared Daily Manual Bypass Counts (روزانہ بٹن بائی پاس لمٹ)
+                        </span>
+                        <span className="text-[10px] text-slate-400 block">
+                          دکان کے تمام یوزرز (Admin + Staff) کیلئے مشترکہ کاؤنٹر (مثلاً 50 میں سے 1 پریس پر سب کو 49 نظر آئے گا)
+                        </span>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-xl bg-amber-500/20 border border-amber-400/30 font-mono font-black text-xs text-amber-300">
+                        {pkgDailyBypassLimit} / Day
+                      </span>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5">
+                      {[5, 10, 25, 50, 100, 200, 500].map(lim => (
+                        <button
+                          key={lim}
+                          type="button"
+                          onClick={() => setPkgDailyBypassLimit(lim)}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
+                            pkgDailyBypassLimit === lim
+                              ? 'bg-amber-500 text-slate-950 border-amber-300 font-black'
+                              : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800'
+                          }`}
+                        >
+                          {lim} Counts
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 pt-1 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-slate-400 font-bold shrink-0">Custom Daily Limit:</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={10000}
+                          value={pkgDailyBypassLimit}
+                          onChange={e =>
+                            setPkgDailyBypassLimit(Math.max(0, Math.min(10000, Number(e.target.value) || 0)))
+                          }
+                          className="w-24 px-2.5 py-1 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono font-bold text-white"
+                        />
+                      </div>
+
+                      {/* 15GB Google Drive Vault Package Permission Toggle */}
+                      <button
+                        type="button"
+                        onClick={() => setPkgAllowDriveVault(v => !v)}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-black border flex items-center gap-1 cursor-pointer ${
+                          pkgAllowDriveVault
+                            ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500/40'
+                            : 'bg-rose-600/30 text-rose-300 border-rose-500/40'
+                        }`}
+                      >
+                        {pkgAllowDriveVault ? <Unlock className="w-3 h-3" /> : <Lock className="w-3 h-3" />}
+                        <span>15GB Google Drive Vault: {pkgAllowDriveVault ? 'Unlocked' : 'Locked'}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Save Package & Sync Policy Button */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-2 border-t border-white/10">
+                  <span className="text-[11px] text-indigo-200">
+                    {selectedShopForModules === 'GLOBAL'
+                      ? `💡 Global Mode: Saving will update default settings for the "${selectedPackageTier.toUpperCase()}" package across the platform.`
+                      : `💡 Store Mode: Saving will assign "${
+                          shops.find(s => s.id === selectedShopForModules)?.shop_name || selectedShopForModules
+                        }" to ${selectedPackageTier.toUpperCase()} (${pkgSyncMinutes}m timer · ${pkgDailyBypassLimit} daily bypasses).`}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={isSavingPkgPolicy}
+                    onClick={handleSavePackageAndSyncPolicy}
+                    className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-slate-950 font-black text-xs rounded-xl shadow-md cursor-pointer shrink-0 disabled:opacity-60"
+                  >
+                    {isSavingPkgPolicy
+                      ? 'Saving Policy...'
+                      : selectedShopForModules === 'GLOBAL'
+                      ? `💾 Save ${selectedPackageTier.toUpperCase()} Package Defaults`
+                      : `💾 Apply ${selectedPackageTier.toUpperCase()} Package & Limits to Store`}
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* 11 Core POS Modules Grid (Lock / Unlock Buttons) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {ALL_CONTROLLABLE_MODULES.map(mod => {
@@ -2845,12 +3225,17 @@ export const SuperAdminView: React.FC = () => {
                   desc: 'Allow store admins to import .sql database files'
                 },
                 {
+                  key: 'allowGoogleDriveVault' as const,
+                  title: 'Allow 15GB Google Drive Receipt Vault',
+                  desc: 'Allow shops to save Sending, Receiving & Bill payment screenshots to their 15GB Google Drive'
+                },
+                {
                   key: 'requireStrongPasswords' as const,
                   title: 'Enforce 6+ Char Passwords & PBKDF2',
                   desc: 'Require minimum 6-character passwords hashed via Server Core'
                 }
               ].map(item => {
-                const enabled = moduleConfig.featurePermissions[item.key];
+                const enabled = moduleConfig.featurePermissions[item.key] !== false;
                 return (
                   <div
                     key={item.key}

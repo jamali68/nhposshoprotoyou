@@ -65,16 +65,21 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-// Tracked Firestore wrappers (99% accurate Read / Write / Delete accounting)
+// Tracked Firestore wrappers (99% accurate Server-Only Read / Write / Delete accounting — excludes 0-cost local cache hits)
 export const getDoc = (async (ref: any) => {
-  trackFirebaseRead(1);
-  return rawGetDoc(ref);
+  const snap = await rawGetDoc(ref);
+  if (!snap?.metadata?.fromCache) {
+    trackFirebaseRead(1);
+  }
+  return snap;
 }) as typeof rawGetDoc;
 
 export const getDocs = (async (q: any) => {
   const snap = await rawGetDocs(q);
-  // Firestore bills 1 read per returned document, or minimum 1 read if query returns 0 docs
-  trackFirebaseRead(Math.max(1, snap?.size || 1));
+  // Firestore bills 1 read per returned document (min 1 if 0 docs) ONLY when served from server, not local cache
+  if (!snap?.metadata?.fromCache) {
+    trackFirebaseRead(Math.max(1, snap?.size || 1));
+  }
   return snap;
 }) as typeof rawGetDocs;
 
@@ -97,11 +102,14 @@ export const onSnapshot: typeof rawOnSnapshot = ((ref: any, ...args: any[]) => {
   if (typeof args[0] === 'function') {
     const originalNext = args[0];
     args[0] = (snap: any) => {
-      const count =
-        typeof snap?.docChanges === 'function'
-          ? Math.max(1, snap.docChanges().length)
-          : 1;
-      trackFirebaseRead(count);
+      // Skip local IndexedDB cache emissions (0 Firebase billing); count only real server updates!
+      if (!snap?.metadata?.fromCache) {
+        const count =
+          typeof snap?.docChanges === 'function'
+            ? Math.max(1, snap.docChanges().length)
+            : 1;
+        trackFirebaseRead(count);
+      }
       return originalNext(snap);
     };
   }

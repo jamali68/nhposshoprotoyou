@@ -21,7 +21,11 @@ import {
   ControllableModuleId,
   ShopStaffPermissionsConfig,
   StaffTargetPermissions,
-  StaffPermissionActionId
+  StaffPermissionActionId,
+  ShopPackageType,
+  ShopPackagePolicy,
+  ShopCustomSyncOverrides,
+  ShopDailyBypassState
 } from './types';
 
 export const MASTER_EMAILS = [
@@ -49,8 +53,44 @@ export const ALL_CONTROLLABLE_MODULES: Array<{
   { id: 'pos', label: 'New Sale (POS Counter)', urduLabel: 'پی او ایس بلنگ کاؤنٹر', description: 'Fast barcode/item cart billing & thermal receipt printing' },
   { id: 'monthly_summary', label: 'Monthly Cash & Trends', urduLabel: 'ماہانہ خلاصہ اور منافع', description: 'Bachat calculator, monthly charts, and profit analytics' },
   { id: 'staff_management', label: 'Staff & User Accounts', urduLabel: 'عملہ اور یوزر اکاؤنٹس', description: 'Create and manage NH- staff logins and role permissions' },
-  { id: 'deleted_history', label: 'Deleted Logs (Trash)', urduLabel: 'ڈیلیٹ شدہ ریکارڈز', description: 'Trash bin recovery and permanent deletion logs' }
+  { id: 'deleted_history', label: 'Deleted Logs (Trash)', urduLabel: 'ڈیلیٹ شدہ ریکارڈز', description: 'Trash bin recovery and permanent deletion logs' },
+  { id: 'google_drive_vault', label: '15GB Google Drive Receipt Vault', urduLabel: 'گوگل ڈرائیو 15GB رسید والٹ', description: 'Save Sending, Receiving & Bill payment screenshots in user’s own 15GB Google Drive' }
 ];
+
+export const DEFAULT_PACKAGE_POLICIES: Record<ShopPackageType, ShopPackagePolicy> = {
+  free: {
+    packageType: 'free',
+    label: 'Free Package',
+    urduLabel: 'فری پیکج (سپر ایڈمن کنٹرول)',
+    autoSyncIntervalMinutes: 30,
+    dailyManualBypassLimit: 10,
+    allowGoogleDriveVault: true
+  },
+  basic: {
+    packageType: 'basic',
+    label: 'Basic Package',
+    urduLabel: 'بیسک پیکج (معیاری دکان)',
+    autoSyncIntervalMinutes: 30,
+    dailyManualBypassLimit: 50,
+    allowGoogleDriveVault: true
+  },
+  pro: {
+    packageType: 'pro',
+    label: 'Pro Package',
+    urduLabel: 'پرو پیکج (ہائی اسپیڈ ایڈوانس)',
+    autoSyncIntervalMinutes: 15,
+    dailyManualBypassLimit: 200,
+    allowGoogleDriveVault: true
+  }
+};
+
+function getTodayLocalDateKey(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
 export const ALL_STAFF_CONTROLLABLE_MODULES: Array<{
   id: ControllableModuleId;
@@ -188,15 +228,19 @@ export const DEFAULT_MODULE_CONTROL_CONFIG: PlatformModuleControlConfig = {
     pos: true,
     monthly_summary: true,
     staff_management: true,
-    deleted_history: true
+    deleted_history: true,
+    google_drive_vault: true
   },
   shopOverrides: {},
+  packageDefaults: DEFAULT_PACKAGE_POLICIES,
+  shopPackageOverrides: {},
   featurePermissions: {
     allowShopSignup: true,
     allowStaffCreation: true,
     allowStaffDeleteTransactions: true,
     allowDataExport: true,
     allowSqlImport: true,
+    allowGoogleDriveVault: true,
     requireStrongPasswords: true,
     dataUpdateDelayMs: 1000
   },
@@ -301,6 +345,21 @@ export const superAdminService = {
             ...DEFAULT_MODULE_CONTROL_CONFIG.globalModules,
             ...(parsed.globalModules || {})
           },
+          packageDefaults: {
+            free: {
+              ...DEFAULT_PACKAGE_POLICIES.free,
+              ...(parsed.packageDefaults?.free || {})
+            },
+            basic: {
+              ...DEFAULT_PACKAGE_POLICIES.basic,
+              ...(parsed.packageDefaults?.basic || {})
+            },
+            pro: {
+              ...DEFAULT_PACKAGE_POLICIES.pro,
+              ...(parsed.packageDefaults?.pro || {})
+            }
+          },
+          shopPackageOverrides: parsed.shopPackageOverrides || {},
           featurePermissions: {
             ...DEFAULT_MODULE_CONTROL_CONFIG.featurePermissions,
             ...(parsed.featurePermissions || {})
@@ -323,6 +382,21 @@ export const superAdminService = {
         ...DEFAULT_MODULE_CONTROL_CONFIG.globalModules,
         ...(cloudData.globalModules || {})
       },
+      packageDefaults: {
+        free: {
+          ...DEFAULT_PACKAGE_POLICIES.free,
+          ...(cloudData.packageDefaults?.free || {})
+        },
+        basic: {
+          ...DEFAULT_PACKAGE_POLICIES.basic,
+          ...(cloudData.packageDefaults?.basic || {})
+        },
+        pro: {
+          ...DEFAULT_PACKAGE_POLICIES.pro,
+          ...(cloudData.packageDefaults?.pro || {})
+        }
+      },
+      shopPackageOverrides: cloudData.shopPackageOverrides || {},
       featurePermissions: {
         ...DEFAULT_MODULE_CONTROL_CONFIG.featurePermissions,
         ...(cloudData.featurePermissions || {})
@@ -365,13 +439,25 @@ export const superAdminService = {
   },
 
   /**
-   * Sync Module Control Config from Cloud Firestore
+   * Sync Module Control Config from Cloud Firestore (with 5-minute TTL cache to prevent duplicate reads on Login/SignUp)
    */
-  async syncModuleControlFromCloud(): Promise<PlatformModuleControlConfig> {
+  async syncModuleControlFromCloud(force: boolean = false): Promise<PlatformModuleControlConfig> {
     const local = this.getModuleControlConfig();
     if (typeof navigator !== 'undefined' && !navigator.onLine) return local;
     try {
+      if (!force) {
+        const lastSyncRaw = sessionStorage.getItem('taj_module_control_last_sync_at');
+        const lastSyncAt = lastSyncRaw ? Number(lastSyncRaw) : 0;
+        if (lastSyncAt > 0 && Date.now() - lastSyncAt < 5 * 60 * 1000) {
+          return local;
+        }
+      }
+    } catch {}
+    try {
       const snap = await getDoc(doc(db, 'platform_settings', 'module_control'));
+      try {
+        sessionStorage.setItem('taj_module_control_last_sync_at', String(Date.now()));
+      } catch {}
       if (snap.exists()) {
         const cloudData = snap.data() as PlatformModuleControlConfig;
         return this.applyCloudModuleControlConfig(cloudData);
@@ -657,6 +743,389 @@ export const superAdminService = {
   },
 
   /**
+   * Resolve effective Package Policy & Sync/Bypass Limits for a specific shop (or global default)
+   * Priority:
+   * 1) Explicit per-shop override in `shopPackageOverrides[shopId]` (or synced shop doc fields)
+   * 2) Package tier default (`free` | `basic` | `pro`, default `free`)
+   */
+  getShopEffectiveSyncPolicy(shopId?: string): {
+    packageType: ShopPackageType;
+    packageLabel: string;
+    packageUrduLabel: string;
+    autoSyncIntervalMinutes: number;
+    dailyManualBypassLimit: number;
+    allowGoogleDriveVault: boolean;
+  } {
+    const cfg = this.getModuleControlConfig();
+    const pkgDefaults = cfg.packageDefaults || DEFAULT_PACKAGE_POLICIES;
+    const shopOvr: ShopCustomSyncOverrides = (shopId && cfg.shopPackageOverrides?.[shopId]) || {};
+
+    // Also inspect local cached shop profile / bypass state in case Super Admin updated `shops/{shopId}` directly
+    let docPkg: ShopPackageType | undefined;
+    let docTimer: number | undefined;
+    let docLimit: number | undefined;
+    if (shopId) {
+      try {
+        const rawBypass = localStorage.getItem(`taj_shop_bypass_state_${shopId}`);
+        if (rawBypass) {
+          const parsedB = JSON.parse(rawBypass) as ShopDailyBypassState;
+          if (parsedB.packageType) docPkg = parsedB.packageType;
+          if (typeof parsedB.autoSyncIntervalMinutes === 'number' && parsedB.autoSyncIntervalMinutes >= 1) {
+            docTimer = parsedB.autoSyncIntervalMinutes;
+          }
+          if (typeof parsedB.dailyLimit === 'number' && parsedB.dailyLimit >= 0) {
+            docLimit = parsedB.dailyLimit;
+          }
+        }
+      } catch {}
+    }
+
+    const packageType: ShopPackageType =
+      shopOvr.packageType || docPkg || 'free';
+    const tierPolicy = pkgDefaults[packageType] || DEFAULT_PACKAGE_POLICIES[packageType] || DEFAULT_PACKAGE_POLICIES.free;
+
+    const rawMinutes =
+      typeof shopOvr.autoSyncIntervalMinutes === 'number'
+        ? shopOvr.autoSyncIntervalMinutes
+        : typeof docTimer === 'number'
+        ? docTimer
+        : tierPolicy.autoSyncIntervalMinutes;
+    const autoSyncIntervalMinutes = Math.max(1, Math.min(360, Math.round(Number(rawMinutes) || 30)));
+
+    const rawLimit =
+      typeof shopOvr.dailyManualBypassLimit === 'number'
+        ? shopOvr.dailyManualBypassLimit
+        : typeof docLimit === 'number'
+        ? docLimit
+        : tierPolicy.dailyManualBypassLimit;
+    const dailyManualBypassLimit = Math.max(0, Math.min(10000, Math.round(Number(rawLimit) ?? 50)));
+
+    const allowGoogleDriveVault =
+      this.isModuleEnabledForShop('google_drive_vault', shopId) &&
+      cfg.featurePermissions?.allowGoogleDriveVault !== false &&
+      (typeof shopOvr.allowGoogleDriveVault === 'boolean'
+        ? shopOvr.allowGoogleDriveVault
+        : tierPolicy.allowGoogleDriveVault !== false);
+
+    return {
+      packageType,
+      packageLabel: tierPolicy.label,
+      packageUrduLabel: tierPolicy.urduLabel,
+      autoSyncIntervalMinutes,
+      dailyManualBypassLimit,
+      allowGoogleDriveVault
+    };
+  },
+
+  /**
+   * Read the shared shop-wide Daily Manual Bypass State (shared across Admin + all Staff of a shop)
+   */
+  getShopDailyBypassStatus(shopId?: string): {
+    date: string;
+    usedCount: number;
+    dailyLimit: number;
+    remainingCount: number;
+    autoSyncIntervalMinutes: number;
+    packageType: ShopPackageType;
+    packageLabel: string;
+    lastBypassedBy?: string;
+    lastBypassedAt?: string;
+  } {
+    const today = getTodayLocalDateKey();
+    const policy = this.getShopEffectiveSyncPolicy(shopId);
+    let usedCount = 0;
+    let lastBypassedBy: string | undefined;
+    let lastBypassedAt: string | undefined;
+
+    if (shopId) {
+      try {
+        const raw = localStorage.getItem(`taj_shop_bypass_state_${shopId}`);
+        if (raw) {
+          const parsed = JSON.parse(raw) as ShopDailyBypassState;
+          if (parsed && parsed.date === today) {
+            usedCount = Math.max(0, Math.round(Number(parsed.usedCount) || 0));
+            lastBypassedBy = parsed.lastBypassedBy;
+            lastBypassedAt = parsed.lastBypassedAt;
+          }
+        }
+      } catch {}
+    }
+
+    const remainingCount = Math.max(0, policy.dailyManualBypassLimit - usedCount);
+    return {
+      date: today,
+      usedCount,
+      dailyLimit: policy.dailyManualBypassLimit,
+      remainingCount,
+      autoSyncIntervalMinutes: policy.autoSyncIntervalMinutes,
+      packageType: policy.packageType,
+      packageLabel: policy.packageLabel,
+      lastBypassedBy,
+      lastBypassedAt
+    };
+  },
+
+  /**
+   * Apply incoming real-time `daily_bypass_state` from `shops/{shopId}` onSnapshot
+   * so when Admin or any Staff clicks "Update Now", all other connected users immediately see the updated remaining count!
+   */
+  applyIncomingShopBypassState(
+    shopId: string,
+    incoming?: ShopDailyBypassState | null,
+    shopDocOverrides?: {
+      package_type?: ShopPackageType;
+      auto_sync_interval_minutes?: number;
+      daily_manual_bypass_limit?: number;
+    }
+  ): void {
+    if (!shopId) return;
+    const today = getTodayLocalDateKey();
+    try {
+      const prevRaw = localStorage.getItem(`taj_shop_bypass_state_${shopId}`);
+      const prevParsed: ShopDailyBypassState | null = prevRaw ? JSON.parse(prevRaw) : null;
+
+      const nextState: ShopDailyBypassState = {
+        date: incoming?.date === today ? today : today,
+        usedCount:
+          incoming && incoming.date === today
+            ? Math.max(0, Math.round(Number(incoming.usedCount) || 0))
+            : prevParsed && prevParsed.date === today
+            ? prevParsed.usedCount
+            : 0,
+        dailyLimit:
+          typeof shopDocOverrides?.daily_manual_bypass_limit === 'number'
+            ? shopDocOverrides.daily_manual_bypass_limit
+            : typeof incoming?.dailyLimit === 'number'
+            ? incoming.dailyLimit
+            : prevParsed?.dailyLimit,
+        autoSyncIntervalMinutes:
+          typeof shopDocOverrides?.auto_sync_interval_minutes === 'number'
+            ? shopDocOverrides.auto_sync_interval_minutes
+            : typeof incoming?.autoSyncIntervalMinutes === 'number'
+            ? incoming.autoSyncIntervalMinutes
+            : prevParsed?.autoSyncIntervalMinutes,
+        packageType:
+          shopDocOverrides?.package_type || incoming?.packageType || prevParsed?.packageType,
+        lastBypassedBy: incoming?.date === today ? incoming.lastBypassedBy : prevParsed?.lastBypassedBy,
+        lastBypassedAt: incoming?.date === today ? incoming.lastBypassedAt : prevParsed?.lastBypassedAt
+      };
+
+      const nextRaw = JSON.stringify(nextState);
+      if (prevRaw !== nextRaw) {
+        localStorage.setItem(`taj_shop_bypass_state_${shopId}`, nextRaw);
+        window.dispatchEvent(
+          new CustomEvent('taj_shop_bypass_updated', { detail: { shopId, state: nextState } })
+        );
+      }
+    } catch {}
+  },
+
+  /**
+   * Consume 1 Manual Bypass Count for the shop (shared across Admin & all Staff of the shop).
+   * Supports `options.skipCloudWrite` so POSContext can piggyback `daily_bypass_state` onto its
+   * single `shops/{shopId}` sync pulse write (saving 1 Firestore Write + 1 onSnapshot Read per device!).
+   */
+  async consumeShopManualBypass(
+    shopId: string,
+    triggeredByUser: string,
+    options?: { skipCloudWrite?: boolean }
+  ): Promise<{
+    allowed: boolean;
+    usedCount: number;
+    dailyLimit: number;
+    remainingCount: number;
+    nextState: ShopDailyBypassState;
+  }> {
+    const status = this.getShopDailyBypassStatus(shopId);
+    if (status.remainingCount <= 0) {
+      const blockedState: ShopDailyBypassState = {
+        date: status.date,
+        usedCount: status.usedCount,
+        dailyLimit: status.dailyLimit,
+        autoSyncIntervalMinutes: status.autoSyncIntervalMinutes,
+        packageType: status.packageType,
+        lastBypassedBy: status.lastBypassedBy,
+        lastBypassedAt: status.lastBypassedAt
+      };
+      return {
+        allowed: false,
+        usedCount: status.usedCount,
+        dailyLimit: status.dailyLimit,
+        remainingCount: 0,
+        nextState: blockedState
+      };
+    }
+
+    const nextUsed = status.usedCount + 1;
+    const nextRemaining = Math.max(0, status.dailyLimit - nextUsed);
+    const nextState: ShopDailyBypassState = {
+      date: status.date,
+      usedCount: nextUsed,
+      dailyLimit: status.dailyLimit,
+      autoSyncIntervalMinutes: status.autoSyncIntervalMinutes,
+      packageType: status.packageType,
+      lastBypassedBy: triggeredByUser || 'User',
+      lastBypassedAt: new Date().toISOString()
+    };
+
+    try {
+      localStorage.setItem(`taj_shop_bypass_state_${shopId}`, JSON.stringify(nextState));
+      window.dispatchEvent(
+        new CustomEvent('taj_shop_bypass_updated', { detail: { shopId, state: nextState } })
+      );
+    } catch {}
+
+    if (!options?.skipCloudWrite && (typeof navigator === 'undefined' || navigator.onLine)) {
+      try {
+        await setDoc(
+          doc(db, 'shops', shopId),
+          {
+            daily_bypass_state: nextState
+          },
+          { merge: true }
+        );
+      } catch (err) {
+        console.warn('consumeShopManualBypass cloud update note:', err);
+      }
+    }
+
+    return {
+      allowed: true,
+      usedCount: nextUsed,
+      dailyLimit: status.dailyLimit,
+      remainingCount: nextRemaining,
+      nextState
+    };
+  },
+
+  /**
+   * Super Admin: Reset or Refill a shop's today manual bypass counter back to 0 used (full remaining)
+   */
+  async resetShopDailyBypassCounter(shopId: string): Promise<boolean> {
+    if (!shopId) return false;
+    const policy = this.getShopEffectiveSyncPolicy(shopId);
+    const resetState: ShopDailyBypassState = {
+      date: getTodayLocalDateKey(),
+      usedCount: 0,
+      dailyLimit: policy.dailyManualBypassLimit,
+      autoSyncIntervalMinutes: policy.autoSyncIntervalMinutes,
+      packageType: policy.packageType,
+      lastBypassedBy: 'Super Admin Reset',
+      lastBypassedAt: new Date().toISOString()
+    };
+    try {
+      localStorage.setItem(`taj_shop_bypass_state_${shopId}`, JSON.stringify(resetState));
+      window.dispatchEvent(
+        new CustomEvent('taj_shop_bypass_updated', { detail: { shopId, state: resetState } })
+      );
+      if (typeof navigator === 'undefined' || navigator.onLine) {
+        await setDoc(
+          doc(db, 'shops', shopId),
+          {
+            daily_bypass_state: resetState
+          },
+          { merge: true }
+        );
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  /**
+   * Super Admin: Save Package Tier & Sync/Bypass Policy for a specific shop (or Global Package Tier defaults)
+   */
+  async saveShopPackageAndSyncPolicy(
+    targetShopId: string | 'GLOBAL',
+    params: {
+      packageType: ShopPackageType;
+      autoSyncIntervalMinutes: number;
+      dailyManualBypassLimit: number;
+      allowGoogleDriveVault?: boolean;
+      updatedBy?: string;
+    }
+  ): Promise<boolean> {
+    const clampedTimer = Math.max(1, Math.min(360, Math.round(Number(params.autoSyncIntervalMinutes) || 30)));
+    const clampedLimit = Math.max(0, Math.min(10000, Math.round(Number(params.dailyManualBypassLimit) ?? 50)));
+    const current = this.getModuleControlConfig();
+    const pkgDefaults = {
+      ...(current.packageDefaults || DEFAULT_PACKAGE_POLICIES)
+    };
+    const shopPkgOverrides = {
+      ...(current.shopPackageOverrides || {})
+    };
+
+    if (targetShopId === 'GLOBAL') {
+      const existingTier = pkgDefaults[params.packageType] || DEFAULT_PACKAGE_POLICIES[params.packageType];
+      pkgDefaults[params.packageType] = {
+        ...existingTier,
+        autoSyncIntervalMinutes: clampedTimer,
+        dailyManualBypassLimit: clampedLimit,
+        allowGoogleDriveVault:
+          typeof params.allowGoogleDriveVault === 'boolean'
+            ? params.allowGoogleDriveVault
+            : existingTier.allowGoogleDriveVault
+      };
+    } else {
+      shopPkgOverrides[targetShopId] = {
+        ...(shopPkgOverrides[targetShopId] || {}),
+        packageType: params.packageType,
+        autoSyncIntervalMinutes: clampedTimer,
+        dailyManualBypassLimit: clampedLimit,
+        ...(typeof params.allowGoogleDriveVault === 'boolean'
+          ? { allowGoogleDriveVault: params.allowGoogleDriveVault }
+          : {})
+      };
+
+      // Also update local bypass state cache & shops/{targetShopId} document so all connected devices of that shop immediately receive the new timer & limit!
+      const currentStatus = this.getShopDailyBypassStatus(targetShopId);
+      const nextState: ShopDailyBypassState = {
+        date: currentStatus.date,
+        usedCount: currentStatus.usedCount,
+        dailyLimit: clampedLimit,
+        autoSyncIntervalMinutes: clampedTimer,
+        packageType: params.packageType,
+        lastBypassedBy: currentStatus.lastBypassedBy,
+        lastBypassedAt: currentStatus.lastBypassedAt
+      };
+      try {
+        localStorage.setItem(`taj_shop_bypass_state_${targetShopId}`, JSON.stringify(nextState));
+        window.dispatchEvent(
+          new CustomEvent('taj_shop_bypass_updated', { detail: { shopId: targetShopId, state: nextState } })
+        );
+      } catch {}
+
+      if (typeof navigator === 'undefined' || navigator.onLine) {
+        try {
+          await setDoc(
+            doc(db, 'shops', targetShopId),
+            {
+              package_type: params.packageType,
+              auto_sync_interval_minutes: clampedTimer,
+              daily_manual_bypass_limit: clampedLimit,
+              daily_bypass_state: nextState
+            },
+            { merge: true }
+          );
+        } catch (err) {
+          console.warn('Shop package doc sync note:', err);
+        }
+      }
+    }
+
+    const updatedConfig: PlatformModuleControlConfig = {
+      ...current,
+      packageDefaults: pkgDefaults,
+      shopPackageOverrides: shopPkgOverrides,
+      updatedBy: params.updatedBy || MASTER_EMAIL,
+      updatedAt: new Date().toISOString()
+    };
+
+    return this.saveModuleControlConfig(updatedConfig);
+  },
+
+  /**
    * Check if a specific Shop is Suspended by Super Admin
    */
   isShopSuspended(shopId?: string): boolean {
@@ -684,6 +1153,13 @@ export const superAdminService = {
           } catch {}
 
           const mergedTelemetry = mergeShopUsageTelemetry(shopId, data.usage_telemetry);
+          if (data.daily_bypass_state || data.package_type || data.auto_sync_interval_minutes || data.daily_manual_bypass_limit) {
+            this.applyIncomingShopBypassState(shopId, data.daily_bypass_state, {
+              package_type: data.package_type,
+              auto_sync_interval_minutes: data.auto_sync_interval_minutes,
+              daily_manual_bypass_limit: data.daily_manual_bypass_limit
+            });
+          }
           shopsMap.set(shopId, {
             id: shopId,
             shop_name: data.shop_name || `Shop #${shopId.slice(0, 6)}`,
@@ -696,6 +1172,10 @@ export const superAdminService = {
             address: data.address || '',
             created_at: data.created_at || new Date().toISOString(),
             is_active: isActive,
+            package_type: data.package_type,
+            auto_sync_interval_minutes: data.auto_sync_interval_minutes,
+            daily_manual_bypass_limit: data.daily_manual_bypass_limit,
+            daily_bypass_state: data.daily_bypass_state,
             total_transactions: data.total_transactions || 0,
             total_staff: data.total_staff || 1,
             last_activity: data.last_sync || data.last_login || data.created_at || new Date().toISOString(),

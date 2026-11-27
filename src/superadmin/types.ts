@@ -22,18 +22,50 @@ export type ControllableModuleId =
   | 'monthly_summary'
   | 'staff_management'
   | 'deleted_history'
+  | 'google_drive_vault'
   | 'sql_import'
   | 'backup_restore';
+
+export type ShopPackageType = 'free' | 'basic' | 'pro';
+
+export interface ShopPackagePolicy {
+  packageType: ShopPackageType;
+  label: string;
+  urduLabel: string;
+  autoSyncIntervalMinutes: number; // Default 30m (Super Admin can set lower or higher, e.g. 5m, 10m, 15m, 30m, 60m)
+  dailyManualBypassLimit: number; // Daily shared shop-wide manual "Update Now" bypass button clicks across all users of a shop
+  allowGoogleDriveVault: boolean; // 15GB Free Google Drive Receipt & Bill Screenshot Vault permission
+}
+
+export interface ShopCustomSyncOverrides {
+  packageType?: ShopPackageType;
+  autoSyncIntervalMinutes?: number;
+  dailyManualBypassLimit?: number;
+  allowGoogleDriveVault?: boolean;
+}
+
+export interface ShopDailyBypassState {
+  date: string; // YYYY-MM-DD (local date)
+  usedCount: number; // Shared count across Admin + all Staff of the shop today
+  dailyLimit?: number;
+  autoSyncIntervalMinutes?: number;
+  packageType?: ShopPackageType;
+  lastBypassedBy?: string;
+  lastBypassedAt?: string;
+}
 
 export interface PlatformModuleControlConfig {
   globalModules: Record<string, boolean>; // moduleId -> enabled/disabled globally
   shopOverrides: Record<string, Record<string, boolean>>; // shopId -> { moduleId -> enabled/disabled }
+  packageDefaults?: Record<ShopPackageType, ShopPackagePolicy>;
+  shopPackageOverrides?: Record<string, ShopCustomSyncOverrides>; // shopId -> package & sync timer/bypass overrides
   featurePermissions: {
     allowShopSignup: boolean;
     allowStaffCreation: boolean;
     allowStaffDeleteTransactions: boolean;
     allowDataExport: boolean;
     allowSqlImport: boolean;
+    allowGoogleDriveVault?: boolean;
     requireStrongPasswords: boolean;
     dataUpdateDelayMs?: number; // Default 1000ms (1 sec) loading wheel delay on add/edit/delete
   };
@@ -55,6 +87,10 @@ export interface TenantShopInfo {
   address?: string;
   created_at: string;
   is_active: boolean;
+  package_type?: ShopPackageType;
+  auto_sync_interval_minutes?: number;
+  daily_manual_bypass_limit?: number;
+  daily_bypass_state?: ShopDailyBypassState;
   total_transactions?: number;
   total_staff?: number;
   last_activity?: string;

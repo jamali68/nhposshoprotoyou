@@ -1,9 +1,9 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v18.2.0
+ * Version: v18.2.2
  * Smart Background Pre-Download, Non-Disruptive Updates & True Background Cloud Sync (GitHub Pages + Netlify)
  */
-const SW_VERSION = 'v18.2.0';
+const SW_VERSION = 'v18.2.2';
 const BUILD_ID = '/* __BUILD_ID__ */';
 const SMART_CACHE_PREFIX = 'nh-pos-smart-';
 const CACHE_NAME =
@@ -287,16 +287,9 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       (async () => {
         // 1. If we already have a verified cached HTML + JS bundle, serve it in 0ms!
-        //    Then check for SW updates in the background so slow mobile networks (e.g. 8 KB/s) NEVER hang on splash screen.
+        //    Update checks are managed by pwaUpdater.ts on a 15-30m smart throttle (0 wasted Netlify requests).
         const verifiedCached = await getVerifiedCachedHtml();
         if (verifiedCached) {
-          // Trigger background SW update check without blocking launch (1 real conditional request to sw.js)
-          try {
-            self.registration
-              .update()
-              .then(() => notifyClientNetworkHit(1, null, 750))
-              .catch(() => {});
-          } catch {}
           return verifiedCached;
         }
 
@@ -348,18 +341,10 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // C. Images, Fonts, Manifest: Cache-First with Background Update
+  // C. Images, Fonts, Manifest: Pure Cache-First (0 background Netlify fetches for already-cached static icons/manifest)
   event.respondWith(
     caches.match(req, { ignoreSearch: true }).then((cached) => {
       if (cached) {
-        fetch(req)
-          .then((networkResp) => {
-            if (networkResp && (networkResp.status === 200 || networkResp.type === 'opaque')) {
-              notifyClientNetworkHit(1, networkResp, 14500);
-              caches.open(CACHE_NAME).then((cache) => cache.put(req, networkResp));
-            }
-          })
-          .catch(() => {});
         return cached;
       }
 
@@ -737,6 +722,8 @@ async function flushShopRecordInBackground(db, record, reason) {
   const flushedIds = [];
   const flushedAtMap = {};
   const touchedCollections = new Set();
+  let writesCount = 0;
+  let deletesCount = 0;
   let transientFailure = false;
 
   for (let i = 0; i < record.queue.length; i++) {
@@ -746,8 +733,10 @@ async function flushShopRecordInBackground(db, record, reason) {
     let res = { ok: false, transient: false };
     if (item.type === 'save' && item.data) {
       res = await patchFirestoreDocSw(record, item.collection, item.docId, item.data);
+      if (res.ok) writesCount += 1;
     } else if (item.type === 'delete') {
       res = await deleteFirestoreDocSw(record, item.collection, item.docId);
+      if (res.ok) deletesCount += 1;
     } else {
       res = { ok: true, transient: false };
     }
@@ -804,14 +793,16 @@ async function flushShopRecordInBackground(db, record, reason) {
     const latestClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of latestClients) {
       try {
-        client.postMessage({
-          type: 'BG_SYNC_COMPLETED',
-          shopId: record.shopId,
-          flushedIds,
-          flushedCount: flushedIds.length,
-          syncedAt: pulseTs,
-          nextSyncAt
-        });
+          client.postMessage({
+            type: 'BG_SYNC_COMPLETED',
+            shopId: record.shopId,
+            flushedIds,
+            flushedCount: flushedIds.length,
+            writesCount,
+            deletesCount,
+            syncedAt: pulseTs,
+            nextSyncAt
+          });
       } catch {}
     }
   }

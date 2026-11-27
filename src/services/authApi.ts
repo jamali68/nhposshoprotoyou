@@ -401,10 +401,16 @@ export const authApi = {
   },
 
   /**
-   * Hashes a new password securely via Server Core (120k PBKDF2) or Web Crypto fallback (120k PBKDF2)
+   * Hashes a new password securely via native Web Crypto PBKDF2-SHA256 (120k OWASP iterations — 0 Netlify Function calls!)
+   * Falls back to Netlify Function only on environments without Web Crypto API.
    */
   async hashPassword(password: string): Promise<PasswordHashResult> {
     try {
+      const localRes = await clientHashPassword(password);
+      if (localRes.success && localRes.hash && localRes.salt) {
+        return localRes;
+      }
+
       const backendRes = await postToAuthFunction({
         action: 'hash-password',
         password
@@ -414,7 +420,7 @@ export const authApi = {
         return backendRes;
       }
 
-      return await clientHashPassword(password);
+      return localRes;
     } catch {
       return await clientHashPassword(password);
     }

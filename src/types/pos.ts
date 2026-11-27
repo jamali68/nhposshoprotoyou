@@ -25,6 +25,18 @@ export interface ShopProfile {
   city?: string;
   address?: string;
   owner_name_updated_date?: string; // YYYY-MM-DD from which updated owner_name applies
+  package_type?: 'free' | 'basic' | 'pro';
+  auto_sync_interval_minutes?: number;
+  daily_manual_bypass_limit?: number;
+  daily_bypass_state?: {
+    date: string;
+    usedCount: number;
+    dailyLimit?: number;
+    autoSyncIntervalMinutes?: number;
+    packageType?: 'free' | 'basic' | 'pro';
+    lastBypassedBy?: string;
+    lastBypassedAt?: string;
+  };
   created_at: string;
   last_login?: string;
 }

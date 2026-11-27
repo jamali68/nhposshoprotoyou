@@ -1106,8 +1106,14 @@ export function initAutomaticUsageMonitor(): void {
           trackNetlifyWebRequest(reqCount, byteCount);
         } else if (data.type === 'BG_SYNC_COMPLETED') {
           // Background Sync flushed pending docs via Firestore REST API + 1 shop sync pulse
-          const flushed = Math.max(1, Number(data.flushedCount) || 1);
-          trackFirebaseWrite(flushed + 1, data.shopId);
+          const writes = typeof data.writesCount === 'number' ? data.writesCount : Math.max(1, Number(data.flushedCount) || 1);
+          const deletes = typeof data.deletesCount === 'number' ? data.deletesCount : 0;
+          if (writes >= 0) {
+            trackFirebaseWrite(writes + 1, data.shopId);
+          }
+          if (deletes > 0) {
+            trackFirebaseDelete(deletes, data.shopId);
+          }
         }
       });
     }

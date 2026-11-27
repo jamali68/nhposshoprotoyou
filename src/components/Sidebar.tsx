@@ -91,6 +91,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     isSyncing,
     nextSyncRemainingSec,
     isWaitingForOnlineSync,
+    autoSyncIntervalMinutes,
+    dailyBypassLimit,
+    dailyBypassRemaining,
+    activeShopPackageType,
     syncNow,
     isAppInstalled,
     installApp
@@ -162,10 +166,18 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     setIsManualSyncing(true);
     try {
       const res = await syncNow(true);
-      if (res.noPendingData) {
-        setSyncFeedback('✓ No Pending Data — کوئی پینڈنگ ڈیٹا نہیں ہے! (30m ٹائمر ری اسٹارٹ)');
+      if (res.bypassLimitReached) {
+        setSyncFeedback(res.error || 'آج کے مینوئل بائی پاس کاؤنٹس مکمل ہو چکے ہیں!');
+      } else if (res.noPendingData) {
+        setSyncFeedback(
+          res.message ||
+            `✓ No Pending Data — کوئی پینڈنگ ڈیٹا نہیں ہے! (${autoSyncIntervalMinutes}m ٹائمر ری اسٹارٹ)`
+        );
       } else if (res.success) {
-        setSyncFeedback(`✓ ${res.count || 1} پینڈنگ انٹریز کلاؤڈ پر اپڈیٹ ہو چکی ہیں`);
+        setSyncFeedback(
+          res.message ||
+            `✓ ${res.count || 1} پینڈنگ انٹریز کلاؤڈ پر اپڈیٹ ہو چکی ہیں (باقی بائی پاس: ${dailyBypassRemaining})`
+        );
       } else {
         setSyncFeedback(res.error || 'سنک نہ ہو سکا۔ کنکشن چیک کریں۔');
       }
@@ -461,7 +473,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                 </div>
               </div>
 
-              {/* Auto 30m indication */}
+              {/* Auto Sync timer indication (Configured by Super Admin Package, Unlimited Auto Cycles) */}
               <div className="text-[9.5px] text-slate-400 flex items-center justify-between mb-2 px-1">
                 {(!navigator.onLine || isWaitingForOnlineSync) ? (
                   <span className="text-rose-400 font-bold flex items-center gap-1">
@@ -470,8 +482,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                 ) : (
                   <>
                     <span className="flex items-center gap-1 text-slate-300">
-                      <span>⏱️ آٹو سنک:</span>
-                      <span className="text-amber-400 font-medium">ہر 30 منٹ</span>
+                      <span>⏱️ آٹو سنک (Unlimited):</span>
+                      <span className="text-amber-400 font-bold">ہر {autoSyncIntervalMinutes} منٹ</span>
                     </span>
                     <span className="font-mono font-bold text-cyan-300 bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-500/30">
                       {Math.floor(nextSyncRemainingSec / 60)}m {String(nextSyncRemainingSec % 60).padStart(2, '0')}s
@@ -480,21 +492,42 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                 )}
               </div>
 
-              {/* Update Now / Sync Now Button for Shift Handover */}
+              {/* Update Now / Sync Now Button with Shared Shop-Wide Remaining Bypass Countdown Inside */}
               <button
                 type="button"
                 onClick={handleManualSync}
-                disabled={isSyncing || isManualSyncing}
-                className="w-full flex items-center justify-center gap-2 py-2 px-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:opacity-60 text-white rounded-xl text-xs font-bold shadow-md shadow-cyan-900/30 transition-all active:scale-95 cursor-pointer"
+                disabled={isSyncing || isManualSyncing || dailyBypassRemaining <= 0}
+                className={`w-full flex items-center justify-between gap-2 py-2 px-3 rounded-xl text-xs font-bold shadow-md transition-all active:scale-95 ${
+                  dailyBypassRemaining <= 0
+                    ? 'bg-slate-700/80 text-slate-400 border border-slate-600 cursor-not-allowed'
+                    : 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:opacity-60 text-white shadow-cyan-900/30 cursor-pointer'
+                }`}
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${(isSyncing || isManualSyncing) ? 'animate-spin' : ''}`} />
-                <span>
-                  {(isSyncing || isManualSyncing) ? 'اپڈیٹ ہو رہا ہے...' : '🔄 ابھی اپڈیٹ کریں (Update Now)'}
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${(isSyncing || isManualSyncing) ? 'animate-spin' : ''}`} />
+                  <span className="truncate">
+                    {(isSyncing || isManualSyncing)
+                      ? 'اپڈیٹ ہو رہا ہے...'
+                      : dailyBypassRemaining <= 0
+                      ? 'بائی پاس لمٹ مکمل (Auto Active)'
+                      : '🔄 ابھی اپڈیٹ کریں (Update Now)'}
+                  </span>
+                </div>
+                <span
+                  className={`px-1.5 py-0.5 rounded-md font-mono text-[10px] font-black shrink-0 border ${
+                    dailyBypassRemaining <= 0
+                      ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                      : 'bg-slate-950/45 text-amber-300 border-white/20'
+                  }`}
+                  title={`Today's Shared Manual Bypass Remaining for this shop (${dailyBypassRemaining} left out of ${dailyBypassLimit})`}
+                >
+                  {dailyBypassRemaining}/{dailyBypassLimit} Rem
                 </span>
               </button>
-              <p className="text-[9px] text-slate-400 text-center mt-1 leading-tight">
-                کیشیئر / شفٹ بدلتے وقت فوری سنک کریں
-              </p>
+              <div className="flex items-center justify-between text-[9px] text-slate-400 mt-1 px-0.5 leading-tight">
+                <span>پیکج: <strong className="text-amber-300 uppercase">{activeShopPackageType}</strong></span>
+                <span>تمام یوزرز کیلئے مشترکہ روزانہ بائی پاس: <strong className="text-cyan-300">{dailyBypassRemaining} باقی</strong></span>
+              </div>
 
               {/* Toast Feedback for Sync */}
               {syncFeedback && (
@@ -610,6 +643,49 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                           </div>
                         </div>
                         {!canSqlImport && (
+                          <span className="text-[9px] px-1.5 py-0.5 bg-rose-500/20 text-rose-300 rounded-full border border-rose-500/40 font-bold shrink-0 flex items-center gap-0.5">
+                            <Lock className="w-2.5 h-2.5" />
+                            <span>Locked</span>
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })()}
+
+                  {/* 15GB Google Drive Receipt & Bill Screenshot Vault (Super Admin Permission Controlled) */}
+                  {(() => {
+                    const effectiveShopId = currentShop?.id || currentUser?.shopId;
+                    const syncPolicy = superAdminService.getShopEffectiveSyncPolicy(effectiveShopId);
+                    const canDriveVault = userRole === 'super_admin' || syncPolicy.allowGoogleDriveVault;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!canDriveVault) {
+                            showAppAlert('🔒 15GB Google Drive Receipt Vault آپ کے موجودہ پیکج پر سپر ایڈمن کی جانب سے لاک (Locked) ہے۔ ان لاک کروانے کیلئے سپر ایڈمن یا پیکج اپگریڈ سے رابطہ کریں۔');
+                            return;
+                          }
+                          showAppAlert('☁️ 15GB Free Google Drive Receipt & Bill Screenshot Vault آپ کے پیکج میں ان لاک (Unlocked) ہے! نیکسٹ فیز میں یہاں سے بل اور سینڈنگ/رسیونگ کی تصاویر براہ راست آپ کے اپنے 15GB Google Drive میں محفوظ ہوں گی۔');
+                        }}
+                        className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors text-left group cursor-pointer ${
+                          canDriveVault
+                            ? 'text-slate-300 hover:text-white hover:bg-slate-800/70'
+                            : 'text-slate-500 hover:bg-slate-800/40'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                          <Cloud className={`w-3.5 h-3.5 shrink-0 ${canDriveVault ? 'text-emerald-400 group-hover:scale-110 transition-transform' : 'text-rose-400'}`} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className={`font-semibold truncate ${canDriveVault ? 'text-slate-200' : 'text-slate-400'}`}>Google Drive Receipt Vault</span>
+                              <span className="text-[9px] px-1.5 py-0.2 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 rounded font-bold uppercase shrink-0">
+                                15GB
+                              </span>
+                            </div>
+                            <span className="block text-[10px] text-slate-400 truncate">Save Bill &amp; Sending SS to Google Drive</span>
+                          </div>
+                        </div>
+                        {!canDriveVault && (
                           <span className="text-[9px] px-1.5 py-0.5 bg-rose-500/20 text-rose-300 rounded-full border border-rose-500/40 font-bold shrink-0 flex items-center gap-0.5">
                             <Lock className="w-2.5 h-2.5" />
                             <span>Locked</span>

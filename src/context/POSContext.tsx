@@ -35,8 +35,7 @@ import {
 import {
   applyPendingPwaUpdateOnNavigation,
   consumePendingViewAfterPwaUpdate,
-  setPwaMutationBusy,
-  triggerSilentPwaCheck
+  setPwaMutationBusy
 } from '../utils/pwaUpdater';
 import {
   mirrorPendingSyncToIdb,
@@ -224,7 +223,19 @@ interface POSContextType {
   isSyncing: boolean;
   nextSyncRemainingSec: number;
   isWaitingForOnlineSync: boolean;
-  syncNow: (manual?: boolean) => Promise<{ success: boolean; count?: number; noPendingData?: boolean; message?: string; error?: string }>;
+  autoSyncIntervalMinutes: number;
+  dailyBypassLimit: number;
+  dailyBypassRemaining: number;
+  activeShopPackageType: 'free' | 'basic' | 'pro';
+  syncNow: (manual?: boolean) => Promise<{
+    success: boolean;
+    count?: number;
+    noPendingData?: boolean;
+    bypassLimitReached?: boolean;
+    remainingBypasses?: number;
+    message?: string;
+    error?: string;
+  }>;
 
   // Data Update Delayed Loading Wheel (Configurable by Super Admin, default 1000ms)
   mutationLoader: {
@@ -739,7 +750,29 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
   const pendingSyncQueueRef = useRef<PendingSyncItem[]>(pendingSyncQueue);
 
-  const AUTO_SYNC_DURATION_MS = 30 * 60 * 1000; // 30 minutes
+  const [shopBypassStatus, setShopBypassStatus] = useState(() =>
+    superAdminService.getShopDailyBypassStatus(currentShopId || undefined)
+  );
+
+  const autoSyncIntervalMinutes = shopBypassStatus.autoSyncIntervalMinutes || 30;
+  const dailyBypassLimit = shopBypassStatus.dailyLimit;
+  const dailyBypassRemaining = shopBypassStatus.remainingCount;
+  const activeShopPackageType = shopBypassStatus.packageType;
+  const AUTO_SYNC_DURATION_MS = autoSyncIntervalMinutes * 60 * 1000;
+
+  useEffect(() => {
+    const refreshBypassAndPolicy = () => {
+      const nextStatus = superAdminService.getShopDailyBypassStatus(currentShopId || undefined);
+      setShopBypassStatus(nextStatus);
+    };
+    refreshBypassAndPolicy();
+    window.addEventListener('taj_module_control_updated', refreshBypassAndPolicy);
+    window.addEventListener('taj_shop_bypass_updated', refreshBypassAndPolicy);
+    return () => {
+      window.removeEventListener('taj_module_control_updated', refreshBypassAndPolicy);
+      window.removeEventListener('taj_shop_bypass_updated', refreshBypassAndPolicy);
+    };
+  }, [currentShopId]);
 
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const isSyncingRef = useRef<boolean>(false);
@@ -864,11 +897,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [currentShopId, isDemoMode]);
 
   const resetSyncTimer30m = useCallback(() => {
-    const nextTarget = Date.now() + AUTO_SYNC_DURATION_MS;
+    const currentPolicy = superAdminService.getShopEffectiveSyncPolicy(currentShopId || undefined);
+    const intervalMins = Math.max(1, currentPolicy.autoSyncIntervalMinutes || 30);
+    const durationMs = intervalMins * 60 * 1000;
+    const nextTarget = Date.now() + durationMs;
     nextSyncAtRef.current = nextTarget;
     waitingForOnlineSyncRef.current = false;
     setIsWaitingForOnlineSync(false);
-    setNextSyncRemainingSec(30 * 60);
+    setNextSyncRemainingSec(intervalMins * 60);
     try {
       if (currentShopId) {
         localStorage.setItem(`taj_pos_next_sync_${currentShopId}`, String(nextTarget));
@@ -877,7 +913,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       localStorage.setItem('taj_pos_next_sync_global', String(nextTarget));
     } catch {}
     syncStateToBgIdb(undefined, false, nextTarget);
-  }, [currentShopId, AUTO_SYNC_DURATION_MS, syncStateToBgIdb]);
+  }, [currentShopId, syncStateToBgIdb]);
 
   // Global Data Update Delayed Loading Wheel State (Super Admin Controlled, Default 1000ms = 1 sec)
   const [mutationLoader, setMutationLoader] = useState<{
@@ -964,7 +1000,6 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           isExecutingScheduledMutationRef.current = false;
           setPwaMutationBusy(false);
         }
-        triggerSilentPwaCheck(false);
         return;
       }
 
@@ -990,8 +1025,6 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           setPwaMutationBusy(false);
         }
         setMutationLoader(prev => ({ ...prev, active: false }));
-        // Quietly check & pre-download any new update in background after saving (never reloads mid-work)
-        triggerSilentPwaCheck(false);
       }, delayMs);
     },
     []
@@ -1436,6 +1469,20 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           } catch {}
         }
 
+        // Sync Shared Shop-Wide Daily Manual Bypass Counter & Package Sync Policy across Admin + all Staff in real time!
+        if (
+          sData.daily_bypass_state ||
+          sData.package_type ||
+          typeof sData.auto_sync_interval_minutes === 'number' ||
+          typeof sData.daily_manual_bypass_limit === 'number'
+        ) {
+          superAdminService.applyIncomingShopBypassState(currentShopId, sData.daily_bypass_state, {
+            package_type: sData.package_type,
+            auto_sync_interval_minutes: sData.auto_sync_interval_minutes,
+            daily_manual_bypass_limit: sData.daily_manual_bypass_limit
+          });
+        }
+
         const remotePulse = Number(sData.last_data_sync_at) || 0;
         const remoteColMap: Record<string, number> =
           sData.collection_sync_at && typeof sData.collection_sync_at === 'object'
@@ -1524,7 +1571,15 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // - If NO local pending entries exist AND local data is already at the latest Cloud pulse, sends 0 requests and resets 30m timer.
   const syncNow = async (
     manual: boolean = false
-  ): Promise<{ success: boolean; count?: number; noPendingData?: boolean; message?: string; error?: string }> => {
+  ): Promise<{
+    success: boolean;
+    count?: number;
+    noPendingData?: boolean;
+    bypassLimitReached?: boolean;
+    remainingBypasses?: number;
+    message?: string;
+    error?: string;
+  }> => {
     if (!currentShopId || isDemoMode) {
       resetSyncTimer30m();
       return { success: true, count: 0, noPendingData: true, message: 'No Pending Data' };
@@ -1559,8 +1614,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       !pulseV2Initialized || remoteCloudPulseRef.current > localPulse;
     const isTimerExpired = Date.now() >= nextSyncAtRef.current;
 
-    // SMART REQUEST SAVER: If there are NO local pending entries AND no unpulled remote updates from other users,
-    // DO NOT send any Firestore/network request! Reset 30m timer (if manual or 30m expired) and inform user.
+    // SMART REQUEST SAVER (ZERO WASTED READS/WRITES & ZERO WASTED BYPASS COUNTS):
+    // Check pending work BEFORE touching Firestore or consuming a daily manual bypass count!
+    // If there are NO local pending entries AND no unpulled remote updates from other users,
+    // send 0 Firestore/network requests, preserve the shop's bypass counter, and reset timer locally.
     if (!work.hasAnyWork && !hasRemoteUpdatesWaiting) {
       const now = new Date();
       setLastSyncTime(now);
@@ -1572,12 +1629,37 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (manual || isTimerExpired) {
         resetSyncTimer30m();
       }
+      const currentBypass = superAdminService.getShopDailyBypassStatus(currentShopId);
       return {
         success: true,
         count: 0,
         noPendingData: true,
-        message: 'No Pending Data — کوئی پینڈنگ ڈیٹا نہیں ہے، تمام ریکارڈز پہلے سے اپڈیٹ ہیں!'
+        remainingBypasses: currentBypass.remainingCount,
+        message: `No Pending Data — کوئی پینڈنگ ڈیٹا نہیں ہے! (0 Requests Used · بائی پاس کاؤنٹ محفوظ رہا: ${currentBypass.remainingCount}/${currentBypass.dailyLimit})`
       };
+    }
+
+    // Shared Shop-Wide Daily Manual Bypass Limit check (only runs when real pending sync work exists!
+    // Skips separate cloud write and piggybacks `daily_bypass_state` onto the single shop sync pulse write below!)
+    let consumedBypassRemaining: number | undefined;
+    let pendingBypassCloudState: any = null;
+    if (manual) {
+      const bypassCheck = await superAdminService.consumeShopManualBypass(
+        currentShopId,
+        currentUser?.name || currentUser?.username || currentUser?.role || 'User',
+        { skipCloudWrite: true }
+      );
+      setShopBypassStatus(superAdminService.getShopDailyBypassStatus(currentShopId));
+      if (!bypassCheck.allowed) {
+        return {
+          success: false,
+          bypassLimitReached: true,
+          remainingBypasses: 0,
+          error: `آج کے مینوئل بائی پاس کاؤنٹس (${bypassCheck.dailyLimit}/${bypassCheck.dailyLimit}) مکمل ہو چکے ہیں! آٹو ٹائمر (${autoSyncIntervalMinutes}m) بغیر کسی لمٹ کے خودکار سنک کرے گا۔`
+        };
+      }
+      consumedBypassRemaining = bypassCheck.remainingCount;
+      pendingBypassCloudState = bypassCheck.nextState;
     }
 
     if (isSyncingRef.current && !manual) {
@@ -1708,7 +1790,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             last_data_sync_at: pulseTs,
             last_data_sync_by: currentUser?.name || currentUser?.username || currentUser?.role || 'user',
             collection_sync_at: nextColMap,
-            usage_telemetry: loadShopTelemetry(currentShopId)
+            usage_telemetry: loadShopTelemetry(currentShopId),
+            ...(pendingBypassCloudState ? { daily_bypass_state: pendingBypassCloudState } : {})
           }),
           { merge: true }
         );
@@ -1720,6 +1803,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           localStorage.setItem(`taj_pos_col_sync_at_${currentShopId}`, JSON.stringify(mergedColMap));
           localStorage.setItem(`taj_pos_pulse_v2_${currentShopId}`, 'true');
         } catch {}
+        if (pendingBypassCloudState) {
+          await setDoc(
+            doc(db, 'shops', currentShopId),
+            sanitizeForFirestore({ daily_bypass_state: pendingBypassCloudState }),
+            { merge: true }
+          ).catch(() => {});
+        }
       }
 
       const now = new Date();
@@ -1742,10 +1832,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         success: true,
         count: flushedCount,
         noPendingData: false,
+        remainingBypasses: consumedBypassRemaining,
         message:
           flushedCount > 0
-            ? `✓ ${flushedCount} پینڈنگ انٹریز کلاؤڈ اور تمام صارفین کے پاس اپڈیٹ ہو گئیں!`
-            : '✓ تمام ریکارڈز کلاؤڈ سے اپڈیٹ ہو گئے!'
+            ? `✓ ${flushedCount} پینڈنگ انٹریز کلاؤڈ اور تمام صارفین کے پاس اپڈیٹ ہو گئیں!${typeof consumedBypassRemaining === 'number' ? ` (باقی بائی پاس: ${consumedBypassRemaining})` : ''}`
+            : `✓ تمام ریکارڈز کلاؤڈ سے اپڈیٹ ہو گئے!${typeof consumedBypassRemaining === 'number' ? ` (باقی بائی پاس: ${consumedBypassRemaining})` : ''}`
       };
     } catch (err: any) {
       console.error('syncNow error:', err);
@@ -3359,23 +3450,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         } catch {}
       }
 
-      // Check Firestore account_registry & shops collection if online
+      // Check Firestore account_registry first (1 single read! Only check `shops/{shopId}` if not in account_registry)
       if (!existingShop && navigator.onLine) {
         try {
           const regDoc = await getDoc(doc(db, 'account_registry', cleanEmailKey));
           if (regDoc.exists()) {
             const regData = regDoc.data();
-            if (regData?.shop_id) {
-              const sDoc = await getDoc(doc(db, 'shops', regData.shop_id));
-              if (sDoc.exists()) {
-                const sData = sDoc.data() as ShopProfile;
-                if (sData?.shop_name && sData.shop_name.trim() !== '') {
-                  existingShop = sData;
-                  matchedShopId = regData.shop_id;
-                }
-              }
-            }
-            if (!existingShop && regData?.shop_name && regData.shop_name.trim() !== '') {
+            if (regData?.shop_name && regData.shop_name.trim() !== '') {
               matchedShopId = regData.shop_id || shopId;
               existingShop = {
                 id: matchedShopId,
@@ -3389,10 +3470,18 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
                 password_configured: regData.password_configured ?? true,
                 created_at: regData.account_created_at || new Date().toISOString()
               } as ShopProfile;
+            } else if (regData?.shop_id) {
+              const sDoc = await getDoc(doc(db, 'shops', regData.shop_id));
+              if (sDoc.exists()) {
+                const sData = sDoc.data() as ShopProfile;
+                if (sData?.shop_name && sData.shop_name.trim() !== '') {
+                  existingShop = sData;
+                  matchedShopId = regData.shop_id;
+                }
+              }
             }
-          }
-
-          if (!existingShop) {
+          } else {
+            // Only fallback to shops/{shopId} if account_registry doc doesn't exist
             const sDoc = await getDoc(doc(db, 'shops', shopId));
             if (sDoc.exists()) {
               const sData = sDoc.data() as ShopProfile;
@@ -4162,6 +4251,32 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } catch {}
   };
 
+  // Smart 5-Minute Username Availability Cache:
+  // Prevents duplicate Firestore `staff_directory` reads during live typing AND skips the redundant
+  // cloud check on Submit when the exact username was already verified moments ago!
+  const staffUsernameCacheRef = useRef<
+    Map<string, { available: boolean; checkedAt: number; shopId?: string; staffId?: string }>
+  >(new Map());
+  const USERNAME_CACHE_TTL_MS = 5 * 60 * 1000;
+
+  const findLocalDuplicateStaff = (cleanKey: string, excludeStaffId?: string): StaffAccount | undefined => {
+    const inState = staffAccounts.find(a => a.username.toLowerCase() === cleanKey && a.id !== excludeStaffId);
+    if (inState) return inState;
+    try {
+      const globalRaw = localStorage.getItem('taj_pos_staff_accounts');
+      if (globalRaw) {
+        const parsed = JSON.parse(globalRaw);
+        if (Array.isArray(parsed)) {
+          const inGlobal = parsed.find(
+            (a: any) => a && typeof a.username === 'string' && a.username.toLowerCase() === cleanKey && a.id !== excludeStaffId
+          );
+          if (inGlobal) return inGlobal as StaffAccount;
+        }
+      }
+    } catch {}
+    return undefined;
+  };
+
   const checkUsernameAvailability = async (
     rawUsername: string,
     excludeStaffId?: string
@@ -4173,25 +4288,51 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const full = `NH-${clean}`;
     const cleanKey = full.toLowerCase();
 
-    // 1. FAST Local uniqueness check across current staff and all local storage (0ms!)
-    const localDup = staffAccounts.find(a => a.username.toLowerCase() === cleanKey && a.id !== excludeStaffId);
+    // 1. FAST Local uniqueness check across current shop & cached localStorage (0ms, 0 Firestore Reads!)
+    const localDup = findLocalDuplicateStaff(cleanKey, excludeStaffId);
     if (localDup) {
       const suggested = `NH-${clean}${Math.floor(10 + Math.random() * 90)}`;
-      return { available: false, reason: `Username "${full}" is already in use in this shop.`, suggested };
+      return { available: false, reason: `Username "${full}" is already in use locally.`, suggested };
     }
 
-    // 2. Global Firestore uniqueness check with 1.5s timeout (never hangs UI!)
+    // 2. Smart 5-Minute In-Memory Cache check (0ms, 0 Firestore Reads for repeated/re-typed checks!)
+    const cached = staffUsernameCacheRef.current.get(cleanKey);
+    if (cached && Date.now() - cached.checkedAt < USERNAME_CACHE_TTL_MS) {
+      if (cached.available) {
+        return { available: true };
+      }
+      if (!excludeStaffId || cached.staffId !== excludeStaffId) {
+        const suggested = `NH-${clean}${Math.floor(100 + Math.random() * 900)}`;
+        return { available: false, reason: `Username "${full}" is already taken.`, suggested };
+      }
+      return { available: true };
+    }
+
+    // 3. Single Global Firestore uniqueness check with 1.5s timeout (cached immediately for 5 minutes!)
     if (typeof navigator !== 'undefined' && navigator.onLine) {
       try {
         const queryPromise = getDoc(doc(db, 'staff_directory', cleanKey));
         const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500));
         const dirDoc = await Promise.race([queryPromise, timeoutPromise]);
 
-        if (dirDoc && dirDoc.exists()) {
-          const data = dirDoc.data() as any;
-          if (!excludeStaffId || data.staff_id !== excludeStaffId) {
-            const suggested = `NH-${clean}${Math.floor(100 + Math.random() * 900)}`;
-            return { available: false, reason: `Username "${full}" is already taken.`, suggested };
+        if (dirDoc) {
+          if (dirDoc.exists()) {
+            const data = dirDoc.data() as any;
+            staffUsernameCacheRef.current.set(cleanKey, {
+              available: false,
+              checkedAt: Date.now(),
+              shopId: data.shop_id,
+              staffId: data.staff_id
+            });
+            if (!excludeStaffId || data.staff_id !== excludeStaffId) {
+              const suggested = `NH-${clean}${Math.floor(100 + Math.random() * 900)}`;
+              return { available: false, reason: `Username "${full}" is already taken.`, suggested };
+            }
+          } else {
+            staffUsernameCacheRef.current.set(cleanKey, {
+              available: true,
+              checkedAt: Date.now()
+            });
           }
         }
       } catch (e) {
@@ -4266,8 +4407,8 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const cleanKey = finalUsername.toLowerCase();
 
-    // 3. Local uniqueness check
-    if (staffAccounts.some(a => a.username.toLowerCase() === cleanKey)) {
+    // 3. Fast Local uniqueness check (0 Firestore Reads!)
+    if (findLocalDuplicateStaff(cleanKey)) {
       const suggested = `${finalUsername}${Math.floor(10 + Math.random() * 90)}`;
       return {
         success: false,
@@ -4275,24 +4416,45 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
     }
 
-    // 4. Global Firestore uniqueness check in staff_directory with 2.5s timeout
-    try {
-      const checkPromise = getDoc(doc(db, 'staff_directory', cleanKey));
-      const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500));
-      const dirDoc = await Promise.race([checkPromise, timeoutPromise]);
+    // 4. Smart Cached Global Uniqueness Check:
+    // If `checkUsernameAvailability` ALREADY verified this username within the last 5 minutes,
+    // SKIP the duplicate Firestore `getDoc(staff_directory)` read completely (Saves 1 Read per signup)!
+    const cachedCheck = staffUsernameCacheRef.current.get(cleanKey);
+    const hasFreshCache = Boolean(cachedCheck && Date.now() - cachedCheck.checkedAt < USERNAME_CACHE_TTL_MS);
 
-      if (dirDoc && dirDoc.exists()) {
-        const dirData = dirDoc.data() as any;
-        if (dirData.shop_id !== currentShopId) {
-          const suggested = `${finalUsername}${Math.floor(100 + Math.random() * 900)}`;
-          return {
-            success: false,
-            error: `Username "${finalUsername}" is already taken in the system! Each username must be unique (Suggestion: ${suggested}).`
-          };
+    if (hasFreshCache && cachedCheck && !cachedCheck.available && cachedCheck.shopId !== currentShopId) {
+      const suggested = `${finalUsername}${Math.floor(100 + Math.random() * 900)}`;
+      return {
+        success: false,
+        error: `Username "${finalUsername}" is already taken in the system! Each username must be unique (Suggestion: ${suggested}).`
+      };
+    }
+
+    if (!hasFreshCache) {
+      try {
+        const checkPromise = getDoc(doc(db, 'staff_directory', cleanKey));
+        const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500));
+        const dirDoc = await Promise.race([checkPromise, timeoutPromise]);
+
+        if (dirDoc && dirDoc.exists()) {
+          const dirData = dirDoc.data() as any;
+          staffUsernameCacheRef.current.set(cleanKey, {
+            available: false,
+            checkedAt: Date.now(),
+            shopId: dirData.shop_id,
+            staffId: dirData.staff_id
+          });
+          if (dirData.shop_id !== currentShopId) {
+            const suggested = `${finalUsername}${Math.floor(100 + Math.random() * 900)}`;
+            return {
+              success: false,
+              error: `Username "${finalUsername}" is already taken in the system! Each username must be unique (Suggestion: ${suggested}).`
+            };
+          }
         }
+      } catch (netErr) {
+        console.warn('Global username check note:', netErr);
       }
-    } catch (netErr) {
-      console.warn('Global username check note:', netErr);
     }
 
     const newStaff: StaffAccount = {
@@ -4310,9 +4472,17 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       await new Promise(resolve => setTimeout(resolve, delayMs));
     }
 
+    // Mark username as taken in local smart cache immediately
+    staffUsernameCacheRef.current.set(cleanKey, {
+      available: false,
+      checkedAt: Date.now(),
+      shopId: currentShopId,
+      staffId: newStaff.id
+    });
+
     setStaffAccounts(prev => [newStaff, ...prev]);
 
-    // Save in shop subcollection
+    // Save in shop subcollection (queued for 30m / manual batch sync)
     saveDocToShop('staff_accounts', newStaff.id, newStaff);
 
     // Also persist in global local staff storage for instant local login
@@ -4325,7 +4495,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     } catch {}
 
-    // Save in global staff_directory for instant cross-device login (with 2s timeout)
+    // Save in global staff_directory for instant cross-device login (1 single write with 2s timeout)
     try {
       const savePromise = setDoc(doc(db, 'staff_directory', cleanKey), {
         username: finalUsername,
@@ -4367,10 +4537,12 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     // 1. Password check if password is provided
-    if (updated.password && updated.password.trim().length < 6) {
+    const platformPerms = superAdminService.getModuleControlConfig().featurePermissions;
+    const minPassLen = platformPerms.requireStrongPasswords !== false ? 6 : 4;
+    if (updated.password && updated.password.trim().length < minPassLen) {
       return {
         success: false,
-        error: 'پاس ورڈ کم از کم 6 ہندسوں یا حروف کا ہونا لازمی ہے (Password must be at least 6 characters)'
+        error: `پاس ورڈ کم از کم ${minPassLen} ہندسوں یا حروف کا ہونا لازمی ہے (Password must be at least ${minPassLen} characters)`
       };
     }
 
@@ -4379,29 +4551,48 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const cleanKey = finalUsername.toLowerCase();
     const oldKey = oldAccount ? oldAccount.username.toLowerCase() : '';
 
-    // If username changed, check uniqueness
+    // If username changed, check uniqueness (with Smart 5-Minute Cache to skip duplicate Firestore Read!)
     if (oldKey && oldKey !== cleanKey) {
-      if (staffAccounts.some(a => a.id !== updated.id && a.username.toLowerCase() === cleanKey)) {
+      if (findLocalDuplicateStaff(cleanKey, updated.id)) {
         return {
           success: false,
           error: `یہ یوزر نیم (${finalUsername}) پہلے سے موجود ہے۔ مختلف منتخب کریں۔`
         };
       }
 
-      try {
-        const dirDoc = await getDoc(doc(db, 'staff_directory', cleanKey));
-        if (dirDoc.exists()) {
-          const dirData = dirDoc.data() as any;
-          if (dirData.shop_id !== currentShopId || dirData.staff_id !== updated.id) {
-            return {
-              success: false,
-              error: `یہ یوزر نیم "${finalUsername}" پہلے سے کسی دوسرے صارف کے پاس موجود ہے۔`
-            };
-          }
-        }
-      } catch (e) {}
+      const cachedCheck = staffUsernameCacheRef.current.get(cleanKey);
+      const hasFreshCache = Boolean(cachedCheck && Date.now() - cachedCheck.checkedAt < USERNAME_CACHE_TTL_MS);
 
-      // Delete old doc from staff_directory
+      if (hasFreshCache && cachedCheck && !cachedCheck.available) {
+        if (cachedCheck.shopId !== currentShopId || cachedCheck.staffId !== updated.id) {
+          return {
+            success: false,
+            error: `یہ یوزر نیم "${finalUsername}" پہلے سے کسی دوسرے صارف کے پاس موجود ہے۔`
+          };
+        }
+      } else if (!hasFreshCache) {
+        try {
+          const dirDoc = await getDoc(doc(db, 'staff_directory', cleanKey));
+          if (dirDoc.exists()) {
+            const dirData = dirDoc.data() as any;
+            staffUsernameCacheRef.current.set(cleanKey, {
+              available: false,
+              checkedAt: Date.now(),
+              shopId: dirData.shop_id,
+              staffId: dirData.staff_id
+            });
+            if (dirData.shop_id !== currentShopId || dirData.staff_id !== updated.id) {
+              return {
+                success: false,
+                error: `یہ یوزر نیم "${finalUsername}" پہلے سے کسی دوسرے صارف کے پاس موجود ہے۔`
+              };
+            }
+          }
+        } catch (e) {}
+      }
+
+      // Free old username in cache and delete old doc from staff_directory
+      staffUsernameCacheRef.current.set(oldKey, { available: true, checkedAt: Date.now() });
       deleteDoc(doc(db, 'staff_directory', oldKey)).catch(() => {});
     }
 
@@ -4415,6 +4606,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (delayMs > 0) {
       await new Promise(resolve => setTimeout(resolve, delayMs));
     }
+
+    staffUsernameCacheRef.current.set(cleanKey, {
+      available: false,
+      checkedAt: Date.now(),
+      shopId: merged.shop_id || currentShopId,
+      staffId: merged.id
+    });
 
     setStaffAccounts(prev => prev.map(a => a.id === updated.id ? merged : a));
     saveDocToShop('staff_accounts', updated.id, merged);
@@ -4467,8 +4665,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         } catch {}
         if (staff?.username) {
           const cleanKey = staff.username.toLowerCase();
+          staffUsernameCacheRef.current.set(cleanKey, { available: true, checkedAt: Date.now() });
+          // Single targeted deleteDoc (saves 50% deletes compared to blind dual deletes)
           deleteDoc(doc(db, 'staff_directory', cleanKey)).catch(() => {});
-          deleteDoc(doc(db, 'staff_directory', cleanKey.replace(/^nh[-_]?/, ''))).catch(() => {});
         }
       }
     );
@@ -6605,6 +6804,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         isSyncing,
         nextSyncRemainingSec,
         isWaitingForOnlineSync,
+        autoSyncIntervalMinutes,
+        dailyBypassLimit,
+        dailyBypassRemaining,
+        activeShopPackageType,
         syncNow,
         mutationLoader,
         triggerMutationLoader,

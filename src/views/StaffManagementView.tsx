@@ -486,7 +486,9 @@ export const StaffManagementView: React.FC = () => {
     setShowAddModal(true);
   };
 
-  // Pro-level single-pass debounced username uniqueness check (locks cleanly on Green Tick or Red Taken)
+  // Smart Request-Saving Username Uniqueness Check:
+  // 1) Instant 0ms local duplicate check (0 Firestore Reads!)
+  // 2) Smart 1100ms debounce + min 3 characters before single Firestore Read (cached for 5m so Submit uses 0 extra reads!)
   useEffect(() => {
     if (checkTimeoutRef.current) {
       clearTimeout(checkTimeoutRef.current);
@@ -508,7 +510,7 @@ export const StaffManagementView: React.FC = () => {
 
     const checkKey = `${editingAccount?.id || 'new'}:${clean.toLowerCase()}`;
 
-    // If editing existing account and username didn't change, immediately lock Green Tick
+    // If editing existing account and username didn't change, immediately lock Green Tick (0 Reads)
     if (editingAccount) {
       const editClean = editingAccount.username.trim().replace(/^nh[-_]?/i, '').replace(/[^a-zA-Z0-9_-]/g, '');
       if (editClean.toLowerCase() === clean.toLowerCase()) {
@@ -520,12 +522,37 @@ export const StaffManagementView: React.FC = () => {
       }
     }
 
+    // Instant 0ms local shop duplicate guard (0 Firestore Reads!)
+    const fullLower = `nh-${clean.toLowerCase()}`;
+    const localDup = staffAccounts.find(
+      a => a.username.toLowerCase() === fullLower && a.id !== editingAccount?.id
+    );
+    if (localDup) {
+      lastCheckedKeyRef.current = checkKey;
+      checkSeqRef.current += 1;
+      setIsCheckingAvailability(false);
+      setAvailabilityStatus({
+        checked: true,
+        available: false,
+        reason: `Username "NH-${clean}" is already in use in this shop.`,
+        suggested: `${clean}${Math.floor(10 + Math.random() * 90)}`
+      });
+      return;
+    }
+
     // Already checked this exact username — keep current Green Tick / Red Taken locked without re-checking
     if (lastCheckedKeyRef.current === checkKey) {
       return;
     }
 
-    // New username typed — invalidate previous status and wait 450ms after typing stops before single cloud check
+    // Avoid firing premature Firestore reads for 2-letter partial typing (still checked automatically on Submit if needed)
+    if (clean.length < 3) {
+      setAvailabilityStatus({ checked: false });
+      setIsCheckingAvailability(false);
+      return;
+    }
+
+    // New username typed — wait 1100ms after typing completely stops before 1 single cached cloud check
     const seq = ++checkSeqRef.current;
     setAvailabilityStatus({ checked: false });
     setIsCheckingAvailability(true);
@@ -551,7 +578,7 @@ export const StaffManagementView: React.FC = () => {
           setIsCheckingAvailability(false);
         }
       }
-    }, 450);
+    }, 1100);
 
     return () => {
       if (checkTimeoutRef.current) {
@@ -559,7 +586,7 @@ export const StaffManagementView: React.FC = () => {
         checkTimeoutRef.current = null;
       }
     };
-  }, [showAddModal, usernameSuffix, editingAccount?.id, editingAccount?.username]);
+  }, [showAddModal, usernameSuffix, editingAccount?.id, editingAccount?.username, staffAccounts]);
 
   // Quick generator for guaranteed unique suffix (e.g. ali284)
   const generateUniqueSuggestion = (baseName?: string) => {

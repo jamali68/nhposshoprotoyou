@@ -56,6 +56,10 @@ const MainAppContent: React.FC = () => {
     isSyncing,
     nextSyncRemainingSec,
     isWaitingForOnlineSync,
+    autoSyncIntervalMinutes,
+    dailyBypassLimit,
+    dailyBypassRemaining,
+    activeShopPackageType,
     syncNow,
     isDemoMode,
     demoTimeLeft,
@@ -547,7 +551,7 @@ const MainAppContent: React.FC = () => {
                       </span>
                     ) : (
                       <>
-                        <span>⏱️ خودکار اپڈیٹ: ہر 30 منٹ</span>
+                        <span>⏱️ خودکار اپڈیٹ (Unlimited): ہر {autoSyncIntervalMinutes} منٹ</span>
                         <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/70">
                           {Math.floor(nextSyncRemainingSec / 60)}m {String(nextSyncRemainingSec % 60).padStart(2, '0')}s
                         </span>
@@ -555,22 +559,31 @@ const MainAppContent: React.FC = () => {
                     )}
                   </div>
 
-                  {/* Update Now Button */}
+                  {/* Update Now Button with Shared Remaining Bypass Counter Inside */}
                   <button
                     type="button"
-                    disabled={!isOnline || isSyncing}
+                    disabled={!isOnline || isSyncing || dailyBypassRemaining <= 0}
                     onClick={async (e) => {
                       e.stopPropagation();
-                      if (!isOnline) return;
+                      if (!isOnline || dailyBypassRemaining <= 0) return;
                       const res = await syncNow(true);
-                      if (res.noPendingData) {
+                      if (res.bypassLimitReached) {
                         setTopSyncFeedback({
-                          text: '✓ No Pending Data — کوئی پینڈنگ ڈیٹا نہیں ہے! (30m ٹائمر ری اسٹارٹ)',
+                          text: res.error || 'آج کے مینوئل بائی پاس کاؤنٹس مکمل ہو چکے ہیں!',
+                          isNoPending: true
+                        });
+                      } else if (res.noPendingData) {
+                        setTopSyncFeedback({
+                          text:
+                            res.message ||
+                            `✓ No Pending Data — کوئی پینڈنگ ڈیٹا نہیں ہے! (${autoSyncIntervalMinutes}m ٹائمر ری اسٹارٹ)`,
                           isNoPending: true
                         });
                       } else if (res.success) {
                         setTopSyncFeedback({
-                          text: `✓ ${res.count || 1} پینڈنگ انٹریز کلاؤڈ پر اپڈیٹ ہو گئیں! (30m ٹائمر ری اسٹارٹ)`,
+                          text:
+                            res.message ||
+                            `✓ ${res.count || 1} پینڈنگ انٹریز کلاؤڈ پر اپڈیٹ ہو گئیں!`,
                           isNoPending: false
                         });
                       } else {
@@ -581,15 +594,36 @@ const MainAppContent: React.FC = () => {
                       }
                       setTimeout(() => setTopSyncFeedback(null), 4500);
                     }}
-                    className={`w-full mt-1 py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all ${
-                      isOnline
+                    className={`w-full mt-1 py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-between gap-2 transition-all ${
+                      isOnline && dailyBypassRemaining > 0
                         ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-600/25 cursor-pointer active:scale-95 disabled:opacity-60'
                         : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed shadow-none'
                     }`}
                   >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isOnline && isSyncing ? 'animate-spin' : ''}`} />
-                    <span>{isSyncing ? 'کلاؤڈ اپڈیٹ ہو رہا ہے...' : '🔄 ابھی اپڈیٹ کریں (Sync Now)'}</span>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isOnline && isSyncing ? 'animate-spin' : ''}`} />
+                      <span className="truncate">
+                        {isSyncing
+                          ? 'کلاؤڈ اپڈیٹ ہو رہا ہے...'
+                          : dailyBypassRemaining <= 0
+                          ? 'بائی پاس لمٹ مکمل (Auto Active)'
+                          : '🔄 ابھی اپڈیٹ کریں (Sync Now)'}
+                      </span>
+                    </div>
+                    <span
+                      className={`px-1.5 py-0.5 rounded-md font-mono text-[10px] font-black shrink-0 border ${
+                        dailyBypassRemaining <= 0
+                          ? 'bg-rose-100 text-rose-700 border-rose-300'
+                          : 'bg-black/25 text-amber-200 border-white/25'
+                      }`}
+                    >
+                      {dailyBypassRemaining}/{dailyBypassLimit} Rem
+                    </span>
                   </button>
+                  <div className="flex items-center justify-between text-[9.5px] text-slate-500 px-1 pt-0.5">
+                    <span>پیکج: <strong className="text-emerald-700 uppercase">{activeShopPackageType}</strong></span>
+                    <span>مشترکہ روزانہ بائی پاس باقی: <strong className="text-slate-800">{dailyBypassRemaining}</strong></span>
+                  </div>
 
                   {topSyncFeedback && (
                     <div

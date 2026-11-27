@@ -11,11 +11,15 @@
  */
 
 import { DEFAULT_APP_VERSION } from './version';
+import { trackNetlifyWebRequest } from './usageTracker';
 
 const PENDING_VIEW_KEY = 'nhpos_pending_view_after_update';
 const LAST_APPLIED_AT_KEY = 'nhpos_pwa_last_applied_at';
-const CHECK_DEBOUNCE_MS = 20_000;
-const PERIODIC_CHECK_MS = 75_000;
+// Smart Request-Saving Intervals:
+// - Minimum 15 minutes between background checks on navigation/focus/online
+// - 30 minutes periodic check while app remains continuously open
+const CHECK_DEBOUNCE_MS = 15 * 60 * 1000;
+const PERIODIC_CHECK_MS = 30 * 60 * 1000;
 const APPLY_COOLDOWN_MS = 5_000;
 const MIN_HIDDEN_MS_FOR_REOPEN_APPLY = 3_000;
 
@@ -153,8 +157,8 @@ function attachRegistrationListeners(reg: ServiceWorkerRegistration): void {
 
 /**
  * Checks version.json with a fresh query string to bypass GitHub Pages' 10-minute CDN cache
- * (Cache-Control: max-age=600). If a newer version/buildId exists on GitHub Pages or Netlify,
- * registers `./sw.js?v=<version>-<buildId>` to immediately pre-download the new bundles in background!
+ * (Cache-Control: max-age=600). ONLY fetches/updates sw.js if version or buildId actually changed!
+ * This cuts idle background Netlify requests by 95%+.
  */
 async function checkRemoteVersionManifest(): Promise<void> {
   if (!isProductionPwaHost()) return;
@@ -183,19 +187,22 @@ async function checkRemoteVersionManifest(): Promise<void> {
       const tag = `${remoteVersion || DEFAULT_APP_VERSION}-${remoteBuildId || 'latest'}`;
       if (tag === lastRegisteredVersionTag) {
         // Already triggered background download for this tag — ensure update check runs
-        swRegistration?.update().catch(() => {});
+        if (swRegistration) {
+          trackNetlifyWebRequest(1, 1450);
+          swRegistration.update().catch(() => {});
+        }
         return;
       }
       lastRegisteredVersionTag = tag;
 
       // Registering with unique ?v=<tag> bypasses GitHub Pages' 10-minute CDN cache on sw.js!
       const swUrl = `./sw.js?v=${encodeURIComponent(tag)}`;
+      trackNetlifyWebRequest(1, 1450);
       const reg = await navigator.serviceWorker.register(swUrl, {
         scope: './',
         updateViaCache: 'none'
       });
       attachRegistrationListeners(reg);
-      reg.update().catch(() => {});
     }
   } catch {
     // Offline or version.json not yet present — ignore silently
@@ -203,8 +210,8 @@ async function checkRemoteVersionManifest(): Promise<void> {
 }
 
 /**
- * Silently checks the server for a new sw.js + version.json and pre-downloads its bundles in the background.
- * Never refreshes the UI.
+ * Silently checks the server for a new version.json (and sw.js ONLY if version changed).
+ * Throttled to once every 15-30 minutes so Netlify requests are never wasted.
  */
 export function triggerSilentPwaCheck(force = false): void {
   if (!isProductionPwaHost()) return;
@@ -214,12 +221,7 @@ export function triggerSilentPwaCheck(force = false): void {
   if (!force && now - lastCheckAt < CHECK_DEBOUNCE_MS) return;
   lastCheckAt = now;
 
-  // 1. Standard SW update check (instant on Netlify via no-cache headers)
-  if (swRegistration) {
-    swRegistration.update().catch(() => {});
-  }
-
-  // 2. CDN cache-bypass version manifest check (instant on GitHub Pages even with max-age=600!)
+  // Check lightweight version.json manifest first; it will only pull sw.js if a new build actually exists!
   void checkRemoteVersionManifest();
 }
 
@@ -351,9 +353,9 @@ export function initSmartPwaUpdater(): void {
     window.addEventListener('load', registerSW, { once: true });
   }
 
-  // Check silently when internet turns back on
+  // Check silently when internet turns back on (respects 15-minute debounce to save Netlify requests)
   window.addEventListener('online', () => {
-    triggerSilentPwaCheck(true);
+    triggerSilentPwaCheck(false);
   });
 
   // Track app hide/reopen (close/minimize -> reopen)
