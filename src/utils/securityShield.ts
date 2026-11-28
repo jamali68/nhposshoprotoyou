@@ -259,18 +259,32 @@ export function validateAuthenticName(
 }
 
 /**
- * Layer 3C: Authentic Phone Number Validator (Optional field, but if entered must be genuine)
+ * Layer 3C: Authentic Phone / WhatsApp Number Validator (supports mandatory mode on Sign Up)
  */
-export function validateAuthenticPhone(rawPhone: string): ValidationResult {
+export function validateAuthenticPhone(
+  rawPhone: string,
+  options?: { required?: boolean }
+): ValidationResult {
   const clean = (rawPhone || '').trim();
-  if (!clean) return { valid: true };
+  const isRequired = Boolean(options?.required);
+
+  if (!clean) {
+    if (isRequired) {
+      return {
+        valid: false,
+        errorEn: 'WhatsApp Number is required. Please enter a valid WhatsApp number (e.g. 0300-1234567).',
+        errorUr: 'واٹس ایپ نمبر درج کرنا لازمی ہے (مثلاً 0300-1234567)۔'
+      };
+    }
+    return { valid: true };
+  }
 
   const digitsOnly = clean.replace(/\D/g, '');
   if (digitsOnly.length < 10 || digitsOnly.length > 15) {
     return {
       valid: false,
-      errorEn: 'Please enter a valid phone/WhatsApp number (10–15 digits, e.g. 0300-1234567).',
-      errorUr: 'براہِ کرم درست فون یا واٹس ایپ نمبر درج کریں (10 سے 15 ہندسے، مثلاً 0300-1234567)۔'
+      errorEn: 'Please enter a valid WhatsApp number (10–15 digits, e.g. 0300-1234567).',
+      errorUr: 'براہِ کرم درست واٹس ایپ نمبر درج کریں (10 سے 15 ہندسے، مثلاً 0300-1234567)۔'
     };
   }
 
@@ -283,8 +297,12 @@ export function validateAuthenticPhone(rawPhone: string): ValidationResult {
   ) {
     return {
       valid: false,
-      errorEn: 'Fake or sequential phone numbers are not allowed. Enter a real number or leave optional.',
-      errorUr: 'جعلی یا ایک جیسے ہندسوں والا فون نمبر قبول نہیں۔ اصلی نمبر درج کریں یا خالی چھوڑ دیں۔'
+      errorEn: isRequired
+        ? 'Fake or sequential numbers are not allowed. Please enter a real WhatsApp number.'
+        : 'Fake or sequential phone numbers are not allowed. Enter a real number or leave optional.',
+      errorUr: isRequired
+        ? 'جعلی یا ایک جیسے ہندسوں والا نمبر قبول نہیں۔ براہِ کرم اصلی واٹس ایپ نمبر درج کریں۔'
+        : 'جعلی یا ایک جیسے ہندسوں والا فون نمبر قبول نہیں۔ اصلی نمبر درج کریں یا خالی چھوڑ دیں۔'
     };
   }
 

@@ -135,6 +135,25 @@ export const LoginView: React.FC = () => {
   const [signupCity, setSignupCity] = useState<string>('');
   const [signupAddress, setSignupAddress] = useState<string>('');
   const [isSignupLoading, setIsSignupLoading] = useState<boolean>(false);
+  type SignupRequiredField = 'shopName' | 'ownerName' | 'email' | 'password' | 'province' | 'district' | 'phone';
+  const [signupFieldErrors, setSignupFieldErrors] = useState<Partial<Record<SignupRequiredField, string>>>({});
+  const signupFieldRefs = React.useRef<Record<SignupRequiredField, HTMLInputElement | HTMLSelectElement | null>>({
+    shopName: null,
+    ownerName: null,
+    email: null,
+    password: null,
+    province: null,
+    district: null,
+    phone: null
+  });
+  const clearSignupFieldError = (field: SignupRequiredField) => {
+    setSignupFieldErrors(prev => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  };
 
   // Staff Form State
   const [staffUsername, setStaffUsername] = useState<string>('');
@@ -320,18 +339,6 @@ export const LoginView: React.FC = () => {
     e.preventDefault();
     setError('');
 
-    // Layer 1 & 2: Honeypot + Human Timing Check
-    const humanCheck = verifyHumanFormSubmission({
-      honeypotValue: honeypotTrap,
-      formOpenedAt: formOpenedAtRef.current,
-      hasInteracted: hasInteractedRef.current,
-      minElapsedMs: 1200
-    });
-    if (!humanCheck.valid) {
-      setError(lang === 'en' ? humanCheck.errorEn! : humanCheck.errorUr!);
-      return;
-    }
-
     const cleanEmail = signupEmail.trim().toLowerCase();
     const cleanShop = sanitizeTextInput(signupShopName, 80);
     const cleanOwner = sanitizeTextInput(signupOwnerName, 80);
@@ -342,68 +349,103 @@ export const LoginView: React.FC = () => {
     const cleanCity = sanitizeTextInput(signupCity, 60);
     const cleanAddress = sanitizeTextInput(signupAddress, 140);
 
-    // Layer 3: Authentic Shop Name, Owner Name, Email (Anti-Disposable/Fake), Phone & Location Check
-    const shopCheck = validateAuthenticName(cleanShop, 'Shop Name', 'دکان کا نام');
-    if (!shopCheck.valid) {
-      setError(lang === 'en' ? shopCheck.errorEn! : shopCheck.errorUr!);
-      return;
-    }
-    const ownerCheck = validateAuthenticName(cleanOwner, 'Owner Name', 'دکاندار کا نام');
-    if (!ownerCheck.valid) {
-      setError(lang === 'en' ? ownerCheck.errorEn! : ownerCheck.errorUr!);
-      return;
-    }
-    const emailCheck = validateAuthenticEmail(cleanEmail);
-    if (!emailCheck.valid) {
-      setError(lang === 'en' ? emailCheck.errorEn! : emailCheck.errorUr!);
-      return;
-    }
-    const phoneCheck = validateAuthenticPhone(cleanPhone);
-    if (!phoneCheck.valid) {
-      setError(lang === 'en' ? phoneCheck.errorEn! : phoneCheck.errorUr!);
-      return;
-    }
-    if (!cleanProvince) {
-      setError(
-        lang === 'en'
-          ? 'Please select your Province (Required).'
-          : 'برائے مہربانی اپنا صوبہ (Province) منتخب کریں — یہ لازمی ہے۔'
-      );
-      return;
-    }
-    if (!cleanDistrict) {
-      setError(
-        lang === 'en'
-          ? 'Please select your District (Required).'
-          : 'برائے مہربانی اپنا ضلع (District) منتخب کریں — یہ لازمی ہے۔'
-      );
-      return;
-    }
-
     // Super Admin Global Lock Check: Allow New Shop Sign Up
     const livePerms = superAdminService.getModuleControlConfig().featurePermissions;
     if (livePerms.allowShopSignup === false && !superAdminService.isMasterAdminEmail(cleanEmail)) {
-      setError(
-        lang === 'en'
-          ? 'New shop registration is currently locked by Super Admin.'
-          : 'نئی دکان کی رجسٹریشن (Sign Up) سپر ایڈمن کی جانب سے لاک (Locked) ہے۔'
-      );
+      setError('New shop registration is currently locked by Super Admin.');
       return;
     }
 
-    // Layer 4: Strong Anti-AI Password Policy (Controlled by Super Admin toggle)
-    if (livePerms.requireStrongPasswords !== false) {
+    // Validate ALL required signup fields together so every missing/invalid required box is highlighted in English
+    const nextFieldErrors: Partial<Record<SignupRequiredField, string>> = {};
+
+    if (!cleanShop) {
+      nextFieldErrors.shopName = 'Shop Name is required.';
+    } else {
+      const shopCheck = validateAuthenticName(cleanShop, 'Shop Name', 'دکان کا نام');
+      if (!shopCheck.valid) {
+        nextFieldErrors.shopName = shopCheck.errorEn || 'Please enter a valid Shop Name.';
+      }
+    }
+
+    if (!cleanOwner) {
+      nextFieldErrors.ownerName = 'Owner Name is required.';
+    } else {
+      const ownerCheck = validateAuthenticName(cleanOwner, 'Owner Name', 'دکاندار کا نام');
+      if (!ownerCheck.valid) {
+        nextFieldErrors.ownerName = ownerCheck.errorEn || 'Please enter a valid Owner Name.';
+      }
+    }
+
+    if (!cleanEmail) {
+      nextFieldErrors.email = 'Owner Email Address is required.';
+    } else {
+      const emailCheck = validateAuthenticEmail(cleanEmail);
+      if (!emailCheck.valid) {
+        nextFieldErrors.email = emailCheck.errorEn || 'Please enter a valid email address.';
+      }
+    }
+
+    if (!cleanPass) {
+      nextFieldErrors.password = 'Account Password is required.';
+    } else if (livePerms.requireStrongPasswords !== false) {
       const passCheck = validateStrongPassword(cleanPass, cleanEmail, cleanOwner);
       if (!passCheck.valid) {
-        setError(lang === 'en' ? passCheck.errorEn! : passCheck.errorUr!);
-        return;
+        nextFieldErrors.password = passCheck.errorEn || 'Password must be at least 8 characters with letters and numbers.';
       }
-    } else if (!cleanPass || cleanPass.length < 4) {
-      setError(
-        lang === 'en'
-          ? 'Password must be at least 4 characters.'
-          : 'پاس ورڈ کم از کم 4 حروف کا ہونا ضروری ہے۔'
-      );
+    } else if (cleanPass.length < 4) {
+      nextFieldErrors.password = 'Password must be at least 4 characters.';
+    }
+
+    if (!cleanProvince) {
+      nextFieldErrors.province = 'Province is required.';
+    }
+
+    if (!cleanDistrict) {
+      nextFieldErrors.district = !cleanProvince
+        ? 'Select Province first, then choose District.'
+        : 'District is required.';
+    }
+
+    const phoneCheck = validateAuthenticPhone(cleanPhone, { required: true });
+    if (!phoneCheck.valid) {
+      nextFieldErrors.phone = phoneCheck.errorEn || 'WhatsApp Number is required.';
+    }
+
+    const fieldOrder: SignupRequiredField[] = [
+      'shopName',
+      'ownerName',
+      'email',
+      'password',
+      'province',
+      'district',
+      'phone'
+    ];
+    const firstInvalidField = fieldOrder.find(f => Boolean(nextFieldErrors[f]));
+    if (firstInvalidField) {
+      setSignupFieldErrors(nextFieldErrors);
+      setError('Please fill in all highlighted required (*) fields to complete registration.');
+      const targetEl = signupFieldRefs.current[firstInvalidField];
+      if (targetEl) {
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (!targetEl.disabled) {
+          targetEl.focus();
+        }
+      }
+      return;
+    }
+
+    setSignupFieldErrors({});
+
+    // Layer 1 & 2: Honeypot + Human Timing Check
+    const humanCheck = verifyHumanFormSubmission({
+      honeypotValue: honeypotTrap,
+      formOpenedAt: formOpenedAtRef.current,
+      hasInteracted: hasInteractedRef.current,
+      minElapsedMs: 1200
+    });
+    if (!humanCheck.valid) {
+      setError(humanCheck.errorEn || 'Please wait a moment and submit again.');
       return;
     }
 
@@ -411,7 +453,7 @@ export const LoginView: React.FC = () => {
     const throttleCheck = checkClientSecurityThrottle('shop_signup', cleanEmail);
     if (!throttleCheck.valid) {
       setLockoutStatus(getClientLockoutStatus('shop_signup', cleanEmail));
-      setError(lang === 'en' ? throttleCheck.errorEn! : throttleCheck.errorUr!);
+      setError(throttleCheck.errorEn || 'Too many attempts. Please wait before trying again.');
       return;
     }
 
@@ -435,7 +477,7 @@ export const LoginView: React.FC = () => {
       if (nextLock.locked) {
         setError('');
       } else {
-        setError(result.error || (lang === 'en' ? 'Failed to register shop. Please try again.' : 'دکان رجسٹر کرنے میں مسئلہ پیش آیا۔ دوبارہ کوشش کریں۔'));
+        setError(result.error || 'Failed to register shop. Please try again.');
       }
     } else {
       const cleared = recordClientAuthOutcome('shop_signup', cleanEmail, true);
@@ -877,33 +919,28 @@ export const LoginView: React.FC = () => {
         )}
 
         {/* ======================================================== */}
-        {/* PORTION 2: SIGN UP / NEW SHOP REGISTRATION               */}
+        {/* PORTION 2: SIGN UP / NEW SHOP REGISTRATION (ENGLISH UI)  */}
         {/* ======================================================== */}
         {activeTab === 'signup' && (
-          <div className={`mt-5 space-y-3.5 animate-in fade-in duration-200 ${isUrdu ? 'text-right' : 'text-left'}`}>
+          <div className="mt-5 space-y-3.5 animate-in fade-in duration-200 text-left" dir="ltr">
             {!isShopSignupAllowed && (
               <div className="p-3 bg-rose-50 border border-rose-200 rounded-2xl text-rose-800 text-xs font-bold flex items-center gap-2">
                 <Lock className="w-4 h-4 text-rose-600 shrink-0" />
-                <span>
-                  {isUrdu
-                    ? 'نئی دکان کی رجسٹریشن سپر ایڈمن کی جانب سے بند (Locked) ہے۔'
-                    : 'New shop registration is currently locked by Super Admin.'}
-                </span>
+                <span>New shop registration is currently locked by Super Admin.</span>
               </div>
             )}
             <div className="p-3 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-200 rounded-2xl">
               <div className="flex items-center gap-1.5 font-black text-emerald-900 text-xs">
                 <Sparkles className="w-4 h-4 text-emerald-600" />
-                <span>{isUrdu ? 'نئی دکان کا فوری اندراج' : 'New Shop Registration'}</span>
+                <span>New Shop Registration</span>
               </div>
-              <p className="text-[10px] text-emerald-700 mt-0.5 leading-relaxed">
-                {isUrdu
-                  ? 'کوئی OTP نہیں! تفصیلات درج کریں، فوری دکان رجسٹر کریں اور سسٹم میں داخل ہوں۔'
-                  : 'No OTP required! Enter details, create password & launch instantly.'}
+              <p className="text-[10.5px] text-emerald-700 mt-0.5 leading-relaxed">
+                No OTP required! Fill in all required (<span className="text-rose-600 font-black">*</span>) fields below to register &amp; launch your shop instantly.
               </p>
             </div>
 
             <form
+              noValidate
               onSubmit={handleSignupSubmit}
               onInput={() => { hasInteractedRef.current = true; }}
               className="space-y-3 text-xs"
@@ -919,79 +956,121 @@ export const LoginView: React.FC = () => {
                 aria-hidden="true"
                 className="hidden"
               />
+
+              {/* 1. Shop Name (Required) */}
               <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  {isUrdu ? 'دکان کا نام *' : 'Shop Name *'}
+                <label className={`block font-bold mb-1 ${signupFieldErrors.shopName ? 'text-rose-700' : 'text-slate-700'}`}>
+                  Shop Name <span className="text-rose-600">*</span>
                 </label>
                 <div className="relative">
-                  <Store className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                  <Store className={`w-4 h-4 absolute left-3.5 top-3 ${signupFieldErrors.shopName ? 'text-rose-500' : 'text-slate-400'}`} />
                   <input
+                    ref={el => { signupFieldRefs.current.shopName = el; }}
                     type="text"
                     required
                     value={signupShopName}
                     onChange={e => {
                       setSignupShopName(e.target.value);
+                      clearSignupFieldError('shopName');
                       setError('');
                     }}
-                    placeholder={isUrdu ? 'مثلاً: تاج موبائل شاپ' : 'e.g. Taj Mobile Shop'}
-                    className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm"
+                    placeholder="e.g. Taj Mobile Shop"
+                    className={`w-full pl-10 pr-3 py-2 rounded-xl font-bold text-slate-900 focus:outline-none text-sm transition-all ${
+                      signupFieldErrors.shopName
+                        ? 'bg-rose-50/70 border-2 border-rose-500 ring-2 ring-rose-200 focus:border-rose-600'
+                        : 'bg-slate-50 border border-slate-200 focus:border-emerald-600 focus:bg-white'
+                    }`}
                   />
                 </div>
+                {signupFieldErrors.shopName && (
+                  <p className="mt-1 text-[11px] font-bold text-rose-600 flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{signupFieldErrors.shopName}</span>
+                  </p>
+                )}
               </div>
 
+              {/* 2. Owner Name (Required) */}
               <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  {isUrdu ? 'دکاندار کا نام *' : 'Owner Name *'}
+                <label className={`block font-bold mb-1 ${signupFieldErrors.ownerName ? 'text-rose-700' : 'text-slate-700'}`}>
+                  Owner Name <span className="text-rose-600">*</span>
                 </label>
                 <div className="relative">
-                  <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                  <User className={`w-4 h-4 absolute left-3.5 top-3 ${signupFieldErrors.ownerName ? 'text-rose-500' : 'text-slate-400'}`} />
                   <input
+                    ref={el => { signupFieldRefs.current.ownerName = el; }}
                     type="text"
                     required
                     value={signupOwnerName}
                     onChange={e => {
                       setSignupOwnerName(e.target.value);
+                      clearSignupFieldError('ownerName');
                       setError('');
                     }}
-                    placeholder={isUrdu ? 'مثلاً: واصف علی' : 'e.g. Wasif Ali'}
-                    className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm"
+                    placeholder="e.g. Ali Imtiaz"
+                    className={`w-full pl-10 pr-3 py-2 rounded-xl font-bold text-slate-900 focus:outline-none text-sm transition-all ${
+                      signupFieldErrors.ownerName
+                        ? 'bg-rose-50/70 border-2 border-rose-500 ring-2 ring-rose-200 focus:border-rose-600'
+                        : 'bg-slate-50 border border-slate-200 focus:border-emerald-600 focus:bg-white'
+                    }`}
                   />
                 </div>
+                {signupFieldErrors.ownerName && (
+                  <p className="mt-1 text-[11px] font-bold text-rose-600 flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{signupFieldErrors.ownerName}</span>
+                  </p>
+                )}
               </div>
 
+              {/* 3. Owner Email Address (Required) */}
               <div>
-                <label className="block font-bold text-slate-700 mb-1">
-                  {isUrdu ? 'ای میل ایڈریس *' : 'Owner Email Address *'}
+                <label className={`block font-bold mb-1 ${signupFieldErrors.email ? 'text-rose-700' : 'text-slate-700'}`}>
+                  Owner Email Address <span className="text-rose-600">*</span>
                 </label>
                 <div className="relative">
-                  <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                  <Mail className={`w-4 h-4 absolute left-3.5 top-3 ${signupFieldErrors.email ? 'text-rose-500' : 'text-slate-400'}`} />
                   <input
+                    ref={el => { signupFieldRefs.current.email = el; }}
                     type="email"
                     required
                     value={signupEmail}
                     onChange={e => {
                       setSignupEmail(e.target.value);
+                      clearSignupFieldError('email');
                       setError('');
                     }}
-                    placeholder={isUrdu ? 'مثلاً: nhposshop@gmail.com' : 'e.g. nhposshop@gmail.com'}
+                    placeholder="e.g. nhposshop@gmail.com"
                     dir="ltr"
-                    className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm font-mono"
+                    className={`w-full pl-10 pr-3 py-2 rounded-xl font-bold text-slate-900 focus:outline-none text-sm font-mono transition-all ${
+                      signupFieldErrors.email
+                        ? 'bg-rose-50/70 border-2 border-rose-500 ring-2 ring-rose-200 focus:border-rose-600'
+                        : 'bg-slate-50 border border-slate-200 focus:border-emerald-600 focus:bg-white'
+                    }`}
                   />
                 </div>
+                {signupFieldErrors.email && (
+                  <p className="mt-1 text-[11px] font-bold text-rose-600 flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{signupFieldErrors.email}</span>
+                  </p>
+                )}
               </div>
 
+              {/* 4. Account Password (Required) */}
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block font-bold text-slate-700">
-                    {isUrdu ? 'اکاؤنٹ پاس ورڈ *' : 'Account Password *'}
+                  <label className={`block font-bold ${signupFieldErrors.password ? 'text-rose-700' : 'text-slate-700'}`}>
+                    Account Password <span className="text-rose-600">*</span>
                   </label>
                   <span className="text-[10px] text-slate-500 font-medium">
-                    {isUrdu ? 'کم از کم 8 حروف (A-Z + 0-9)' : 'Min 8 chars (A-Z + 0-9)'}
+                    Min 8 chars (A-Z + 0-9)
                   </span>
                 </div>
                 <div className="relative">
-                  <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                  <Lock className={`w-4 h-4 absolute left-3.5 top-3 ${signupFieldErrors.password ? 'text-rose-500' : 'text-slate-400'}`} />
                   <input
+                    ref={el => { signupFieldRefs.current.password = el; }}
                     type={showSignupPassword ? 'text' : 'password'}
                     required
                     minLength={8}
@@ -999,11 +1078,16 @@ export const LoginView: React.FC = () => {
                     onChange={e => {
                       hasInteractedRef.current = true;
                       setSignupPassword(e.target.value);
+                      clearSignupFieldError('password');
                       setError('');
                     }}
-                    placeholder={isUrdu ? 'مضبوط پاس ورڈ (مثلاً: Shop@2026)' : 'Strong password (e.g. Shop@2026)'}
+                    placeholder="Strong password (e.g. Shop@2026)"
                     dir="ltr"
-                    className="w-full pl-10 pr-10 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm font-mono"
+                    className={`w-full pl-10 pr-10 py-2 rounded-xl font-bold text-slate-900 focus:outline-none text-sm font-mono transition-all ${
+                      signupFieldErrors.password
+                        ? 'bg-rose-50/70 border-2 border-rose-500 ring-2 ring-rose-200 focus:border-rose-600'
+                        : 'bg-slate-50 border border-slate-200 focus:border-emerald-600 focus:bg-white'
+                    }`}
                   />
                   <button
                     type="button"
@@ -1014,64 +1098,81 @@ export const LoginView: React.FC = () => {
                     {showSignupPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
+                {signupFieldErrors.password && (
+                  <p className="mt-1 text-[11px] font-bold text-rose-600 flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{signupFieldErrors.password}</span>
+                  </p>
+                )}
               </div>
 
-              {/* Location: Province (Required) & District (Required) */}
+              {/* 5 & 6. Location: Province (Required) & District (Required) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    {isUrdu ? 'صوبہ (Province) *' : 'Province *'}
+                  <label className={`block font-bold mb-1 ${signupFieldErrors.province ? 'text-rose-700' : 'text-slate-700'}`}>
+                    Province <span className="text-rose-600">*</span>
                   </label>
                   <div className="relative">
-                    <MapPin className="w-4 h-4 text-emerald-600 absolute left-3 top-2.5 pointer-events-none" />
+                    <MapPin className={`w-4 h-4 absolute left-3 top-2.5 pointer-events-none ${signupFieldErrors.province ? 'text-rose-500' : 'text-emerald-600'}`} />
                     <select
+                      ref={el => { signupFieldRefs.current.province = el; }}
                       required
                       value={signupProvince}
                       onChange={e => {
                         hasInteractedRef.current = true;
                         setSignupProvince(e.target.value);
                         setSignupDistrict('');
+                        clearSignupFieldError('province');
+                        clearSignupFieldError('district');
                         setError('');
                       }}
-                      className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-xs sm:text-sm cursor-pointer"
+                      className={`w-full pl-9 pr-3 py-2 rounded-xl font-bold text-slate-900 focus:outline-none text-xs sm:text-sm cursor-pointer transition-all ${
+                        signupFieldErrors.province
+                          ? 'bg-rose-50/70 border-2 border-rose-500 ring-2 ring-rose-200 focus:border-rose-600'
+                          : 'bg-slate-50 border border-slate-200 focus:border-emerald-600 focus:bg-white'
+                      }`}
                     >
-                      <option value="">
-                        {isUrdu ? '-- صوبہ منتخب کریں --' : '-- Select Province --'}
-                      </option>
+                      <option value="">-- Select Province --</option>
                       {PAKISTAN_PROVINCES.map(p => (
                         <option key={p.name} value={p.name}>
-                          {isUrdu ? `${p.name} (${p.urduName})` : p.name}
+                          {p.name}
                         </option>
                       ))}
                     </select>
                   </div>
+                  {signupFieldErrors.province && (
+                    <p className="mt-1 text-[11px] font-bold text-rose-600 flex items-center gap-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{signupFieldErrors.province}</span>
+                    </p>
+                  )}
                 </div>
 
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    {isUrdu ? 'ضلع (District) *' : 'District *'}
+                  <label className={`block font-bold mb-1 ${signupFieldErrors.district ? 'text-rose-700' : 'text-slate-700'}`}>
+                    District <span className="text-rose-600">*</span>
                   </label>
                   <div className="relative">
-                    <MapPin className="w-4 h-4 text-emerald-600 absolute left-3 top-2.5 pointer-events-none" />
+                    <MapPin className={`w-4 h-4 absolute left-3 top-2.5 pointer-events-none ${signupFieldErrors.district ? 'text-rose-500' : 'text-emerald-600'}`} />
                     <select
+                      ref={el => { signupFieldRefs.current.district = el; }}
                       required
                       disabled={!signupProvince}
                       value={signupDistrict}
                       onChange={e => {
                         hasInteractedRef.current = true;
                         setSignupDistrict(e.target.value);
+                        clearSignupFieldError('district');
                         setError('');
                       }}
-                      className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-xs sm:text-sm cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                      className={`w-full pl-9 pr-3 py-2 rounded-xl font-bold text-slate-900 focus:outline-none text-xs sm:text-sm cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed transition-all ${
+                        signupFieldErrors.district
+                          ? 'bg-rose-50/70 border-2 border-rose-500 ring-2 ring-rose-200 focus:border-rose-600'
+                          : 'bg-slate-50 border border-slate-200 focus:border-emerald-600 focus:bg-white'
+                      }`}
                     >
                       <option value="">
-                        {!signupProvince
-                          ? isUrdu
-                            ? '-- پہلے صوبہ منتخب کریں --'
-                            : '-- Select Province First --'
-                          : isUrdu
-                          ? '-- ضلع منتخب کریں --'
-                          : '-- Select District --'}
+                        {!signupProvince ? '-- Select Province First --' : '-- Select District --'}
                       </option>
                       {getDistrictsForProvince(signupProvince).map(d => (
                         <option key={d} value={d}>
@@ -1080,14 +1181,54 @@ export const LoginView: React.FC = () => {
                       ))}
                     </select>
                   </div>
+                  {signupFieldErrors.district && (
+                    <p className="mt-1 text-[11px] font-bold text-rose-600 flex items-center gap-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{signupFieldErrors.district}</span>
+                    </p>
+                  )}
                 </div>
               </div>
 
-              {/* City (Optional) & Phone (Optional) */}
+              {/* 7. WhatsApp Number (REQUIRED) & City (Optional) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <div>
+                  <label className={`block font-bold mb-1 ${signupFieldErrors.phone ? 'text-rose-700' : 'text-slate-700'}`}>
+                    WhatsApp Number <span className="text-rose-600">*</span>
+                  </label>
+                  <div className="relative">
+                    <MessageCircle className={`w-4 h-4 absolute left-3.5 top-3 ${signupFieldErrors.phone ? 'text-rose-500' : 'text-emerald-600'}`} />
+                    <input
+                      ref={el => { signupFieldRefs.current.phone = el; }}
+                      type="tel"
+                      required
+                      value={signupPhone}
+                      onChange={e => {
+                        hasInteractedRef.current = true;
+                        setSignupPhone(e.target.value);
+                        clearSignupFieldError('phone');
+                        setError('');
+                      }}
+                      placeholder="e.g. 0300-1234567"
+                      dir="ltr"
+                      className={`w-full pl-10 pr-3 py-2 rounded-xl font-bold text-slate-900 focus:outline-none text-sm font-mono transition-all ${
+                        signupFieldErrors.phone
+                          ? 'bg-rose-50/70 border-2 border-rose-500 ring-2 ring-rose-200 focus:border-rose-600'
+                          : 'bg-slate-50 border border-slate-200 focus:border-emerald-600 focus:bg-white'
+                      }`}
+                    />
+                  </div>
+                  {signupFieldErrors.phone && (
+                    <p className="mt-1 text-[11px] font-bold text-rose-600 flex items-center gap-1">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                      <span>{signupFieldErrors.phone}</span>
+                    </p>
+                  )}
+                </div>
+
+                <div>
                   <label className="block font-bold text-slate-700 mb-1">
-                    {isUrdu ? 'شہر / قصبہ (اختیاری)' : 'City / Town (Optional)'}
+                    City / Town <span className="text-slate-400 font-medium">(Optional)</span>
                   </label>
                   <div className="relative">
                     <MapPin className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
@@ -1095,24 +1236,7 @@ export const LoginView: React.FC = () => {
                       type="text"
                       value={signupCity}
                       onChange={e => setSignupCity(e.target.value)}
-                      placeholder={isUrdu ? 'مثلاً: صادق آباد' : 'e.g. Sadiqabad'}
-                      className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    {isUrdu ? 'فون یا واٹس ایپ نمبر' : 'Phone / WhatsApp (Optional)'}
-                  </label>
-                  <div className="relative">
-                    <Phone className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                    <input
-                      type="text"
-                      value={signupPhone}
-                      onChange={e => setSignupPhone(e.target.value)}
-                      placeholder="0300-1234567"
-                      dir="ltr"
+                      placeholder="e.g. Sadiqabad"
                       className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm"
                     />
                   </div>
@@ -1121,7 +1245,7 @@ export const LoginView: React.FC = () => {
 
               <div>
                 <label className="block font-bold text-slate-700 mb-1">
-                  {isUrdu ? 'دکان کا مکمل پتہ (اختیاری)' : 'Shop Address / Bazar (Optional)'}
+                  Shop Address / Bazar <span className="text-slate-400 font-medium">(Optional)</span>
                 </label>
                 <div className="relative">
                   <MapPin className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
@@ -1129,7 +1253,7 @@ export const LoginView: React.FC = () => {
                     type="text"
                     value={signupAddress}
                     onChange={e => setSignupAddress(e.target.value)}
-                    placeholder={isUrdu ? 'مثلاً: مین بازار، غلہ منڈی' : 'e.g. Main Bazar, Ghalla Mandi'}
+                    placeholder="e.g. Main Bazar, Ghalla Mandi"
                     className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:border-emerald-600 focus:bg-white text-sm"
                   />
                 </div>
@@ -1137,25 +1261,16 @@ export const LoginView: React.FC = () => {
 
               <button
                 type="submit"
-                disabled={
-                  isSignupLoading ||
-                  lockoutStatus.locked ||
-                  !signupShopName.trim() ||
-                  !signupOwnerName.trim() ||
-                  !signupEmail.trim() ||
-                  !signupPassword.trim() ||
-                  !signupProvince.trim() ||
-                  !signupDistrict.trim()
-                }
+                disabled={isSignupLoading || lockoutStatus.locked}
                 className="w-full mt-2 py-3.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white font-black rounded-xl shadow-lg shadow-emerald-600/30 text-sm flex items-center justify-center gap-2 transition-all active:scale-98 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <Sparkles className="w-4 h-4 text-yellow-300" />
                 <span>
                   {lockoutStatus.locked
-                    ? (isUrdu ? `⏳ انتظار کریں (${lockoutStatus.formattedCountdown})` : `⏳ Wait ${lockoutStatus.formattedCountdown}`)
+                    ? `Wait ${lockoutStatus.formattedCountdown}`
                     : isSignupLoading
-                    ? (isUrdu ? 'دکان رجسٹر ہو رہی ہے...' : 'Registering shop...')
-                    : (isUrdu ? '🚀 دکان رجسٹر کریں اور داخل ہوں' : '🚀 Register & Launch Shop')}
+                    ? 'Registering Shop...'
+                    : 'Register & Launch Shop'}
                 </span>
               </button>
             </form>
@@ -1166,16 +1281,13 @@ export const LoginView: React.FC = () => {
                 type="button"
                 onClick={() => {
                   setActiveTab('login');
+                  setSignupFieldErrors({});
                   setError('');
                 }}
                 className="w-full py-3 px-4 bg-blue-50 hover:bg-blue-100 text-blue-700 border-2 border-blue-200 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all shadow-xs active:scale-98 cursor-pointer"
               >
                 <LogIn className="w-4 h-4 text-blue-600" />
-                <span>
-                  {isUrdu
-                    ? '← پہلے سے اکاؤنٹ موجود ہے؟ لاگ ان کریں (Already have an account? Sign In)'
-                    : '← Already have an account? Sign In'}
-                </span>
+                <span>← Already have an account? Sign In</span>
               </button>
             </div>
           </div>

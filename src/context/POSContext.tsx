@@ -40,7 +40,10 @@ import {
 import {
   mirrorPendingSyncToIdb,
   consumeSwBgSyncResults,
-  registerBackgroundSync
+  registerBackgroundSync,
+  withTimeout,
+  patchFirestoreDocDirect,
+  deleteFirestoreDocDirect
 } from '../utils/bgSyncStore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { handleFirestoreError, OperationType } from '../firestoreErrorHandler';
@@ -765,6 +768,21 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const refreshBypassAndPolicy = () => {
       const nextStatus = superAdminService.getShopDailyBypassStatus(currentShopId || undefined);
       setShopBypassStatus(nextStatus);
+      // If Super Admin or package upgrade shortened the auto-sync interval (e.g. 30m -> 15m),
+      // clamp any longer countdown immediately so the timer matches the active package!
+      const nextIntervalMs = Math.max(1, nextStatus.autoSyncIntervalMinutes || 30) * 60 * 1000;
+      const nowMs = Date.now();
+      if (nextSyncAtRef.current > nowMs + nextIntervalMs) {
+        const clamped = nowMs + nextIntervalMs;
+        nextSyncAtRef.current = clamped;
+        setNextSyncRemainingSec(Math.max(0, Math.ceil((clamped - nowMs) / 1000)));
+        try {
+          if (currentShopId) {
+            localStorage.setItem(`taj_pos_next_sync_${currentShopId}`, String(clamped));
+          }
+          localStorage.setItem('taj_pos_next_sync_global', String(clamped));
+        } catch {}
+      }
     };
     refreshBypassAndPolicy();
     window.addEventListener('taj_module_control_updated', refreshBypassAndPolicy);
@@ -777,6 +795,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const isSyncingRef = useRef<boolean>(false);
+  const syncStartedAtRef = useRef<number>(0);
 
   const nextSyncAtRef = useRef<number>((() => {
     const now = Date.now();
@@ -829,6 +848,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const nextSyncToSave =
         nextSyncOverride !== undefined ? nextSyncOverride : nextSyncAtRef.current;
 
+      const currentPolicy = superAdminService.getShopEffectiveSyncPolicy(currentShopId || undefined);
+      const intervalMins = Math.max(1, currentPolicy.autoSyncIntervalMinutes || 30);
+
       void mirrorPendingSyncToIdb({
         shopId: currentShopId,
         projectId: firebaseConfig.projectId,
@@ -837,6 +859,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         syncBy: currentUser?.name || currentUser?.username || currentUser?.role || 'user',
         queue: queueToSave,
         nextSyncAt: nextSyncToSave,
+        autoSyncIntervalMinutes: intervalMins,
         waitingForOnline: waitingToSave
       });
     },
@@ -915,6 +938,23 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } catch {}
     syncStateToBgIdb(undefined, false, nextTarget);
   }, [currentShopId, syncStateToBgIdb]);
+
+  // If a sync fails or partially fails while online, retry in 30s instead of waiting a full 15m/30m cycle
+  const scheduleShortRetrySync = useCallback(
+    (delayMs: number = 30000) => {
+      const nextTarget = Date.now() + delayMs;
+      nextSyncAtRef.current = nextTarget;
+      setNextSyncRemainingSec(Math.max(1, Math.ceil(delayMs / 1000)));
+      try {
+        if (currentShopId) {
+          localStorage.setItem(`taj_pos_next_sync_${currentShopId}`, String(nextTarget));
+        }
+        localStorage.setItem('taj_pos_next_sync_global', String(nextTarget));
+      } catch {}
+      syncStateToBgIdb(undefined, false, nextTarget);
+    },
+    [currentShopId, syncStateToBgIdb]
+  );
 
   // Global Data Update Delayed Loading Wheel State (Super Admin Controlled, Default 1000ms = 1 sec)
   const [mutationLoader, setMutationLoader] = useState<{
@@ -1185,7 +1225,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       for (const item of storedQueue) {
         if (item && item.id) mergedQueueMap.set(item.id, item);
       }
-      for (const item of pendingSyncQueue) {
+      for (const item of pendingSyncQueueRef.current) {
         if (item && item.id) mergedQueueMap.set(item.id, item);
       }
       const queue = Array.from(mergedQueueMap.values());
@@ -1566,10 +1606,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return () => unsubscribe();
   }, [currentShopId, isDemoMode, pullCollectionsFromCloud]);
 
-  // Smart Request-Saving Sync Now trigger:
-  // - When any user/Admin has pending entries (via 30m timer or Update Now button), flushes them AND broadcasts
-  //   a sync pulse on `shops/{shopId}` so ALL connected devices immediately receive the updated data!
-  // - If NO local pending entries exist AND local data is already at the latest Cloud pulse, sends 0 requests and resets 30m timer.
+  // Smart Request-Saving & Bulletproof Sync Now trigger:
+  // - Never hangs on stalled mobile Firestore WebChannel sockets (strict SDK timeout + automatic direct REST fallback).
+  // - Never resets the 15m/30m timer or deducts a manual bypass count unless sync actually succeeds.
+  // - Never wipes unsynced items if a write fails; schedules a 30s auto-retry instead.
   const syncNow = async (
     manual: boolean = false
   ): Promise<{
@@ -1585,6 +1625,22 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       resetSyncTimer30m();
       return { success: true, count: 0, noPendingData: true, message: 'No Pending Data' };
     }
+
+    // Self-healing guard: if a previous sync somehow exceeded 25s, release the lock so UI never stays stuck on "Syncing..."
+    if (isSyncingRef.current) {
+      const elapsedMs = Date.now() - (syncStartedAtRef.current || 0);
+      if (elapsedMs > 25000) {
+        isSyncingRef.current = false;
+        syncStartedAtRef.current = 0;
+        setIsSyncing(false);
+      } else {
+        return {
+          success: false,
+          error: 'سنک پہلے سے جاری ہے، براہ کرم چند سیکنڈ انتظار کریں...'
+        };
+      }
+    }
+
     if (!navigator.onLine) {
       setFirebaseSyncStatus('offline');
       waitingForOnlineSyncRef.current = true;
@@ -1593,12 +1649,20 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
       } catch {}
       syncStateToBgIdb(undefined, true);
-      void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
+      void registerBackgroundSync({
+        registerOneShot: true,
+        registerPeriodic: true,
+        intervalMinutes: autoSyncIntervalMinutes
+      });
       return { success: false, error: 'انٹرنیٹ کنکشن موجود نہیں ہے — آن لائن ہوتے ہی خودکار اپڈیٹ ہو جائے گا' };
     }
 
-    // First reconcile anything already uploaded by the Service Worker in the background while app was closed/asleep
-    await reconcileSwBackgroundSync();
+    // First reconcile anything already uploaded by the Service Worker in the background (strict 3.5s timeout guard)
+    try {
+      await withTimeout(reconcileSwBackgroundSync(), 3500, 'reconcileSw');
+    } catch {
+      // Never block foreground sync if IDB is slow
+    }
 
     const work = getPendingWorkForShop(currentShopId);
 
@@ -1616,7 +1680,6 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const isTimerExpired = Date.now() >= nextSyncAtRef.current;
 
     // SMART REQUEST SAVER (ZERO WASTED READS/WRITES & ZERO WASTED BYPASS COUNTS):
-    // Check pending work BEFORE touching Firestore or consuming a daily manual bypass count!
     // If there are NO local pending entries AND no unpulled remote updates from other users,
     // send 0 Firestore/network requests, preserve the shop's bypass counter, and reset timer locally.
     if (!work.hasAnyWork && !hasRemoteUpdatesWaiting) {
@@ -1640,70 +1703,151 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       };
     }
 
-    // Shared Shop-Wide Daily Manual Bypass Limit check (only runs when real pending sync work exists!
-    // Skips separate cloud write and piggybacks `daily_bypass_state` onto the single shop sync pulse write below!)
-    let consumedBypassRemaining: number | undefined;
-    let pendingBypassCloudState: any = null;
+    // Pre-check Shared Shop-Wide Daily Manual Bypass Limit BEFORE starting sync.
+    // Note: We do NOT deduct the bypass count until the sync actually succeeds!
     if (manual) {
-      const bypassCheck = await superAdminService.consumeShopManualBypass(
-        currentShopId,
-        currentUser?.name || currentUser?.username || currentUser?.role || 'User',
-        { skipCloudWrite: true }
-      );
-      setShopBypassStatus(superAdminService.getShopDailyBypassStatus(currentShopId));
-      if (!bypassCheck.allowed) {
+      const bypassPreCheck = superAdminService.getShopDailyBypassStatus(currentShopId);
+      setShopBypassStatus(bypassPreCheck);
+      if (bypassPreCheck.remainingCount <= 0) {
         return {
           success: false,
           bypassLimitReached: true,
           remainingBypasses: 0,
-          error: `آج کے مینوئل بائی پاس کاؤنٹس (${bypassCheck.dailyLimit}/${bypassCheck.dailyLimit}) مکمل ہو چکے ہیں! آٹو ٹائمر (${autoSyncIntervalMinutes}m) بغیر کسی لمٹ کے خودکار سنک کرے گا۔`
+          error: `آج کے مینوئل بائی پاس کاؤنٹس (${bypassPreCheck.dailyLimit}/${bypassPreCheck.dailyLimit}) مکمل ہو چکے ہیں! آٹو ٹائمر (${autoSyncIntervalMinutes}m) بغیر کسی لمٹ کے خودکار سنک کرے گا۔`
         };
       }
-      consumedBypassRemaining = bypassCheck.remainingCount;
-      pendingBypassCloudState = bypassCheck.nextState;
-    }
-
-    if (isSyncingRef.current && !manual) {
-      return { success: true, count: 0 };
-    }
-
-    if (manual || isTimerExpired) {
-      resetSyncTimer30m();
     }
 
     isSyncingRef.current = true;
+    syncStartedAtRef.current = Date.now();
     setIsSyncing(true);
     setFirebaseSyncStatus('syncing');
 
     try {
-      // 1. Flush pending queue items
+      // Optional Firebase Auth ID token for direct Firestore REST fallback (non-blocking, 2.5s cap)
+      let authToken: string | null = null;
+      try {
+        if (auth.currentUser) {
+          authToken = await withTimeout(auth.currentUser.getIdToken(), 2500, 'getIdToken');
+        }
+      } catch {
+        authToken = null;
+      }
+
+      const restTarget = {
+        projectId: firebaseConfig.projectId,
+        databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
+        apiKey: firebaseConfig.apiKey,
+        authToken
+      };
+
+      // Helper: Write doc via Firestore SDK (7.5s timeout), automatically falling back to Direct REST API if socket stalls
+      const writeDocResilient = async (
+        collectionName: string,
+        docId: string,
+        cleanData: Record<string, any>
+      ): Promise<boolean> => {
+        try {
+          await withTimeout(
+            setDoc(doc(db, 'shops', currentShopId, collectionName, docId), cleanData, { merge: true }),
+            7500,
+            `setDoc:${collectionName}/${docId}`
+          );
+          return true;
+        } catch (sdkErr) {
+          console.warn(`SDK setDoc timed out/failed (${collectionName}/${docId}), trying direct REST:`, sdkErr);
+          const restPath = `shops/${encodeURIComponent(currentShopId)}/${encodeURIComponent(collectionName)}/${encodeURIComponent(docId)}`;
+          const restRes = await patchFirestoreDocDirect(restTarget, restPath, cleanData, 8500);
+          return restRes.ok;
+        }
+      };
+
+      const deleteDocResilient = async (
+        collectionName: string,
+        docId: string
+      ): Promise<boolean> => {
+        try {
+          await withTimeout(
+            deleteDoc(doc(db, 'shops', currentShopId, collectionName, docId)),
+            7500,
+            `deleteDoc:${collectionName}/${docId}`
+          );
+          return true;
+        } catch (sdkErr) {
+          console.warn(`SDK deleteDoc timed out/failed (${collectionName}/${docId}), trying direct REST:`, sdkErr);
+          const restPath = `shops/${encodeURIComponent(currentShopId)}/${encodeURIComponent(collectionName)}/${encodeURIComponent(docId)}`;
+          const restRes = await deleteFirestoreDocDirect(restTarget, restPath, 8500);
+          return restRes.ok;
+        }
+      };
+
+      const patchRootDocResilient = async (
+        rootCollection: string,
+        docId: string,
+        cleanData: Record<string, any>
+      ): Promise<boolean> => {
+        try {
+          await withTimeout(
+            setDoc(doc(db, rootCollection, docId), cleanData, { merge: true }),
+            7500,
+            `setDoc:${rootCollection}/${docId}`
+          );
+          return true;
+        } catch (sdkErr) {
+          console.warn(`SDK root setDoc timed out/failed (${rootCollection}/${docId}), trying direct REST:`, sdkErr);
+          const restPath = `${encodeURIComponent(rootCollection)}/${encodeURIComponent(docId)}`;
+          const restRes = await patchFirestoreDocDirect(restTarget, restPath, cleanData, 8500);
+          return restRes.ok;
+        }
+      };
+
+      // 1. Flush pending queue items in fast parallel batches (chunks of 5)
       const currentQueue = work.queue;
+      const hadLocalUploadWork = currentQueue.length > 0 || work.hasPendingProfile;
       const flushedIds = new Set<string>();
+      const flushedAtMap: Record<string, number> = {};
       const touchedCollections = new Set<string>();
       let flushedCount = 0;
 
-      for (const item of currentQueue) {
-        try {
-          if (item.type === 'save' && item.data) {
-            const cleanData = sanitizeForFirestore({
-              ...item.data,
-              shop_id: currentShopId
-            });
-            await setDoc(doc(db, 'shops', currentShopId, item.collection, item.docId), cleanData, { merge: true });
-          } else if (item.type === 'delete') {
-            await deleteDoc(doc(db, 'shops', currentShopId, item.collection, item.docId));
-          }
-          flushedIds.add(item.id);
-          touchedCollections.add(item.collection);
-          flushedCount++;
-        } catch (itemErr) {
-          console.warn('Queue item sync error:', itemErr);
-        }
+      const BATCH_SIZE = 5;
+      for (let i = 0; i < currentQueue.length; i += BATCH_SIZE) {
+        const chunk = currentQueue.slice(i, i + BATCH_SIZE);
+        await Promise.all(
+          chunk.map(async (item) => {
+            if (!item || !item.id || !item.collection || !item.docId) return;
+            let ok = false;
+            if (item.type === 'save' && item.data) {
+              const cleanData = sanitizeForFirestore({
+                ...item.data,
+                shop_id: currentShopId
+              });
+              ok = await writeDocResilient(item.collection, item.docId, cleanData);
+            } else if (item.type === 'delete') {
+              ok = await deleteDocResilient(item.collection, item.docId);
+            } else {
+              ok = true;
+            }
+
+            if (ok) {
+              flushedIds.add(item.id);
+              flushedAtMap[item.id] = Number(item.timestamp || Date.now());
+              touchedCollections.add(item.collection);
+              flushedCount++;
+            }
+          })
+        );
       }
 
-      // Cleanly flush queue so pending count resets, red line disappears, and SW IndexedDB stays in sync
+      // Safely remove ONLY items that actually succeeded (preserving failed items & any new edits added mid-sync)
+      let remainingUnsyncedCount = 0;
       setPendingSyncQueue(prev => {
-        const nextQueue = manual ? [] : prev.filter(p => !flushedIds.has(p.id));
+        const nextQueue = prev.filter(p => {
+          if (!p || !p.id) return false;
+          if (!flushedIds.has(p.id)) return true;
+          const flushedTs = flushedAtMap[p.id] || 0;
+          return Number(p.timestamp || 0) > flushedTs;
+        });
+        remainingUnsyncedCount = nextQueue.length;
         pendingSyncQueueRef.current = nextQueue;
         try {
           localStorage.setItem(`taj_pos_pending_queue_${currentShopId}`, JSON.stringify(nextQueue));
@@ -1711,62 +1855,126 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         syncStateToBgIdb(nextQueue, false);
         return nextQueue;
       });
+      // Also compute remainingUnsyncedCount synchronously from currentQueue in case React batches the state updater
+      remainingUnsyncedCount = pendingSyncQueueRef.current.filter(p => {
+        if (!p || !p.id) return false;
+        if (!flushedIds.has(p.id)) return true;
+        return Number(p.timestamp || 0) > (flushedAtMap[p.id] || 0);
+      }).length;
 
       // 1b. Flush any pending offline Admin Profile changes (Shop Name, Owner Name, Phone, Address)
+      let profileStillPending = false;
       try {
         const rawPendingProfile = localStorage.getItem(`taj_pos_pending_profile_${currentShopId}`);
         if (rawPendingProfile) {
           const pendingProfile = JSON.parse(rawPendingProfile);
           if (pendingProfile && typeof pendingProfile === 'object') {
-            await setDoc(doc(db, 'shops', currentShopId), sanitizeForFirestore({
-              shop_name: pendingProfile.shop_name,
-              owner_name: pendingProfile.owner_name,
-              owner_name_updated_date: pendingProfile.owner_name_updated_date,
-              phone: pendingProfile.phone,
-              address: pendingProfile.address,
-              last_login: new Date().toISOString()
-            }), { merge: true });
-
-            const cleanEmail = (pendingProfile.owner_email || currentShop?.owner_email || currentUser?.email || '').toLowerCase().trim();
-            const cleanEmailKey = cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
-            if (cleanEmailKey) {
-              await setDoc(doc(db, 'account_registry', cleanEmailKey), sanitizeForFirestore({
+            const shopOk = await patchRootDocResilient(
+              'shops',
+              currentShopId,
+              sanitizeForFirestore({
                 shop_name: pendingProfile.shop_name,
-                owner_name: pendingProfile.owner_name
-              }), { merge: true });
+                owner_name: pendingProfile.owner_name,
+                owner_name_updated_date: pendingProfile.owner_name_updated_date,
+                phone: pendingProfile.phone,
+                address: pendingProfile.address,
+                last_login: new Date().toISOString()
+              })
+            );
+
+            if (shopOk) {
+              const cleanEmail = (pendingProfile.owner_email || currentShop?.owner_email || currentUser?.email || '').toLowerCase().trim();
+              const cleanEmailKey = cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
+              if (cleanEmailKey) {
+                await patchRootDocResilient(
+                  'account_registry',
+                  cleanEmailKey,
+                  sanitizeForFirestore({
+                    shop_name: pendingProfile.shop_name,
+                    owner_name: pendingProfile.owner_name
+                  })
+                );
+              }
+
+              await patchRootDocResilient(
+                'users',
+                currentShopId,
+                sanitizeForFirestore({
+                  displayName: pendingProfile.owner_name,
+                  shopName: pendingProfile.shop_name,
+                  updatedAt: new Date().toISOString()
+                })
+              );
+
+              localStorage.removeItem(`taj_pos_pending_profile_${currentShopId}`);
+              touchedCollections.add('shop_profile');
+              flushedCount++;
+            } else {
+              profileStillPending = true;
             }
-
-            await setDoc(doc(db, 'users', currentShopId), sanitizeForFirestore({
-              displayName: pendingProfile.owner_name,
-              shopName: pendingProfile.shop_name,
-              updatedAt: new Date().toISOString()
-            }), { merge: true });
-
-            localStorage.removeItem(`taj_pos_pending_profile_${currentShopId}`);
-            touchedCollections.add('shop_profile');
-            flushedCount++;
           }
         }
       } catch (profErr) {
         console.warn('Pending profile sync error:', profErr);
+        profileStillPending = true;
       }
 
-      // 2. If another user uploaded newer data to Cloud (or initial hydration is needed), pull those updates first
+      // 2. If another user uploaded newer data to Cloud (or initial hydration is needed), pull those updates (10s guard)
+      let pulledRemoteCols = 0;
       if (work.needsInitialHydration || hasRemoteUpdatesWaiting) {
         const remoteColMap = remoteColSyncMapRef.current;
         const changedCols = Object.keys(remoteColMap).filter(
           col => (Number(remoteColMap[col]) || 0) > (Number(localColMap[col]) || 0)
         );
-        await pullCollectionsFromCloud(
-          currentShopId,
-          work.needsInitialHydration || !pulseV2Initialized || changedCols.length === 0
-            ? undefined
-            : changedCols
-        );
+        try {
+          pulledRemoteCols = await withTimeout(
+            pullCollectionsFromCloud(
+              currentShopId,
+              work.needsInitialHydration || !pulseV2Initialized || changedCols.length === 0
+                ? undefined
+                : changedCols
+            ),
+            10000,
+            'pullCollectionsFromCloud'
+          );
+        } catch (pullErr) {
+          console.warn('Remote pull timed out/skipped:', pullErr);
+        }
       }
 
-      // 3. If this device flushed any pending items, broadcast the Cross-Device Sync Pulse on `shops/{currentShopId}`
-      //    so Admin and all other users immediately receive the new data on their screens!
+      // 2b. Check if ALL local uploads failed (network unreachable/stalled):
+      // Do NOT deduct bypass count, do NOT update lastSyncTime, and schedule a 30s retry instead of 15m/30m!
+      if (hadLocalUploadWork && flushedCount === 0 && (remainingUnsyncedCount > 0 || profileStillPending)) {
+        setFirebaseSyncStatus('offline');
+        scheduleShortRetrySync(30000);
+        void registerBackgroundSync({
+          registerOneShot: true,
+          registerPeriodic: true,
+          intervalMinutes: autoSyncIntervalMinutes
+        });
+        return {
+          success: false,
+          count: 0,
+          error:
+            'نیٹ ورک سست ہونے کی وجہ سے سنک مکمل نہ ہو سکا — 30 سیکنڈ بعد خودکار دوبارہ کوشش ہوگی (بائی پاس کاؤنٹ محفوظ رہا)'
+        };
+      }
+
+      // 3. Deduct 1 manual bypass count ONLY NOW that real data actually synced!
+      let consumedBypassRemaining: number | undefined;
+      let pendingBypassCloudState: any = null;
+      if (manual && (flushedCount > 0 || pulledRemoteCols > 0 || hasRemoteUpdatesWaiting)) {
+        const bypassCheck = await superAdminService.consumeShopManualBypass(
+          currentShopId,
+          currentUser?.name || currentUser?.username || currentUser?.role || 'User',
+          { skipCloudWrite: true }
+        );
+        setShopBypassStatus(superAdminService.getShopDailyBypassStatus(currentShopId));
+        consumedBypassRemaining = bypassCheck.remainingCount;
+        pendingBypassCloudState = bypassCheck.nextState;
+      }
+
+      // 4. Broadcast Cross-Device Sync Pulse on `shops/{currentShopId}` (with SDK timeout + REST fallback)
       if (flushedCount > 0 || touchedCollections.size > 0) {
         const pulseTs = Date.now();
         const nextColMap: Record<string, number> = {
@@ -1785,16 +1993,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           localStorage.setItem(`taj_pos_pulse_v2_${currentShopId}`, 'true');
         } catch {}
 
-        await setDoc(
-          doc(db, 'shops', currentShopId),
+        await patchRootDocResilient(
+          'shops',
+          currentShopId,
           sanitizeForFirestore({
             last_data_sync_at: pulseTs,
             last_data_sync_by: currentUser?.name || currentUser?.username || currentUser?.role || 'user',
             collection_sync_at: nextColMap,
             usage_telemetry: loadShopTelemetry(currentShopId),
             ...(pendingBypassCloudState ? { daily_bypass_state: pendingBypassCloudState } : {})
-          }),
-          { merge: true }
+          })
         );
       } else if (hasRemoteUpdatesWaiting) {
         const latestPulse = remoteCloudPulseRef.current || Date.now();
@@ -1805,11 +2013,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           localStorage.setItem(`taj_pos_pulse_v2_${currentShopId}`, 'true');
         } catch {}
         if (pendingBypassCloudState) {
-          await setDoc(
-            doc(db, 'shops', currentShopId),
-            sanitizeForFirestore({ daily_bypass_state: pendingBypassCloudState }),
-            { merge: true }
-          ).catch(() => {});
+          await patchRootDocResilient(
+            'shops',
+            currentShopId,
+            sanitizeForFirestore({ daily_bypass_state: pendingBypassCloudState })
+          );
         }
       }
 
@@ -1822,51 +2030,70 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         localStorage.setItem(`taj_pos_initial_hydrated_${currentShopId}`, 'true');
       } catch {}
 
-      // Reset 30-minute countdown duration if triggered manually or when 30m cycle completed
-      if (manual || isTimerExpired) {
+      // Reset full package timer ONLY when all pending items are cleared; otherwise retry remaining items in 30s!
+      if (remainingUnsyncedCount > 0 || profileStillPending) {
+        scheduleShortRetrySync(30000);
+      } else if (manual || isTimerExpired || flushedCount > 0) {
         resetSyncTimer30m();
       }
 
-      isSyncingRef.current = false;
-      setIsSyncing(false);
       return {
         success: true,
         count: flushedCount,
         noPendingData: false,
         remainingBypasses: consumedBypassRemaining,
         message:
-          flushedCount > 0
+          remainingUnsyncedCount > 0
+            ? `✓ ${flushedCount} انٹریز سنک ہو گئیں — باقی ${remainingUnsyncedCount} انٹریز 30 سیکنڈ میں خودکار اپڈیٹ ہوں گی`
+            : flushedCount > 0
             ? `✓ ${flushedCount} پینڈنگ انٹریز کلاؤڈ اور تمام صارفین کے پاس اپڈیٹ ہو گئیں!${typeof consumedBypassRemaining === 'number' ? ` (باقی بائی پاس: ${consumedBypassRemaining})` : ''}`
             : `✓ تمام ریکارڈز کلاؤڈ سے اپڈیٹ ہو گئے!${typeof consumedBypassRemaining === 'number' ? ` (باقی بائی پاس: ${consumedBypassRemaining})` : ''}`
       };
     } catch (err: any) {
       console.error('syncNow error:', err);
-      isSyncingRef.current = false;
-      setIsSyncing(false);
       setFirebaseSyncStatus('offline');
-      waitingForOnlineSyncRef.current = true;
-      setIsWaitingForOnlineSync(true);
-      try {
-        localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
-      } catch {}
-      syncStateToBgIdb(undefined, true);
-      void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        scheduleShortRetrySync(30000);
+      } else {
+        waitingForOnlineSyncRef.current = true;
+        setIsWaitingForOnlineSync(true);
+        try {
+          localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
+        } catch {}
+        syncStateToBgIdb(undefined, true);
+      }
+      void registerBackgroundSync({
+        registerOneShot: true,
+        registerPeriodic: true,
+        intervalMinutes: autoSyncIntervalMinutes
+      });
       return { success: false, error: err?.message || 'Sync failed' };
+    } finally {
+      // Guaranteed release so the Sync Now button can NEVER remain stuck on "Syncing..."
+      isSyncingRef.current = false;
+      syncStartedAtRef.current = 0;
+      setIsSyncing(false);
     }
   };
 
-  // Smart 30-Minute Online Auto-Sync, Offline-Wait-for-Online Instant Sync & True SW Background Sync Watcher
+  // Always-fresh ref to syncNow so timers & event listeners NEVER invoke a stale closure!
+  const syncNowRef = useRef(syncNow);
+  syncNowRef.current = syncNow;
+
+  // Smart Package-Timer Online Auto-Sync, Offline-Wait-for-Online Instant Sync & True SW Background Sync Watcher
   useEffect(() => {
     if (!currentShopId || isDemoMode) return;
 
-    // 0. Restore persistent 30-minute timer target for this shop without resetting an active countdown
+    // 0. Restore persistent timer target for this shop without resetting an active countdown
     try {
+      const currentPolicy = superAdminService.getShopEffectiveSyncPolicy(currentShopId);
+      const currentDurationMs = Math.max(1, currentPolicy.autoSyncIntervalMinutes || 30) * 60 * 1000;
       const savedNext =
         localStorage.getItem(`taj_pos_next_sync_${currentShopId}`) ||
         localStorage.getItem('taj_pos_next_sync_global');
       const parsed = savedNext ? Number(savedNext) : 0;
       const nowMs = Date.now();
-      if (parsed > 0 && parsed <= nowMs + AUTO_SYNC_DURATION_MS) {
+      if (parsed > 0 && parsed <= nowMs + currentDurationMs) {
         nextSyncAtRef.current = parsed;
         try {
           localStorage.setItem(`taj_pos_next_sync_${currentShopId}`, String(parsed));
@@ -1882,14 +2109,17 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     syncStateToBgIdb();
     void registerBackgroundSync({
       registerPeriodic: true,
-      registerOneShot: pendingSyncQueueRef.current.length > 0 && (!navigator.onLine || Date.now() >= nextSyncAtRef.current)
+      registerOneShot: pendingSyncQueueRef.current.length > 0 && (!navigator.onLine || Date.now() >= nextSyncAtRef.current),
+      intervalMinutes: superAdminService.getShopEffectiveSyncPolicy(currentShopId).autoSyncIntervalMinutes
     });
 
     // 1. On initial app open / mount:
     //    First reconcile any entries already uploaded by Service Worker in the background while app was closed.
-    //    Then trigger sync if 30m timer expired or recovering from offline with pending work.
+    //    Then trigger sync if timer expired or recovering from offline with pending work.
     void (async () => {
-      await reconcileSwBackgroundSync();
+      try {
+        await withTimeout(reconcileSwBackgroundSync(), 3500, 'initReconcileSw');
+      } catch {}
       if (navigator.onLine) {
         setIsFirebaseConnected(true);
         setFirebaseSyncStatus('connected');
@@ -1898,14 +2128,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
         if (timerExpiredOnOpen) {
           if (initialWork.hasAnyWork) {
-            syncNow(false);
+            void syncNowRef.current(false);
           } else {
             waitingForOnlineSyncRef.current = false;
             setIsWaitingForOnlineSync(false);
             resetSyncTimer30m();
           }
         } else if ((waitingForOnlineSyncRef.current && initialWork.hasAnyWork) || initialWork.needsInitialHydration) {
-          syncNow(false);
+          void syncNowRef.current(false);
         } else {
           waitingForOnlineSyncRef.current = false;
           setIsWaitingForOnlineSync(false);
@@ -1943,7 +2173,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const handleOnlineEvent = () => {
       waitingForOnlineSyncRef.current = false;
       setIsWaitingForOnlineSync(false);
-      syncNow(false);
+      void syncNowRef.current(false);
     };
 
     // 3b. Detect WiFi <-> SIM mobile data switches (navigator.connection change)
@@ -1955,7 +2185,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (shouldFlush && !isSyncingRef.current) {
           waitingForOnlineSyncRef.current = false;
           setIsWaitingForOnlineSync(false);
-          syncNow(false);
+          void syncNowRef.current(false);
         }
       }
     };
@@ -1970,7 +2200,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       } else if (document.visibilityState === 'visible') {
         void (async () => {
-          await reconcileSwBackgroundSync();
+          try {
+            await withTimeout(reconcileSwBackgroundSync(), 3500, 'visReconcileSw');
+          } catch {}
           if (
             navigator.onLine &&
             !isSyncingRef.current &&
@@ -1978,7 +2210,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           ) {
             waitingForOnlineSyncRef.current = false;
             setIsWaitingForOnlineSync(false);
-            syncNow(false);
+            void syncNowRef.current(false);
           }
         })();
       }
@@ -1993,7 +2225,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const handleWakeCheck = () => {
       void (async () => {
-        await reconcileSwBackgroundSync();
+        try {
+          await withTimeout(reconcileSwBackgroundSync(), 3500, 'wakeReconcileSw');
+        } catch {}
         if (
           navigator.onLine &&
           !isSyncingRef.current &&
@@ -2001,7 +2235,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ) {
           waitingForOnlineSyncRef.current = false;
           setIsWaitingForOnlineSync(false);
-          syncNow(false);
+          void syncNowRef.current(false);
         }
       })();
     };
@@ -2016,7 +2250,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         void reconcileSwBackgroundSync();
       } else if (msg.type === 'SW_TRIGGER_FOREGROUND_SYNC') {
         if (navigator.onLine && !isSyncingRef.current) {
-          syncNow(false);
+          void syncNowRef.current(false);
         }
       }
     };
@@ -2041,11 +2275,21 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       navigator.serviceWorker.addEventListener('message', handleSwMessage);
     }
 
-    // 4. 1-Second Heartbeat Watcher:
+    // 4. 1-Second Heartbeat Watcher + Stuck-Sync Watchdog:
+    //    - Auto-recovers if any sync lock exceeds 25s
     //    - If offline: keeps checking when device comes online
     //    - If online & was waiting for online: triggers smart check (0 requests if no pending data)
-    //    - If online & 30m duration completed: triggers smart check (if pending -> updates cloud; if not -> starts new 30m cycle)
+    //    - If online & timer completed: triggers fresh syncNowRef.current(false)
     const watcherInterval = setInterval(() => {
+      const nowMs = Date.now();
+
+      // Stuck-Sync Watchdog: guarantee button never stays frozen on "Syncing..."
+      if (isSyncingRef.current && syncStartedAtRef.current > 0 && nowMs - syncStartedAtRef.current > 25000) {
+        isSyncingRef.current = false;
+        syncStartedAtRef.current = 0;
+        setIsSyncing(false);
+      }
+
       const online = typeof navigator !== 'undefined' ? navigator.onLine : true;
 
       if (!online) {
@@ -2061,7 +2305,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
           }
         }
-        const rem = Math.max(0, Math.ceil((nextSyncAtRef.current - Date.now()) / 1000));
+        const rem = Math.max(0, Math.ceil((nextSyncAtRef.current - nowMs) / 1000));
         setNextSyncRemainingSec(rem);
         return;
       }
@@ -2072,16 +2316,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (!isSyncingRef.current) {
           waitingForOnlineSyncRef.current = false;
           setIsWaitingForOnlineSync(false);
-          syncNow(false);
+          void syncNowRef.current(false);
         }
         return;
       }
 
-      // Case B: Online and 30 minutes duration has completed -> run 30m smart check & start next 30m cycle
-      const nowMs = Date.now();
+      // Case B: Online and timer duration has completed -> run auto-sync via fresh syncNowRef!
       if (nowMs >= nextSyncAtRef.current) {
+        setNextSyncRemainingSec(0);
         if (!isSyncingRef.current) {
-          syncNow(false);
+          void syncNowRef.current(false);
         }
         return;
       }
@@ -3378,27 +3622,27 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       const emailCheck = validateAuthenticEmail(cleanEmail);
       if (!emailCheck.valid) {
-        return { success: false, error: emailCheck.errorUr || emailCheck.errorEn };
+        return { success: false, error: emailCheck.errorEn || emailCheck.errorUr };
       }
       const shopCheck = validateAuthenticName(cleanShopName, 'Shop Name', 'دکان کا نام');
       if (!shopCheck.valid) {
-        return { success: false, error: shopCheck.errorUr || shopCheck.errorEn };
+        return { success: false, error: shopCheck.errorEn || shopCheck.errorUr };
       }
       const ownerCheck = validateAuthenticName(cleanOwnerName, 'Owner Name', 'دکاندار کا نام');
       if (!ownerCheck.valid) {
-        return { success: false, error: ownerCheck.errorUr || ownerCheck.errorEn };
+        return { success: false, error: ownerCheck.errorEn || ownerCheck.errorUr };
       }
-      const phoneCheck = validateAuthenticPhone(cleanPhone);
+      const phoneCheck = validateAuthenticPhone(cleanPhone, { required: true });
       if (!phoneCheck.valid) {
-        return { success: false, error: phoneCheck.errorUr || phoneCheck.errorEn };
+        return { success: false, error: phoneCheck.errorEn || phoneCheck.errorUr };
       }
       if (platformPerms.requireStrongPasswords !== false) {
         const passCheck = validateStrongPassword(cleanPassword, cleanEmail, cleanOwnerName);
         if (!passCheck.valid) {
-          return { success: false, error: passCheck.errorUr || passCheck.errorEn };
+          return { success: false, error: passCheck.errorEn || passCheck.errorUr };
         }
       } else if (!cleanPassword || cleanPassword.length < 4) {
-        return { success: false, error: 'پاس ورڈ کم از کم 4 ہندسوں کا ہونا ضروری ہے۔' };
+        return { success: false, error: 'Password must be at least 4 characters.' };
       }
 
       const cleanEmailKey = cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');

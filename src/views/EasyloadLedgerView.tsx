@@ -27,7 +27,9 @@ export const EasyloadLedgerView: React.FC = () => {
   const [activeState, setActiveState] = useState<'closing' | 'opening'>('closing');
   const [successMsg, setSuccessMsg] = useState(false);
 
-  const currentData = easyloadRecords[filterDate] || {
+  const savedRecordForDate = easyloadRecords[filterDate];
+
+  const currentData = savedRecordForDate || {
     date_recorded: filterDate,
     jazz_opening: 0,
     jazz_purchase: 0,
@@ -61,6 +63,31 @@ export const EasyloadLedgerView: React.FC = () => {
     total_commission_earned: 0
   };
 
+  type BalanceSnapshot = {
+    jazz_closing: number;
+    telenor_closing: number;
+    zong_closing: number;
+    ufone_closing: number;
+    jazz_opening: number;
+    telenor_opening: number;
+    zong_opening: number;
+    ufone_opening: number;
+  };
+
+  const buildSnapshotFromForm = (data: Partial<EasyloadRecord>): BalanceSnapshot => ({
+    jazz_closing: Number(data.jazz_closing || 0),
+    telenor_closing: Number(data.telenor_closing || 0),
+    zong_closing: Number(data.zong_closing || 0),
+    ufone_closing: Number(data.ufone_closing || 0),
+    jazz_opening: Number(data.jazz_opening || 0),
+    telenor_opening: Number(data.telenor_opening || 0),
+    zong_opening: Number(data.zong_opening || 0),
+    ufone_opening: Number(data.ufone_opening || 0)
+  });
+
+  // Immediate optimistic saved snapshot per date (avoids any 1s delay flicker while scheduleDataMutation commits)
+  const [optimisticSavedByDate, setOptimisticSavedByDate] = useState<Record<string, BalanceSnapshot>>({});
+
   // State values for form inputs
   const [formData, setFormData] = useState<Partial<EasyloadRecord>>({
     jazz_closing: currentData.jazz_closing,
@@ -74,17 +101,57 @@ export const EasyloadLedgerView: React.FC = () => {
   });
 
   useEffect(() => {
+    const rec = easyloadRecords[filterDate];
+    const yRec = easyloadRecords[yesterdayDate];
     setFormData({
-      jazz_closing: currentData.jazz_closing,
-      telenor_closing: currentData.telenor_closing,
-      zong_closing: currentData.zong_closing,
-      ufone_closing: currentData.ufone_closing,
-      jazz_opening: currentData.jazz_opening || yesterdayData.jazz_closing,
-      telenor_opening: currentData.telenor_opening || yesterdayData.telenor_closing,
-      zong_opening: currentData.zong_opening || yesterdayData.zong_closing,
-      ufone_opening: currentData.ufone_opening || yesterdayData.ufone_closing
+      jazz_closing: rec ? Number(rec.jazz_closing || 0) : 0,
+      telenor_closing: rec ? Number(rec.telenor_closing || 0) : 0,
+      zong_closing: rec ? Number(rec.zong_closing || 0) : 0,
+      ufone_closing: rec ? Number(rec.ufone_closing || 0) : 0,
+      jazz_opening: rec
+        ? Number(rec.jazz_opening || 0)
+        : Number(yRec?.jazz_closing || 0),
+      telenor_opening: rec
+        ? Number(rec.telenor_opening || 0)
+        : Number(yRec?.telenor_closing || 0),
+      zong_opening: rec
+        ? Number(rec.zong_opening || 0)
+        : Number(yRec?.zong_closing || 0),
+      ufone_opening: rec
+        ? Number(rec.ufone_opening || 0)
+        : Number(yRec?.ufone_closing || 0)
     });
-  }, [filterDate, easyloadRecords]);
+    if (rec) {
+      setOptimisticSavedByDate(prev => {
+        if (!prev[filterDate]) return prev;
+        const next = { ...prev };
+        delete next[filterDate];
+        return next;
+      });
+    }
+  }, [filterDate, yesterdayDate, easyloadRecords]);
+
+  // Baseline saved snapshot for the selected date (optimistic snapshot takes precedence during 1s save commit)
+  const savedBaseline: BalanceSnapshot | null = optimisticSavedByDate[filterDate]
+    ? optimisticSavedByDate[filterDate]
+    : savedRecordForDate
+    ? buildSnapshotFromForm(savedRecordForDate)
+    : null;
+
+  const currentSnapshot = buildSnapshotFromForm(formData);
+
+  // True when date has never been saved OR any field differs from the saved snapshot.
+  // Automatically returns to false (Gray / "Saved Successful") if user reverts inputs back to the exact saved values.
+  const isUnsaved =
+    !savedBaseline ||
+    currentSnapshot.jazz_closing !== savedBaseline.jazz_closing ||
+    currentSnapshot.telenor_closing !== savedBaseline.telenor_closing ||
+    currentSnapshot.zong_closing !== savedBaseline.zong_closing ||
+    currentSnapshot.ufone_closing !== savedBaseline.ufone_closing ||
+    currentSnapshot.jazz_opening !== savedBaseline.jazz_opening ||
+    currentSnapshot.telenor_opening !== savedBaseline.telenor_opening ||
+    currentSnapshot.zong_opening !== savedBaseline.zong_opening ||
+    currentSnapshot.ufone_opening !== savedBaseline.ufone_opening;
 
   const totalOpening =
     (formData.jazz_opening || 0) +
@@ -107,6 +174,7 @@ export const EasyloadLedgerView: React.FC = () => {
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isUnsaved) return;
     if (
       !superAdminService.isActionUnlockedForUser('allowEditEntry', {
         ...currentUser,
@@ -116,7 +184,12 @@ export const EasyloadLedgerView: React.FC = () => {
       showAppAlert('🔒 ایزی لوڈ ریکارڈ محفوظ / تبدیل کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
       return;
     }
-    saveEasyloadRecord(filterDate, formData);
+    const snapshotToSave = buildSnapshotFromForm(formData);
+    setOptimisticSavedByDate(prev => ({
+      ...prev,
+      [filterDate]: snapshotToSave
+    }));
+    saveEasyloadRecord(filterDate, snapshotToSave);
     setSuccessMsg(true);
     setTimeout(() => setSuccessMsg(false), 2500);
   };
@@ -293,10 +366,24 @@ export const EasyloadLedgerView: React.FC = () => {
 
           <button
             type="submit"
-            className="w-full py-3 bg-[#27ae60] hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md flex items-center justify-center gap-2 transition-all active:scale-98"
+            disabled={!isUnsaved}
+            className={`w-full py-3 font-bold rounded-xl flex items-center justify-center gap-2 transition-all ${
+              isUnsaved
+                ? 'bg-[#27ae60] hover:bg-emerald-700 text-white shadow-md cursor-pointer active:scale-98'
+                : 'bg-slate-400 text-white shadow-none border border-slate-400/80 cursor-default'
+            }`}
           >
-            <Save className="w-4 h-4" />
-            <span>Save Balance Records</span>
+            {isUnsaved ? (
+              <>
+                <Save className="w-4 h-4" />
+                <span>Unsaved Value</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Saved Successful</span>
+              </>
+            )}
           </button>
         </form>
       </div>

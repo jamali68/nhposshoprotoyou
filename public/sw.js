@@ -581,18 +581,23 @@ async function patchFirestoreDocSw(record, collectionName, docId, rawData) {
     '&key=' +
     encodeURIComponent(record.apiKey);
 
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), 10000) : null;
   try {
     const resp = await fetch(url, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields: toFirestoreRestFields(cleanData) })
+      body: JSON.stringify({ fields: toFirestoreRestFields(cleanData) }),
+      ...(controller ? { signal: controller.signal } : {})
     });
+    if (timer) clearTimeout(timer);
     if (resp.ok) {
       return { ok: true, transient: false };
     }
     const isTransient = resp.status >= 500 || resp.status === 429 || resp.status === 408;
     return { ok: false, transient: isTransient, status: resp.status };
   } catch {
+    if (timer) clearTimeout(timer);
     return { ok: false, transient: true };
   }
 }
@@ -611,14 +616,21 @@ async function deleteFirestoreDocSw(record, collectionName, docId) {
     '?key=' +
     encodeURIComponent(record.apiKey);
 
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), 10000) : null;
   try {
-    const resp = await fetch(url, { method: 'DELETE' });
+    const resp = await fetch(url, {
+      method: 'DELETE',
+      ...(controller ? { signal: controller.signal } : {})
+    });
+    if (timer) clearTimeout(timer);
     if (resp.ok || resp.status === 404) {
       return { ok: true, transient: false };
     }
     const isTransient = resp.status >= 500 || resp.status === 429 || resp.status === 408;
     return { ok: false, transient: isTransient, status: resp.status };
   } catch {
+    if (timer) clearTimeout(timer);
     return { ok: false, transient: true };
   }
 }
@@ -776,7 +788,14 @@ async function flushShopRecordInBackground(db, record, reason) {
       }
     );
 
-    const nextSyncAt = pulseTs + BG_AUTO_SYNC_DURATION_MS;
+    const intervalMins = Math.max(
+      1,
+      Math.min(360, Math.round(Number(latestRecord.autoSyncIntervalMinutes || record.autoSyncIntervalMinutes || 30)))
+    );
+    const nextSyncAt =
+      remainingQueue.length > 0 && transientFailure
+        ? pulseTs + 30 * 1000
+        : pulseTs + intervalMins * 60 * 1000;
     const updatedRecord = Object.assign({}, latestRecord, {
       queue: remainingQueue,
       flushedIds: Array.from(mergedFlushedIdsSet),
