@@ -35,6 +35,11 @@ export interface ShopPackagePolicy {
   autoSyncIntervalMinutes: number; // Default 30m (Super Admin can set lower or higher, e.g. 5m, 10m, 15m, 30m, 60m)
   dailyManualBypassLimit: number; // Daily shared shop-wide manual "Update Now" bypass button clicks across all users of a shop
   allowGoogleDriveVault: boolean; // 15GB Free Google Drive Receipt & Bill Screenshot Vault permission
+  packageModules?: Record<string, boolean>; // Per-package tier default module & feature lock/unlock map (e.g. pos, monthly_summary, staff_management, sql_import, data_export, google_drive_vault)
+  originalPricePkr: number; // Default: Free = 0, Basic = 500, Pro = 1000
+  isSpecialOfferActive?: boolean; // When true, originalPricePkr is shown crossed-out (line-through) and specialOfferPricePkr is highlighted
+  specialOfferPricePkr?: number; // Discounted sale price in PKR
+  specialOfferLabel?: string; // e.g. "Special Offer", "Limited Time Sale"
 }
 
 export interface ShopCustomSyncOverrides {
@@ -42,6 +47,10 @@ export interface ShopCustomSyncOverrides {
   autoSyncIntervalMinutes?: number;
   dailyManualBypassLimit?: number;
   allowGoogleDriveVault?: boolean;
+  originalPricePkr?: number;
+  isSpecialOfferActive?: boolean;
+  specialOfferPricePkr?: number;
+  specialOfferLabel?: string;
 }
 
 export interface ShopDailyBypassState {

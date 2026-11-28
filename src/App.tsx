@@ -85,6 +85,7 @@ const MainAppContent: React.FC = () => {
   const [, setModuleControlTick] = useState<number>(0);
   const lastBackPressTimeRef = useRef<number>(0);
   const exitToastTimerRef = useRef<any>(null);
+  const statusPopupRef = useRef<HTMLDivElement | null>(null);
   const [, setTick] = useState<number>(0);
 
   // Module Control & Shop Status Listener (Super Admin entry is strictly restricted to the Sidebar when logged in as one of the 2 Master emails)
@@ -140,13 +141,32 @@ const MainAppContent: React.FC = () => {
     });
   }, [showInstallGuide, registerBackHandler]);
 
-  // Register Back Handler for Status Toast Card
+  // Register Back Handler & Click-Outside Handler for Status Toast Card
   useEffect(() => {
     if (!showStatusToast) return;
-    return registerBackHandler(() => {
+
+    const handleOutsidePointer = (event: MouseEvent | TouchEvent) => {
+      if (
+        statusPopupRef.current &&
+        event.target instanceof Node &&
+        !statusPopupRef.current.contains(event.target)
+      ) {
+        setShowStatusToast(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsidePointer);
+    document.addEventListener('touchstart', handleOutsidePointer, { passive: true });
+    const unregisterBack = registerBackHandler(() => {
       setShowStatusToast(false);
       return true;
     });
+
+    return () => {
+      document.removeEventListener('mousedown', handleOutsidePointer);
+      document.removeEventListener('touchstart', handleOutsidePointer);
+      unregisterBack();
+    };
   }, [showStatusToast, registerBackHandler]);
 
   // Initial history state anchor on mount
@@ -432,7 +452,7 @@ const MainAppContent: React.FC = () => {
           </div>
 
           <div className="flex items-center shrink-0">
-            <div className="relative flex flex-col items-center">
+            <div ref={statusPopupRef} className="relative flex flex-col items-center">
             {/* Online / Offline Status Dot with Outer Ring & Red Line Below ONLY if Unsynced Pending Entries */}
             <button
               type="button"
@@ -598,31 +618,36 @@ const MainAppContent: React.FC = () => {
                       }
                       setTimeout(() => setTopSyncFeedback(null), 4500);
                     }}
-                    className={`w-full mt-1 py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-between gap-2 transition-all ${
+                    className={`w-full mt-1 py-2 px-3.5 rounded-xl text-xs font-bold flex items-center justify-between gap-2 transition-all ${
                       isOnline && dailyBypassRemaining > 0
                         ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-md shadow-emerald-600/25 cursor-pointer active:scale-95 disabled:opacity-60'
                         : 'bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed shadow-none'
                     }`}
                   >
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isOnline && isSyncing ? 'animate-spin' : ''}`} />
-                      <span className="truncate">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <RefreshCw className={`w-4 h-4 shrink-0 ${isOnline && isSyncing ? 'animate-spin' : ''}`} />
+                      <span className="text-sm font-black tracking-wide whitespace-nowrap">
                         {isSyncing
-                          ? 'کلاؤڈ اپڈیٹ ہو رہا ہے...'
+                          ? 'Syncing...'
                           : dailyBypassRemaining <= 0
-                          ? 'بائی پاس لمٹ مکمل (Auto Active)'
-                          : '🔄 ابھی اپڈیٹ کریں (Sync Now)'}
+                          ? 'Limit Reached'
+                          : 'Sync Now'}
                       </span>
                     </div>
-                    <span
-                      className={`px-1.5 py-0.5 rounded-md font-mono text-[10px] font-black shrink-0 border ${
+                    <div
+                      className={`flex flex-col items-center justify-center px-2.5 py-1 rounded-lg shrink-0 border leading-none ${
                         dailyBypassRemaining <= 0
                           ? 'bg-rose-100 text-rose-700 border-rose-300'
                           : 'bg-black/25 text-amber-200 border-white/25'
                       }`}
                     >
-                      {dailyBypassRemaining}/{dailyBypassLimit} Rem
-                    </span>
+                      <span className="font-mono text-[11px] font-black leading-none">
+                        {dailyBypassRemaining}/{dailyBypassLimit}
+                      </span>
+                      <span className="text-[9px] font-bold tracking-wide mt-0.5 leading-none">
+                        Remaining
+                      </span>
+                    </div>
                   </button>
                   <div className="flex items-center justify-between text-[9.5px] text-slate-500 px-1 pt-0.5">
                     <span>پیکج: <strong className="text-emerald-700 uppercase">{activeShopPackageType}</strong></span>

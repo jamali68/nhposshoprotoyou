@@ -17,12 +17,23 @@ import {
   X,
   AlertCircle,
   Lock,
+  Unlock,
   Eye,
-  EyeOff
+  EyeOff,
+  Package,
+  Tag,
+  Clock,
+  RefreshCw
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
 import { TajLogo } from './TajLogo';
 import { PAKISTAN_PROVINCES, getDistrictsForProvince } from '../data/pakistanLocations';
+import {
+  superAdminService,
+  ALL_CONTROLLABLE_MODULES,
+  DEFAULT_PACKAGE_POLICIES
+} from '../superadmin/superAdminService';
+import { ShopPackageType } from '../superadmin/types';
 
 interface AdminProfileModalProps {
   isOpen: boolean;
@@ -48,10 +59,24 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
   const [offlinePasswordAlert, setOfflinePasswordAlert] = useState<boolean>(false);
+  const [inspectedPackageTier, setInspectedPackageTier] = useState<ShopPackageType | null>(null);
+  const [permFilterMode, setPermFilterMode] = useState<'all' | 'unlocked' | 'locked'>('all');
+  const [, setLiveConfigTick] = useState<number>(0);
 
   const wasOpenRef = useRef<boolean>(false);
   const hasEditedPasswordRef = useRef<boolean>(false);
   const initialPasswordRef = useRef<string>('');
+
+  // Real-time 1-3s listener for Super Admin package price, special offer & permission updates
+  useEffect(() => {
+    const handleLivePolicyUpdate = () => setLiveConfigTick(t => t + 1);
+    window.addEventListener('taj_module_control_updated', handleLivePolicyUpdate);
+    window.addEventListener('taj_shop_bypass_updated', handleLivePolicyUpdate);
+    return () => {
+      window.removeEventListener('taj_module_control_updated', handleLivePolicyUpdate);
+      window.removeEventListener('taj_shop_bypass_updated', handleLivePolicyUpdate);
+    };
+  }, []);
 
   useEffect(() => {
     const handleOnline = () => {
@@ -188,13 +213,13 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
           <X className="w-5 h-5" />
         </button>
 
-        {/* Top Header */}
+        {/* Top Header (English Heading) */}
         <div className="flex items-center gap-3 pb-4 pr-8 border-b border-slate-100">
           <TajLogo size="sm" showSubtitle={false} />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
-                ایڈمن پروفائل اور دکان کی ترتیبات
+                Admin Profile &amp; Store Settings
               </h3>
               <span
                 className={`text-[10px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0 ${
@@ -207,7 +232,7 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
               </span>
             </div>
             <p className="text-[11px] text-slate-500 font-medium mt-0.5">
-              دکان کا نام اور مالک کا نام تبدیل کریں (رجسٹریشن تاریخ مستقل ہے)
+              Manage your Shop Name, Owner Profile, Active Package &amp; Permissions
             </p>
           </div>
         </div>
@@ -505,6 +530,499 @@ export const AdminProfileModal: React.FC<AdminProfileModalProps> = ({ isOpen, on
               </div>
             </div>
           </div>
+
+          {/* ===================================================================== */}
+          {/* ACTIVE PACKAGE, LIVE PRICING (WITH SPECIAL OFFER SALE CROSS-OUT)      */}
+          {/* & INTERACTIVE PACKAGE COMPARISON + UNLOCKED / LOCKED LIST VIEW        */}
+          {/* ===================================================================== */}
+          {(() => {
+            const effectiveShopId = currentShop?.id || currentUser?.shopId;
+            const moduleCfg = superAdminService.getModuleControlConfig();
+            const activePolicy = superAdminService.getShopEffectiveSyncPolicy(effectiveShopId);
+            const bypassStatus = superAdminService.getShopDailyBypassStatus(effectiveShopId);
+
+            // Which package tier is currently selected for inspection in the details list box below
+            const selectedTier: ShopPackageType = inspectedPackageTier || activePolicy.packageType;
+            const isViewingActiveTier = selectedTier === activePolicy.packageType;
+            const selectedTierDef =
+              moduleCfg.packageDefaults?.[selectedTier] || DEFAULT_PACKAGE_POLICIES[selectedTier];
+
+            const selectedFallbackPkr =
+              selectedTier === 'pro' ? 1000 : selectedTier === 'basic' ? 500 : 0;
+            const selectedOrigPkr = isViewingActiveTier
+              ? activePolicy.originalPricePkr
+              : typeof selectedTierDef.originalPricePkr === 'number'
+              ? selectedTierDef.originalPricePkr
+              : selectedFallbackPkr;
+            const selectedOfferActive = isViewingActiveTier
+              ? activePolicy.isSpecialOfferActive
+              : Boolean(selectedTierDef.isSpecialOfferActive);
+            const selectedOfferPkr = isViewingActiveTier
+              ? activePolicy.specialOfferPricePkr
+              : typeof selectedTierDef.specialOfferPricePkr === 'number'
+              ? selectedTierDef.specialOfferPricePkr
+              : selectedOrigPkr;
+            const selectedOfferLabel =
+              (isViewingActiveTier
+                ? activePolicy.specialOfferLabel
+                : selectedTierDef.specialOfferLabel) || 'Special Offer';
+            const selectedHasDiscount =
+              selectedOfferActive && selectedOrigPkr > 0 && selectedOfferPkr < selectedOrigPkr;
+            const selectedDiscountPct = selectedHasDiscount
+              ? Math.max(
+                  1,
+                  Math.min(
+                    99,
+                    Math.round(((selectedOrigPkr - selectedOfferPkr) / selectedOrigPkr) * 100)
+                  )
+                )
+              : 0;
+            const selectedSyncMinutes = isViewingActiveTier
+              ? activePolicy.autoSyncIntervalMinutes
+              : selectedTierDef.autoSyncIntervalMinutes;
+            const selectedBypassLimit = isViewingActiveTier
+              ? activePolicy.dailyManualBypassLimit
+              : selectedTierDef.dailyManualBypassLimit;
+
+            // Build complete 14-item permissions breakdown for the selected/clicked package tier
+            const permissionRows = superAdminService.getPackagePermissionsBreakdown(
+              selectedTier,
+              effectiveShopId,
+              isViewingActiveTier
+            );
+
+            const unlockedCount = permissionRows.filter(p => p.unlocked).length;
+            const lockedCount = permissionRows.length - unlockedCount;
+
+            const filteredPermissionRows = permissionRows.filter(p => {
+              if (permFilterMode === 'unlocked') return p.unlocked;
+              if (permFilterMode === 'locked') return !p.unlocked;
+              return true;
+            });
+
+            const hasActiveDiscount =
+              activePolicy.isSpecialOfferActive &&
+              activePolicy.originalPricePkr > 0 &&
+              activePolicy.specialOfferPricePkr < activePolicy.originalPricePkr;
+
+            return (
+              <div className="pt-2 space-y-3">
+                <div className="rounded-2xl border border-indigo-200/90 bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white p-4 shadow-md space-y-3">
+                  {/* Active Package Header & Live Price Badge */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-white/10 pb-3">
+                    <div className="flex items-start gap-2.5">
+                      <div className="w-10 h-10 rounded-xl bg-amber-400/20 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
+                        <Package className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] font-black uppercase tracking-wider text-indigo-200">
+                            Active Package:
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                              activePolicy.packageType === 'pro'
+                                ? 'bg-gradient-to-r from-amber-400 to-orange-500 text-slate-950'
+                                : activePolicy.packageType === 'basic'
+                                ? 'bg-gradient-to-r from-cyan-400 to-blue-500 text-slate-950'
+                                : 'bg-emerald-500 text-slate-950'
+                            }`}
+                          >
+                            {activePolicy.packageLabel}
+                          </span>
+                        </div>
+                        <p className="text-[11px] font-bold text-amber-300 mt-0.5">
+                          {activePolicy.packageUrduLabel}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Active Package Price with Crossed-Out Original Price on Special Offer */}
+                    <div className="bg-slate-950/75 border border-white/15 rounded-xl px-3 py-2 text-right self-start sm:self-center">
+                      {hasActiveDiscount ? (
+                        <div className="space-y-0.5">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <span className="px-1.5 py-0.2 rounded bg-gradient-to-r from-rose-500 to-amber-500 text-slate-950 font-black text-[9px] uppercase">
+                              🔥 {activePolicy.discountPercent}% OFF · {activePolicy.specialOfferLabel}
+                            </span>
+                          </div>
+                          <div className="flex items-baseline justify-end gap-2">
+                            <span className="text-xs font-mono font-bold text-rose-400 line-through decoration-rose-500 decoration-2">
+                              PKR {activePolicy.originalPricePkr.toLocaleString()}
+                            </span>
+                            <span className="text-sm sm:text-base font-mono font-black text-emerald-400">
+                              PKR {activePolicy.specialOfferPricePkr.toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <span className="text-[9px] text-slate-400 uppercase font-bold block">
+                            Active Package Price
+                          </span>
+                          <span className="text-sm sm:text-base font-mono font-black text-emerald-300">
+                            {activePolicy.originalPricePkr === 0
+                              ? 'PKR 0 (Free)'
+                              : `PKR ${activePolicy.originalPricePkr.toLocaleString()}`}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Active Package Sync Timer & Shared Daily Bypass Limits */}
+                  <div className="grid grid-cols-2 gap-2 text-[10px]">
+                    <div className="bg-white/5 border border-white/10 rounded-xl px-2.5 py-2 flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-cyan-300 shrink-0" />
+                      <div>
+                        <span className="text-slate-400 block">Auto Sync Timer:</span>
+                        <span className="font-mono font-black text-white">
+                          Every {activePolicy.autoSyncIntervalMinutes} min (Unlimited)
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="bg-white/5 border border-white/10 rounded-xl px-2.5 py-2 flex items-center gap-2">
+                      <RefreshCw className="w-4 h-4 text-amber-300 shrink-0" />
+                      <div>
+                        <span className="text-slate-400 block">Shared Daily Bypass:</span>
+                        <span className="font-mono font-black text-amber-300">
+                          {bypassStatus.remainingCount}/{bypassStatus.dailyLimit} Remaining
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* All 3 Packages Interactive Selector Cards (Click any package to inspect its features below) */}
+                  <div className="space-y-2 pt-1">
+                    <div className="flex flex-wrap items-center justify-between gap-1 text-[10px]">
+                      <span className="font-black uppercase tracking-wider text-indigo-200 flex items-center gap-1">
+                        <Tag className="w-3 h-3 text-amber-300" />
+                        <span>Click Any Package Below to Compare Features &amp; Price</span>
+                      </span>
+                      <span className="text-[9px] text-emerald-300 font-bold">
+                        ● Live Cloud Synced
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      {(['free', 'basic', 'pro'] as ShopPackageType[]).map(tier => {
+                        const tierDef =
+                          moduleCfg.packageDefaults?.[tier] || DEFAULT_PACKAGE_POLICIES[tier];
+                        const isCurrentTier = activePolicy.packageType === tier;
+                        const isInspected = selectedTier === tier;
+                        const fallbackPkr = tier === 'pro' ? 1000 : tier === 'basic' ? 500 : 0;
+                        const origPkr =
+                          isCurrentTier
+                            ? activePolicy.originalPricePkr
+                            : typeof tierDef.originalPricePkr === 'number'
+                            ? tierDef.originalPricePkr
+                            : fallbackPkr;
+                        const offerActive = isCurrentTier
+                          ? activePolicy.isSpecialOfferActive
+                          : Boolean(tierDef.isSpecialOfferActive);
+                        const offerPkr =
+                          isCurrentTier
+                            ? activePolicy.specialOfferPricePkr
+                            : typeof tierDef.specialOfferPricePkr === 'number'
+                            ? tierDef.specialOfferPricePkr
+                            : origPkr;
+                        const offerLabel =
+                          (isCurrentTier
+                            ? activePolicy.specialOfferLabel
+                            : tierDef.specialOfferLabel) || 'Special Offer';
+                        const isDiscounted = offerActive && origPkr > 0 && offerPkr < origPkr;
+                        const discPct = isDiscounted
+                          ? Math.max(1, Math.min(99, Math.round(((origPkr - offerPkr) / origPkr) * 100)))
+                          : 0;
+
+                        const tierPerms = superAdminService.getPackagePermissionsBreakdown(
+                          tier,
+                          effectiveShopId,
+                          isCurrentTier
+                        );
+                        const tierUnlockedCount = tierPerms.filter(p => p.unlocked).length;
+                        const tierLockedCount = tierPerms.length - tierUnlockedCount;
+
+                        return (
+                          <button
+                            key={tier}
+                            type="button"
+                            onClick={() => setInspectedPackageTier(tier)}
+                            className={`rounded-xl p-2.5 border text-left flex flex-col justify-between gap-1.5 relative transition-all cursor-pointer active:scale-95 ${
+                              isInspected
+                                ? tier === 'pro'
+                                  ? 'bg-gradient-to-br from-amber-500/30 to-orange-600/20 border-amber-400 ring-2 ring-amber-400/50 shadow-md'
+                                  : tier === 'basic'
+                                  ? 'bg-gradient-to-br from-cyan-500/30 to-blue-600/20 border-cyan-400 ring-2 ring-cyan-400/50 shadow-md'
+                                  : 'bg-emerald-500/25 border-emerald-400 ring-2 ring-emerald-400/50 shadow-md'
+                                : 'bg-slate-950/60 border-white/10 hover:border-white/30'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-1 w-full">
+                              <span className="text-[10px] font-black uppercase text-white">
+                                {tier}
+                              </span>
+                              {isCurrentTier ? (
+                                <span className="px-1.5 py-0.2 rounded-full bg-emerald-400 text-slate-950 font-black text-[8px] uppercase">
+                                  Active
+                                </span>
+                              ) : isInspected ? (
+                                <span className="px-1.5 py-0.2 rounded-full bg-amber-400 text-slate-950 font-black text-[8px] uppercase">
+                                  Viewing
+                                </span>
+                              ) : (
+                                <span className="text-[8px] text-slate-400 font-bold">
+                                  Tap Info
+                                </span>
+                              )}
+                            </div>
+
+                            {isDiscounted ? (
+                              <div className="space-y-0.5">
+                                <span className="inline-block px-1.5 py-0.2 rounded bg-rose-500 text-white font-black text-[8px] uppercase">
+                                  {discPct}% OFF · {offerLabel}
+                                </span>
+                                <div className="text-[10px] font-mono font-bold text-rose-400 line-through decoration-rose-500 decoration-2 leading-tight">
+                                  PKR {origPkr.toLocaleString()}
+                                </div>
+                                <div className="text-xs font-mono font-black text-emerald-300 leading-tight">
+                                  PKR {offerPkr.toLocaleString()}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-xs font-mono font-black text-white">
+                                {origPkr === 0 ? 'PKR 0' : `PKR ${origPkr.toLocaleString()}`}
+                              </div>
+                            )}
+
+                            <div className="text-[9px] text-slate-300 font-mono pt-1 border-t border-white/10 space-y-0.5 w-full">
+                              <div>
+                                {tierDef.autoSyncIntervalMinutes}m · {tierDef.dailyManualBypassLimit} Bypass
+                              </div>
+                              <div className="flex items-center justify-between text-[8.5px] font-bold">
+                                <span className="text-emerald-300">🔓 {tierUnlockedCount}</span>
+                                <span className={tierLockedCount > 0 ? 'text-rose-400' : 'text-slate-400'}>
+                                  🔒 {tierLockedCount}
+                                </span>
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <p className="text-[10px] text-indigo-200 text-center font-medium pt-0.5">
+                      👆 اوپر کسی بھی پیکج (<strong>FREE</strong>، <strong>BASIC</strong> یا <strong>PRO</strong>) پر کلک کریں تاکہ نیچے لسٹ میں اس کے تمام فیچرز دیکھ سکیں۔
+                    </p>
+                  </div>
+                </div>
+
+                {/* Selected Package Permissions & Features Comparison List View Box */}
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/90 p-3.5 sm:p-4 space-y-3 shadow-xs">
+                  {/* Box Header: Showing Which Package Is Being Inspected */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-slate-200 pb-3">
+                    <div className="space-y-0.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-xs sm:text-sm font-black text-slate-900 uppercase tracking-tight">
+                          {selectedTierDef.label} — Features &amp; Permissions List
+                        </h4>
+                        {isViewingActiveTier ? (
+                          <span className="px-2 py-0.5 rounded-full bg-emerald-600 text-white text-[9px] font-black uppercase">
+                            ✓ Your Active Package
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full bg-indigo-600 text-white text-[9px] font-black uppercase">
+                            👁️ Comparing Paid Package
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-slate-600 font-medium">
+                        {isViewingActiveTier
+                          ? 'آپ کے موجودہ ایکٹو پیکج پر کون سے فیچرز ان لاک (🔓 Unlocked) اور کون سے لاک (🔒 Locked) ہیں:'
+                          : `${selectedTierDef.label} (${
+                              selectedHasDiscount
+                                ? `Special Offer PKR ${selectedOfferPkr.toLocaleString()}`
+                                : `PKR ${selectedOrigPkr.toLocaleString()}`
+                            }) میں ملنے والے تمام ان لاک اور لاک فیچرز کی تفصیل:`}
+                      </p>
+                    </div>
+
+                    {!isViewingActiveTier && (
+                      <button
+                        type="button"
+                        onClick={() => setInspectedPackageTier(activePolicy.packageType)}
+                        className="px-2.5 py-1.5 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 text-[10px] font-black cursor-pointer self-start sm:self-center shrink-0"
+                      >
+                        ← Back to Active ({activePolicy.packageType.toUpperCase()})
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Selected Package Quick Specs Strip (Price, Auto-Sync Timer, Daily Bypass Counts) */}
+                  <div className="grid grid-cols-3 gap-2 bg-white p-2.5 rounded-xl border border-slate-200 text-center">
+                    <div className="border-r border-slate-100 pr-1">
+                      <span className="text-[9px] font-bold text-slate-400 uppercase block">
+                        Package Price
+                      </span>
+                      {selectedHasDiscount ? (
+                        <div className="flex flex-col items-center">
+                          <span className="text-[10px] font-mono font-bold text-rose-500 line-through">
+                            PKR {selectedOrigPkr.toLocaleString()}
+                          </span>
+                          <span className="text-xs font-mono font-black text-emerald-700">
+                            PKR {selectedOfferPkr.toLocaleString()} ({selectedDiscountPct}% OFF)
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-xs font-mono font-black text-slate-900">
+                          {selectedOrigPkr === 0
+                            ? 'PKR 0 (Free)'
+                            : `PKR ${selectedOrigPkr.toLocaleString()}`}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="border-r border-slate-100 px-1">
+                      <span className="text-[9px] font-bold text-slate-400 uppercase block">
+                        Auto Sync Timer
+                      </span>
+                      <span className="text-xs font-mono font-black text-indigo-700">
+                        Every {selectedSyncMinutes} Min
+                      </span>
+                    </div>
+
+                    <div className="pl-1">
+                      <span className="text-[9px] font-bold text-slate-400 uppercase block">
+                        Shared Bypass / Day
+                      </span>
+                      <span className="text-xs font-mono font-black text-amber-700">
+                        {selectedBypassLimit} Counts / Day
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Filter Tabs: All (14) | Unlocked | Locked */}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setPermFilterMode('all')}
+                        className={`px-2.5 py-1 rounded-full text-[10px] font-black border transition-all cursor-pointer ${
+                          permFilterMode === 'all'
+                            ? 'bg-slate-900 text-white border-slate-900'
+                            : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
+                        }`}
+                      >
+                        All ({permissionRows.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPermFilterMode('unlocked')}
+                        className={`px-2.5 py-1 rounded-full text-[10px] font-black border transition-all cursor-pointer ${
+                          permFilterMode === 'unlocked'
+                            ? 'bg-emerald-600 text-white border-emerald-600'
+                            : 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                        }`}
+                      >
+                        🔓 {unlockedCount} Unlocked
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPermFilterMode('locked')}
+                        className={`px-2.5 py-1 rounded-full text-[10px] font-black border transition-all cursor-pointer ${
+                          permFilterMode === 'locked'
+                            ? 'bg-rose-600 text-white border-rose-600'
+                            : 'bg-rose-50 text-rose-800 border-rose-300 hover:bg-rose-100'
+                        }`}
+                      >
+                        🔒 {lockedCount} Locked
+                      </button>
+                    </div>
+
+                    <span className="text-[10px] font-bold text-slate-500">
+                      Showing {filteredPermissionRows.length} items in List View
+                    </span>
+                  </div>
+
+                  {/* Full List View of All Unlocked & Locked Permissions for the Selected Package */}
+                  <div className="space-y-1.5">
+                    {filteredPermissionRows.length === 0 ? (
+                      <div className="py-6 text-center bg-white rounded-xl border border-slate-200 text-xs font-bold text-slate-500">
+                        {permFilterMode === 'locked'
+                          ? `🎉 ${selectedTierDef.label} میں کوئی بھی فیچر لاک (Locked) نہیں ہے — تمام 14 فیچرز ان لاک ہیں!`
+                          : 'کوئی پرمیشن موجود نہیں۔'}
+                      </div>
+                    ) : (
+                      filteredPermissionRows.map((perm, idx) => {
+                        const paidTiersThatUnlock = perm.unlocksInTiers.filter(t => t !== 'free');
+                        const upgradeHint =
+                          !perm.unlocked && paidTiersThatUnlock.length > 0
+                            ? `Unlocks in ${paidTiersThatUnlock.map(t => t.toUpperCase()).join(' & ')}`
+                            : null;
+
+                        return (
+                          <div
+                            key={perm.id}
+                            className={`px-3 py-2.5 rounded-xl border flex items-center justify-between gap-2.5 transition-all ${
+                              perm.unlocked
+                                ? 'bg-white border-emerald-200/90 text-slate-800'
+                                : 'bg-rose-50/80 border-rose-200 text-slate-700'
+                            }`}
+                          >
+                            <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                              <span
+                                className={`w-5 h-5 rounded-lg text-[10px] font-mono font-black flex items-center justify-center shrink-0 mt-0.5 ${
+                                  perm.unlocked
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : 'bg-rose-100 text-rose-800'
+                                }`}
+                              >
+                                {idx + 1}
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-black text-slate-900 text-xs">
+                                    {perm.label}
+                                  </span>
+                                  <span className="text-[10.5px] font-bold text-slate-500">
+                                    ({perm.urduLabel})
+                                  </span>
+                                </div>
+                                <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
+                                  {perm.description}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-col items-end gap-1 shrink-0">
+                              {perm.unlocked ? (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px] font-black">
+                                  <Unlock className="w-3 h-3" />
+                                  <span>Unlocked</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-rose-100 text-rose-800 border border-rose-300 text-[10px] font-black">
+                                  <Lock className="w-3 h-3" />
+                                  <span>Locked</span>
+                                </span>
+                              )}
+
+                              {upgradeHint && (
+                                <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 border border-amber-300 text-[9px] font-black">
+                                  ✨ {upgradeHint}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Action Buttons */}
           <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">

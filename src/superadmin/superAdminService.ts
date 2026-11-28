@@ -61,10 +61,30 @@ export const DEFAULT_PACKAGE_POLICIES: Record<ShopPackageType, ShopPackagePolicy
   free: {
     packageType: 'free',
     label: 'Free Package',
-    urduLabel: 'فری پیکج (سپر ایڈمن کنٹرول)',
+    urduLabel: 'فری پیکج (بنیادی کھاتہ)',
     autoSyncIntervalMinutes: 30,
     dailyManualBypassLimit: 10,
-    allowGoogleDriveVault: true
+    allowGoogleDriveVault: false,
+    packageModules: {
+      daily_cash: true,
+      back_cash: true,
+      easyload: true,
+      bottle_stock: true,
+      items_price: true,
+      wholesaler: true,
+      customer: true,
+      deleted_history: true,
+      data_export: true,
+      pos: false,
+      monthly_summary: false,
+      staff_management: false,
+      sql_import: false,
+      google_drive_vault: false
+    },
+    originalPricePkr: 0,
+    isSpecialOfferActive: false,
+    specialOfferPricePkr: 0,
+    specialOfferLabel: 'Special Offer'
   },
   basic: {
     packageType: 'basic',
@@ -72,7 +92,27 @@ export const DEFAULT_PACKAGE_POLICIES: Record<ShopPackageType, ShopPackagePolicy
     urduLabel: 'بیسک پیکج (معیاری دکان)',
     autoSyncIntervalMinutes: 30,
     dailyManualBypassLimit: 50,
-    allowGoogleDriveVault: true
+    allowGoogleDriveVault: false,
+    packageModules: {
+      daily_cash: true,
+      back_cash: true,
+      easyload: true,
+      bottle_stock: true,
+      items_price: true,
+      wholesaler: true,
+      customer: true,
+      deleted_history: true,
+      data_export: true,
+      pos: true,
+      monthly_summary: true,
+      staff_management: true,
+      sql_import: true,
+      google_drive_vault: false
+    },
+    originalPricePkr: 500,
+    isSpecialOfferActive: false,
+    specialOfferPricePkr: 400,
+    specialOfferLabel: 'Special Offer'
   },
   pro: {
     packageType: 'pro',
@@ -80,7 +120,27 @@ export const DEFAULT_PACKAGE_POLICIES: Record<ShopPackageType, ShopPackagePolicy
     urduLabel: 'پرو پیکج (ہائی اسپیڈ ایڈوانس)',
     autoSyncIntervalMinutes: 15,
     dailyManualBypassLimit: 200,
-    allowGoogleDriveVault: true
+    allowGoogleDriveVault: true,
+    packageModules: {
+      daily_cash: true,
+      back_cash: true,
+      easyload: true,
+      bottle_stock: true,
+      items_price: true,
+      wholesaler: true,
+      customer: true,
+      deleted_history: true,
+      data_export: true,
+      pos: true,
+      monthly_summary: true,
+      staff_management: true,
+      sql_import: true,
+      google_drive_vault: true
+    },
+    originalPricePkr: 1000,
+    isSpecialOfferActive: false,
+    specialOfferPricePkr: 800,
+    specialOfferLabel: 'Special Offer'
   }
 };
 
@@ -348,15 +408,27 @@ export const superAdminService = {
           packageDefaults: {
             free: {
               ...DEFAULT_PACKAGE_POLICIES.free,
-              ...(parsed.packageDefaults?.free || {})
+              ...(parsed.packageDefaults?.free || {}),
+              packageModules: {
+                ...DEFAULT_PACKAGE_POLICIES.free.packageModules,
+                ...(parsed.packageDefaults?.free?.packageModules || {})
+              }
             },
             basic: {
               ...DEFAULT_PACKAGE_POLICIES.basic,
-              ...(parsed.packageDefaults?.basic || {})
+              ...(parsed.packageDefaults?.basic || {}),
+              packageModules: {
+                ...DEFAULT_PACKAGE_POLICIES.basic.packageModules,
+                ...(parsed.packageDefaults?.basic?.packageModules || {})
+              }
             },
             pro: {
               ...DEFAULT_PACKAGE_POLICIES.pro,
-              ...(parsed.packageDefaults?.pro || {})
+              ...(parsed.packageDefaults?.pro || {}),
+              packageModules: {
+                ...DEFAULT_PACKAGE_POLICIES.pro.packageModules,
+                ...(parsed.packageDefaults?.pro?.packageModules || {})
+              }
             }
           },
           shopPackageOverrides: parsed.shopPackageOverrides || {},
@@ -385,15 +457,27 @@ export const superAdminService = {
       packageDefaults: {
         free: {
           ...DEFAULT_PACKAGE_POLICIES.free,
-          ...(cloudData.packageDefaults?.free || {})
+          ...(cloudData.packageDefaults?.free || {}),
+          packageModules: {
+            ...DEFAULT_PACKAGE_POLICIES.free.packageModules,
+            ...(cloudData.packageDefaults?.free?.packageModules || {})
+          }
         },
         basic: {
           ...DEFAULT_PACKAGE_POLICIES.basic,
-          ...(cloudData.packageDefaults?.basic || {})
+          ...(cloudData.packageDefaults?.basic || {}),
+          packageModules: {
+            ...DEFAULT_PACKAGE_POLICIES.basic.packageModules,
+            ...(cloudData.packageDefaults?.basic?.packageModules || {})
+          }
         },
         pro: {
           ...DEFAULT_PACKAGE_POLICIES.pro,
-          ...(cloudData.packageDefaults?.pro || {})
+          ...(cloudData.packageDefaults?.pro || {}),
+          packageModules: {
+            ...DEFAULT_PACKAGE_POLICIES.pro.packageModules,
+            ...(cloudData.packageDefaults?.pro?.packageModules || {})
+          }
         }
       },
       shopPackageOverrides: cloudData.shopPackageOverrides || {},
@@ -469,7 +553,11 @@ export const superAdminService = {
   },
 
   /**
-   * Check if a specific module is enabled for a given shop (Per-shop override takes precedence over global default)
+   * Check if a specific module is enabled for a given shop
+   * Priority:
+   * 1) Per-shop explicit override in `shopOverrides[shopId][moduleId]`
+   * 2) Global module switch (`globalModules[moduleId] === false`)
+   * 3) Active Package Tier's `packageModules[moduleId]`
    */
   isModuleEnabledForShop(moduleId: string, shopId?: string): boolean {
     if (moduleId === 'dashboard' || moduleId === 'super_admin') return true;
@@ -481,7 +569,135 @@ export const superAdminService = {
     if (cfg.globalModules[effectiveModId] === false) {
       return false;
     }
+    // Check the shop's active package tier permissions
+    const shopOvr = (shopId && cfg.shopPackageOverrides?.[shopId]) || {};
+    let docPkg: ShopPackageType | undefined;
+    if (shopId) {
+      try {
+        const rawBypass = localStorage.getItem(`taj_shop_bypass_state_${shopId}`);
+        if (rawBypass) {
+          const parsedB = JSON.parse(rawBypass) as ShopDailyBypassState;
+          if (parsedB.packageType) docPkg = parsedB.packageType;
+        }
+      } catch {}
+    }
+    const pkgType: ShopPackageType = shopOvr.packageType || docPkg || 'free';
+    const tierPolicy =
+      cfg.packageDefaults?.[pkgType] ||
+      DEFAULT_PACKAGE_POLICIES[pkgType] ||
+      DEFAULT_PACKAGE_POLICIES.free;
+    if (tierPolicy.packageModules && typeof tierPolicy.packageModules[effectiveModId] === 'boolean') {
+      return tierPolicy.packageModules[effectiveModId] !== false;
+    }
     return true;
+  },
+
+  /**
+   * Get full 14-item Permissions Breakdown for any Package Tier ('free' | 'basic' | 'pro')
+   * so users can click any package card in their Profile to inspect & compare all Unlocked and Locked features!
+   */
+  getPackagePermissionsBreakdown(
+    targetTier: ShopPackageType,
+    shopId?: string,
+    includeShopCustomOverrides: boolean = false
+  ): Array<{
+    id: string;
+    label: string;
+    urduLabel: string;
+    description: string;
+    unlocked: boolean;
+    unlocksInTiers: ShopPackageType[];
+  }> {
+    const cfg = this.getModuleControlConfig();
+    const pkgDefaults = cfg.packageDefaults || DEFAULT_PACKAGE_POLICIES;
+    const targetPolicy = pkgDefaults[targetTier] || DEFAULT_PACKAGE_POLICIES[targetTier] || DEFAULT_PACKAGE_POLICIES.free;
+    const shopModOverrides = (includeShopCustomOverrides && shopId && cfg.shopOverrides?.[shopId]) || undefined;
+    const shopPkgOvr = (includeShopCustomOverrides && shopId && cfg.shopPackageOverrides?.[shopId]) || undefined;
+
+    const allPermissionDefinitions: Array<{
+      id: string;
+      label: string;
+      urduLabel: string;
+      description: string;
+    }> = [
+      ...ALL_CONTROLLABLE_MODULES,
+      {
+        id: 'data_export',
+        label: 'JSON Data Backup & Export',
+        urduLabel: 'ڈیٹا بیک اپ (JSON Export)',
+        description: 'Download full offline JSON backup of shop ledger'
+      },
+      {
+        id: 'sql_import',
+        label: 'Smart SQL Dump Import',
+        urduLabel: 'ایس کیو ایل امپورٹ (.SQL)',
+        description: 'Convert and import external .sql database dumps'
+      }
+    ];
+
+    const isUnlockedInTier = (tier: ShopPackageType, permId: string): boolean => {
+      const pol = pkgDefaults[tier] || DEFAULT_PACKAGE_POLICIES[tier];
+      const defPol = DEFAULT_PACKAGE_POLICIES[tier];
+      if (permId === 'google_drive_vault') {
+        if (typeof pol.packageModules?.google_drive_vault === 'boolean') {
+          return pol.packageModules.google_drive_vault && pol.allowGoogleDriveVault !== false;
+        }
+        return pol.allowGoogleDriveVault !== false;
+      }
+      if (pol.packageModules && typeof pol.packageModules[permId] === 'boolean') {
+        return pol.packageModules[permId] !== false;
+      }
+      if (defPol.packageModules && typeof defPol.packageModules[permId] === 'boolean') {
+        return defPol.packageModules[permId] !== false;
+      }
+      return true;
+    };
+
+    return allPermissionDefinitions.map(item => {
+      let unlocked = isUnlockedInTier(targetTier, item.id);
+
+      // If viewing the shop's currently active package, also reflect any shop-specific overrides or global locks
+      if (includeShopCustomOverrides) {
+        if (item.id === 'google_drive_vault') {
+          if (typeof shopPkgOvr?.allowGoogleDriveVault === 'boolean') {
+            unlocked = shopPkgOvr.allowGoogleDriveVault;
+          }
+          if (shopModOverrides && typeof shopModOverrides.google_drive_vault === 'boolean') {
+            unlocked = shopModOverrides.google_drive_vault;
+          }
+          if (cfg.globalModules.google_drive_vault === false || cfg.featurePermissions?.allowGoogleDriveVault === false) {
+            unlocked = false;
+          }
+        } else if (item.id === 'data_export') {
+          if (cfg.featurePermissions?.allowDataExport === false) unlocked = false;
+        } else if (item.id === 'sql_import') {
+          if (cfg.featurePermissions?.allowSqlImport === false) unlocked = false;
+        } else {
+          if (shopModOverrides && typeof shopModOverrides[item.id] === 'boolean') {
+            unlocked = shopModOverrides[item.id] !== false;
+          } else if (cfg.globalModules[item.id] === false) {
+            unlocked = false;
+          }
+        }
+      } else {
+        // Pure package comparison view
+        if (item.id === 'google_drive_vault') {
+          unlocked =
+            targetPolicy.allowGoogleDriveVault !== false &&
+            targetPolicy.packageModules?.google_drive_vault !== false;
+        }
+      }
+
+      const unlocksInTiers: ShopPackageType[] = (['free', 'basic', 'pro'] as ShopPackageType[]).filter(
+        t => isUnlockedInTier(t, item.id)
+      );
+
+      return {
+        ...item,
+        unlocked,
+        unlocksInTiers
+      };
+    });
   },
 
   /**
@@ -755,6 +971,12 @@ export const superAdminService = {
     autoSyncIntervalMinutes: number;
     dailyManualBypassLimit: number;
     allowGoogleDriveVault: boolean;
+    originalPricePkr: number;
+    isSpecialOfferActive: boolean;
+    specialOfferPricePkr: number;
+    specialOfferLabel: string;
+    effectivePricePkr: number;
+    discountPercent: number;
   } {
     const cfg = this.getModuleControlConfig();
     const pkgDefaults = cfg.packageDefaults || DEFAULT_PACKAGE_POLICIES;
@@ -783,6 +1005,8 @@ export const superAdminService = {
     const packageType: ShopPackageType =
       shopOvr.packageType || docPkg || 'free';
     const tierPolicy = pkgDefaults[packageType] || DEFAULT_PACKAGE_POLICIES[packageType] || DEFAULT_PACKAGE_POLICIES.free;
+    const fallbackDefaultPrice =
+      packageType === 'pro' ? 1000 : packageType === 'basic' ? 500 : 0;
 
     const rawMinutes =
       typeof shopOvr.autoSyncIntervalMinutes === 'number'
@@ -807,13 +1031,61 @@ export const superAdminService = {
         ? shopOvr.allowGoogleDriveVault
         : tierPolicy.allowGoogleDriveVault !== false);
 
+    const originalPricePkr = Math.max(
+      0,
+      Math.round(
+        typeof shopOvr.originalPricePkr === 'number'
+          ? shopOvr.originalPricePkr
+          : typeof tierPolicy.originalPricePkr === 'number'
+          ? tierPolicy.originalPricePkr
+          : fallbackDefaultPrice
+      )
+    );
+
+    const isSpecialOfferActive = Boolean(
+      typeof shopOvr.isSpecialOfferActive === 'boolean'
+        ? shopOvr.isSpecialOfferActive
+        : tierPolicy.isSpecialOfferActive
+    );
+
+    const specialOfferPricePkr = Math.max(
+      0,
+      Math.round(
+        typeof shopOvr.specialOfferPricePkr === 'number'
+          ? shopOvr.specialOfferPricePkr
+          : typeof tierPolicy.specialOfferPricePkr === 'number'
+          ? tierPolicy.specialOfferPricePkr
+          : originalPricePkr
+      )
+    );
+
+    const specialOfferLabel =
+      (shopOvr.specialOfferLabel || tierPolicy.specialOfferLabel || 'Special Offer').trim() ||
+      'Special Offer';
+
+    const effectivePricePkr =
+      isSpecialOfferActive && specialOfferPricePkr < originalPricePkr
+        ? specialOfferPricePkr
+        : originalPricePkr;
+
+    const discountPercent =
+      isSpecialOfferActive && originalPricePkr > 0 && specialOfferPricePkr < originalPricePkr
+        ? Math.max(1, Math.min(99, Math.round(((originalPricePkr - specialOfferPricePkr) / originalPricePkr) * 100)))
+        : 0;
+
     return {
       packageType,
       packageLabel: tierPolicy.label,
       packageUrduLabel: tierPolicy.urduLabel,
       autoSyncIntervalMinutes,
       dailyManualBypassLimit,
-      allowGoogleDriveVault
+      allowGoogleDriveVault,
+      originalPricePkr,
+      isSpecialOfferActive,
+      specialOfferPricePkr,
+      specialOfferLabel,
+      effectivePricePkr,
+      discountPercent
     };
   },
 
@@ -1043,6 +1315,11 @@ export const superAdminService = {
       autoSyncIntervalMinutes: number;
       dailyManualBypassLimit: number;
       allowGoogleDriveVault?: boolean;
+      packageModules?: Record<string, boolean>;
+      originalPricePkr?: number;
+      isSpecialOfferActive?: boolean;
+      specialOfferPricePkr?: number;
+      specialOfferLabel?: string;
       updatedBy?: string;
     }
   ): Promise<boolean> {
@@ -1056,18 +1333,51 @@ export const superAdminService = {
       ...(current.shopPackageOverrides || {})
     };
 
-    if (targetShopId === 'GLOBAL') {
-      const existingTier = pkgDefaults[params.packageType] || DEFAULT_PACKAGE_POLICIES[params.packageType];
-      pkgDefaults[params.packageType] = {
-        ...existingTier,
-        autoSyncIntervalMinutes: clampedTimer,
-        dailyManualBypassLimit: clampedLimit,
-        allowGoogleDriveVault:
-          typeof params.allowGoogleDriveVault === 'boolean'
-            ? params.allowGoogleDriveVault
-            : existingTier.allowGoogleDriveVault
-      };
-    } else {
+    const existingTier = pkgDefaults[params.packageType] || DEFAULT_PACKAGE_POLICIES[params.packageType];
+    const nextOriginalPrice =
+      typeof params.originalPricePkr === 'number'
+        ? Math.max(0, Math.round(params.originalPricePkr))
+        : existingTier.originalPricePkr;
+    const nextOfferActive =
+      typeof params.isSpecialOfferActive === 'boolean'
+        ? params.isSpecialOfferActive
+        : Boolean(existingTier.isSpecialOfferActive);
+    const nextOfferPrice =
+      typeof params.specialOfferPricePkr === 'number'
+        ? Math.max(0, Math.round(params.specialOfferPricePkr))
+        : existingTier.specialOfferPricePkr ?? nextOriginalPrice;
+    const nextOfferLabel =
+      (params.specialOfferLabel ?? existingTier.specialOfferLabel ?? 'Special Offer').trim() ||
+      'Special Offer';
+    const nextPackageModules = params.packageModules
+      ? {
+          ...(DEFAULT_PACKAGE_POLICIES[params.packageType].packageModules || {}),
+          ...(existingTier.packageModules || {}),
+          ...params.packageModules
+        }
+      : existingTier.packageModules || DEFAULT_PACKAGE_POLICIES[params.packageType].packageModules;
+
+    // Always keep the global package tier pricing, special offer & package modules updated
+    pkgDefaults[params.packageType] = {
+      ...existingTier,
+      ...(targetShopId === 'GLOBAL'
+        ? {
+            autoSyncIntervalMinutes: clampedTimer,
+            dailyManualBypassLimit: clampedLimit,
+            allowGoogleDriveVault:
+              typeof params.allowGoogleDriveVault === 'boolean'
+                ? params.allowGoogleDriveVault
+                : existingTier.allowGoogleDriveVault
+          }
+        : {}),
+      packageModules: nextPackageModules,
+      originalPricePkr: nextOriginalPrice,
+      isSpecialOfferActive: nextOfferActive,
+      specialOfferPricePkr: nextOfferPrice,
+      specialOfferLabel: nextOfferLabel
+    };
+
+    if (targetShopId !== 'GLOBAL') {
       shopPkgOverrides[targetShopId] = {
         ...(shopPkgOverrides[targetShopId] || {}),
         packageType: params.packageType,
@@ -1075,7 +1385,11 @@ export const superAdminService = {
         dailyManualBypassLimit: clampedLimit,
         ...(typeof params.allowGoogleDriveVault === 'boolean'
           ? { allowGoogleDriveVault: params.allowGoogleDriveVault }
-          : {})
+          : {}),
+        originalPricePkr: nextOriginalPrice,
+        isSpecialOfferActive: nextOfferActive,
+        specialOfferPricePkr: nextOfferPrice,
+        specialOfferLabel: nextOfferLabel
       };
 
       // Also update local bypass state cache & shops/{targetShopId} document so all connected devices of that shop immediately receive the new timer & limit!

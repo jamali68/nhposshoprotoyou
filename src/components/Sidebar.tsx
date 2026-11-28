@@ -497,32 +497,37 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                 type="button"
                 onClick={handleManualSync}
                 disabled={isSyncing || isManualSyncing || dailyBypassRemaining <= 0}
-                className={`w-full flex items-center justify-between gap-2 py-2 px-3 rounded-xl text-xs font-bold shadow-md transition-all active:scale-95 ${
+                className={`w-full flex items-center justify-between gap-2 py-2 px-3.5 rounded-xl text-xs font-bold shadow-md transition-all active:scale-95 ${
                   dailyBypassRemaining <= 0
                     ? 'bg-slate-700/80 text-slate-400 border border-slate-600 cursor-not-allowed'
                     : 'bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:opacity-60 text-white shadow-cyan-900/30 cursor-pointer'
                 }`}
               >
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${(isSyncing || isManualSyncing) ? 'animate-spin' : ''}`} />
-                  <span className="truncate">
+                <div className="flex items-center gap-2 min-w-0">
+                  <RefreshCw className={`w-4 h-4 shrink-0 ${(isSyncing || isManualSyncing) ? 'animate-spin' : ''}`} />
+                  <span className="text-sm font-black tracking-wide whitespace-nowrap">
                     {(isSyncing || isManualSyncing)
-                      ? 'اپڈیٹ ہو رہا ہے...'
+                      ? 'Syncing...'
                       : dailyBypassRemaining <= 0
-                      ? 'بائی پاس لمٹ مکمل (Auto Active)'
-                      : '🔄 ابھی اپڈیٹ کریں (Update Now)'}
+                      ? 'Limit Reached'
+                      : 'Sync Now'}
                   </span>
                 </div>
-                <span
-                  className={`px-1.5 py-0.5 rounded-md font-mono text-[10px] font-black shrink-0 border ${
+                <div
+                  className={`flex flex-col items-center justify-center px-2.5 py-1 rounded-lg shrink-0 border leading-none ${
                     dailyBypassRemaining <= 0
                       ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
                       : 'bg-slate-950/45 text-amber-300 border-white/20'
                   }`}
                   title={`Today's Shared Manual Bypass Remaining for this shop (${dailyBypassRemaining} left out of ${dailyBypassLimit})`}
                 >
-                  {dailyBypassRemaining}/{dailyBypassLimit} Rem
-                </span>
+                  <span className="font-mono text-[11px] font-black leading-none">
+                    {dailyBypassRemaining}/{dailyBypassLimit}
+                  </span>
+                  <span className="text-[9px] font-bold tracking-wide mt-0.5 leading-none">
+                    Remaining
+                  </span>
+                </div>
               </button>
               <div className="flex items-center justify-between text-[9px] text-slate-400 mt-1 px-0.5 leading-tight">
                 <span>پیکج: <strong className="text-amber-300 uppercase">{activeShopPackageType}</strong></span>

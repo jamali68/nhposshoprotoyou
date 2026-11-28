@@ -216,6 +216,13 @@ export const SuperAdminView: React.FC = () => {
   const [pkgSyncMinutes, setPkgSyncMinutes] = useState<number>(30);
   const [pkgDailyBypassLimit, setPkgDailyBypassLimit] = useState<number>(10);
   const [pkgAllowDriveVault, setPkgAllowDriveVault] = useState<boolean>(true);
+  const [pkgOriginalPricePkr, setPkgOriginalPricePkr] = useState<number>(0);
+  const [pkgSpecialOfferActive, setPkgSpecialOfferActive] = useState<boolean>(false);
+  const [pkgSpecialOfferPricePkr, setPkgSpecialOfferPricePkr] = useState<number>(0);
+  const [pkgSpecialOfferLabel, setPkgSpecialOfferLabel] = useState<string>('Special Offer');
+  const [pkgModulesMap, setPkgModulesMap] = useState<Record<string, boolean>>(() => ({
+    ...(DEFAULT_PACKAGE_POLICIES.free.packageModules || {})
+  }));
   const [isSavingPkgPolicy, setIsSavingPkgPolicy] = useState<boolean>(false);
   const [bypassRefreshTick, setBypassRefreshTick] = useState<number>(0);
 
@@ -230,15 +237,42 @@ export const SuperAdminView: React.FC = () => {
       const tierCfg =
         moduleConfig.packageDefaults?.[selectedPackageTier] ||
         DEFAULT_PACKAGE_POLICIES[selectedPackageTier];
+      const fallbackPrice =
+        selectedPackageTier === 'pro' ? 1000 : selectedPackageTier === 'basic' ? 500 : 0;
+      const origPrice =
+        typeof tierCfg.originalPricePkr === 'number' ? tierCfg.originalPricePkr : fallbackPrice;
       setPkgSyncMinutes(tierCfg.autoSyncIntervalMinutes);
       setPkgDailyBypassLimit(tierCfg.dailyManualBypassLimit);
       setPkgAllowDriveVault(tierCfg.allowGoogleDriveVault !== false);
+      setPkgOriginalPricePkr(origPrice);
+      setPkgSpecialOfferActive(Boolean(tierCfg.isSpecialOfferActive));
+      setPkgSpecialOfferPricePkr(
+        typeof tierCfg.specialOfferPricePkr === 'number' ? tierCfg.specialOfferPricePkr : origPrice
+      );
+      setPkgSpecialOfferLabel(tierCfg.specialOfferLabel || 'Special Offer');
+      setPkgModulesMap({
+        ...(DEFAULT_PACKAGE_POLICIES[selectedPackageTier].packageModules || {}),
+        ...(tierCfg.packageModules || {}),
+        google_drive_vault: tierCfg.allowGoogleDriveVault !== false && tierCfg.packageModules?.google_drive_vault !== false
+      });
     } else {
       const eff = superAdminService.getShopEffectiveSyncPolicy(selectedShopForModules);
+      const tierCfg =
+        moduleConfig.packageDefaults?.[eff.packageType] ||
+        DEFAULT_PACKAGE_POLICIES[eff.packageType];
       setSelectedPackageTier(eff.packageType);
       setPkgSyncMinutes(eff.autoSyncIntervalMinutes);
       setPkgDailyBypassLimit(eff.dailyManualBypassLimit);
       setPkgAllowDriveVault(eff.allowGoogleDriveVault);
+      setPkgOriginalPricePkr(eff.originalPricePkr);
+      setPkgSpecialOfferActive(eff.isSpecialOfferActive);
+      setPkgSpecialOfferPricePkr(eff.specialOfferPricePkr);
+      setPkgSpecialOfferLabel(eff.specialOfferLabel || 'Special Offer');
+      setPkgModulesMap({
+        ...(DEFAULT_PACKAGE_POLICIES[eff.packageType].packageModules || {}),
+        ...(tierCfg.packageModules || {}),
+        google_drive_vault: eff.allowGoogleDriveVault
+      });
     }
   }, [selectedShopForModules, moduleConfig]);
 
@@ -246,20 +280,55 @@ export const SuperAdminView: React.FC = () => {
     setSelectedPackageTier(tier);
     const tierDefaults =
       moduleConfig.packageDefaults?.[tier] || DEFAULT_PACKAGE_POLICIES[tier];
+    const fallbackPrice = tier === 'pro' ? 1000 : tier === 'basic' ? 500 : 0;
+    const defaultOrigPrice =
+      typeof tierDefaults.originalPricePkr === 'number'
+        ? tierDefaults.originalPricePkr
+        : fallbackPrice;
+    const nextTierMods = {
+      ...(DEFAULT_PACKAGE_POLICIES[tier].packageModules || {}),
+      ...(tierDefaults.packageModules || {}),
+      google_drive_vault:
+        tierDefaults.allowGoogleDriveVault !== false &&
+        tierDefaults.packageModules?.google_drive_vault !== false
+    };
+    setPkgModulesMap(nextTierMods);
     if (selectedShopForModules === 'GLOBAL') {
       setPkgSyncMinutes(tierDefaults.autoSyncIntervalMinutes);
       setPkgDailyBypassLimit(tierDefaults.dailyManualBypassLimit);
-      setPkgAllowDriveVault(tierDefaults.allowGoogleDriveVault !== false);
+      setPkgAllowDriveVault(nextTierMods.google_drive_vault !== false);
+      setPkgOriginalPricePkr(defaultOrigPrice);
+      setPkgSpecialOfferActive(Boolean(tierDefaults.isSpecialOfferActive));
+      setPkgSpecialOfferPricePkr(
+        typeof tierDefaults.specialOfferPricePkr === 'number'
+          ? tierDefaults.specialOfferPricePkr
+          : defaultOrigPrice
+      );
+      setPkgSpecialOfferLabel(tierDefaults.specialOfferLabel || 'Special Offer');
     } else {
       const shopOvr = moduleConfig.shopPackageOverrides?.[selectedShopForModules];
       if (shopOvr && shopOvr.packageType === tier) {
         setPkgSyncMinutes(shopOvr.autoSyncIntervalMinutes ?? tierDefaults.autoSyncIntervalMinutes);
         setPkgDailyBypassLimit(shopOvr.dailyManualBypassLimit ?? tierDefaults.dailyManualBypassLimit);
-        setPkgAllowDriveVault(shopOvr.allowGoogleDriveVault ?? (tierDefaults.allowGoogleDriveVault !== false));
+        setPkgAllowDriveVault(shopOvr.allowGoogleDriveVault ?? (nextTierMods.google_drive_vault !== false));
+        setPkgOriginalPricePkr(shopOvr.originalPricePkr ?? defaultOrigPrice);
+        setPkgSpecialOfferActive(shopOvr.isSpecialOfferActive ?? Boolean(tierDefaults.isSpecialOfferActive));
+        setPkgSpecialOfferPricePkr(
+          shopOvr.specialOfferPricePkr ?? tierDefaults.specialOfferPricePkr ?? defaultOrigPrice
+        );
+        setPkgSpecialOfferLabel(shopOvr.specialOfferLabel || tierDefaults.specialOfferLabel || 'Special Offer');
       } else {
         setPkgSyncMinutes(tierDefaults.autoSyncIntervalMinutes);
         setPkgDailyBypassLimit(tierDefaults.dailyManualBypassLimit);
-        setPkgAllowDriveVault(tierDefaults.allowGoogleDriveVault !== false);
+        setPkgAllowDriveVault(nextTierMods.google_drive_vault !== false);
+        setPkgOriginalPricePkr(defaultOrigPrice);
+        setPkgSpecialOfferActive(Boolean(tierDefaults.isSpecialOfferActive));
+        setPkgSpecialOfferPricePkr(
+          typeof tierDefaults.specialOfferPricePkr === 'number'
+            ? tierDefaults.specialOfferPricePkr
+            : defaultOrigPrice
+        );
+        setPkgSpecialOfferLabel(tierDefaults.specialOfferLabel || 'Special Offer');
       }
     }
   };
@@ -267,11 +336,20 @@ export const SuperAdminView: React.FC = () => {
   const handleSavePackageAndSyncPolicy = async () => {
     setIsSavingPkgPolicy(true);
     try {
+      const mergedPkgMods = {
+        ...pkgModulesMap,
+        google_drive_vault: pkgAllowDriveVault
+      };
       const ok = await superAdminService.saveShopPackageAndSyncPolicy(selectedShopForModules, {
         packageType: selectedPackageTier,
         autoSyncIntervalMinutes: pkgSyncMinutes,
         dailyManualBypassLimit: pkgDailyBypassLimit,
         allowGoogleDriveVault: pkgAllowDriveVault,
+        packageModules: mergedPkgMods,
+        originalPricePkr: pkgOriginalPricePkr,
+        isSpecialOfferActive: pkgSpecialOfferActive,
+        specialOfferPricePkr: pkgSpecialOfferPricePkr,
+        specialOfferLabel: pkgSpecialOfferLabel,
         updatedBy: currentUser?.email || MASTER_EMAIL
       });
       const latestCfg = superAdminService.getModuleControlConfig();
@@ -284,11 +362,15 @@ export const SuperAdminView: React.FC = () => {
         pendingCloudConfigRef.current = null;
         setHasUnsyncedCloudChanges(false);
       }
+      const priceSummary =
+        pkgSpecialOfferActive && pkgSpecialOfferPricePkr < pkgOriginalPricePkr
+          ? `Special Offer PKR ${pkgSpecialOfferPricePkr.toLocaleString()} (was PKR ${pkgOriginalPricePkr.toLocaleString()})`
+          : `PKR ${pkgOriginalPricePkr.toLocaleString()}`;
       showCloudSaveResult(
         ok,
         selectedShopForModules === 'GLOBAL'
-          ? `✓ ${selectedPackageTier.toUpperCase()} Package Default Policy saved (${pkgSyncMinutes}m Auto Timer · ${pkgDailyBypassLimit} Daily Shared Bypass Counts)!`
-          : `✓ Store Assigned to ${selectedPackageTier.toUpperCase()} Package (${pkgSyncMinutes}m Auto Timer · ${pkgDailyBypassLimit} Shared Daily Bypasses for all users of this shop)!`
+          ? `✓ ${selectedPackageTier.toUpperCase()} Package Default Policy & Price (${priceSummary}) saved & synced in 1-3s across all profiles!`
+          : `✓ Store Assigned to ${selectedPackageTier.toUpperCase()} Package (${priceSummary} · ${pkgSyncMinutes}m Auto Timer · ${pkgDailyBypassLimit} Shared Daily Bypasses)!`
       );
     } finally {
       setIsSavingPkgPolicy(false);
@@ -2625,18 +2707,47 @@ export const SuperAdminView: React.FC = () => {
                   </div>
                 </div>
 
-                {/* 3 Package Tier Selector Cards */}
+                {/* 3 Package Tier Selector Cards with Live Pricing & Special Discount Cross-Out Preview */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {(['free', 'basic', 'pro'] as ShopPackageType[]).map(tier => {
                     const tierDef =
                       moduleConfig.packageDefaults?.[tier] || DEFAULT_PACKAGE_POLICIES[tier];
                     const isSelected = selectedPackageTier === tier;
+                    const fallbackPkr = tier === 'pro' ? 1000 : tier === 'basic' ? 500 : 0;
+                    const cardOrigPrice = isSelected
+                      ? pkgOriginalPricePkr
+                      : typeof tierDef.originalPricePkr === 'number'
+                      ? tierDef.originalPricePkr
+                      : fallbackPkr;
+                    const cardOfferActive = isSelected
+                      ? pkgSpecialOfferActive
+                      : Boolean(tierDef.isSpecialOfferActive);
+                    const cardOfferPrice = isSelected
+                      ? pkgSpecialOfferPricePkr
+                      : typeof tierDef.specialOfferPricePkr === 'number'
+                      ? tierDef.specialOfferPricePkr
+                      : cardOrigPrice;
+                    const cardOfferLabel = isSelected
+                      ? pkgSpecialOfferLabel
+                      : tierDef.specialOfferLabel || 'Special Offer';
+                    const hasActiveDiscount =
+                      cardOfferActive && cardOrigPrice > 0 && cardOfferPrice < cardOrigPrice;
+                    const cardDiscountPct = hasActiveDiscount
+                      ? Math.max(
+                          1,
+                          Math.min(
+                            99,
+                            Math.round(((cardOrigPrice - cardOfferPrice) / cardOrigPrice) * 100)
+                          )
+                        )
+                      : 0;
+
                     return (
                       <button
                         key={tier}
                         type="button"
                         onClick={() => handleSelectPackageTierCard(tier)}
-                        className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2 ${
+                        className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2 relative overflow-hidden ${
                           isSelected
                             ? tier === 'pro'
                               ? 'bg-gradient-to-br from-amber-500/25 to-orange-600/20 border-amber-400 shadow-md shadow-amber-500/10'
@@ -2646,7 +2757,7 @@ export const SuperAdminView: React.FC = () => {
                             : 'bg-slate-900/70 border-slate-800 hover:border-slate-600'
                         }`}
                       >
-                        <div className="flex items-center justify-between gap-2 w-full">
+                        <div className="flex items-start justify-between gap-2 w-full">
                           <div>
                             <span className="text-xs font-black uppercase tracking-wide text-white block">
                               📦 {tierDef.label}
@@ -2656,7 +2767,7 @@ export const SuperAdminView: React.FC = () => {
                             </span>
                           </div>
                           <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase ${
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase shrink-0 ${
                               isSelected
                                 ? 'bg-emerald-500 text-slate-950'
                                 : 'bg-slate-800 text-slate-400'
@@ -2666,7 +2777,42 @@ export const SuperAdminView: React.FC = () => {
                           </span>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-1.5 pt-2 border-t border-white/10 text-[10px] font-mono">
+                        {/* Live Package Price & Crossed-Out Special Offer Display */}
+                        <div className="bg-slate-950/60 border border-white/10 rounded-xl px-2.5 py-2 flex items-center justify-between gap-2">
+                          <div>
+                            <span className="text-[9px] text-slate-400 uppercase font-bold block">
+                              Package Price
+                            </span>
+                            {hasActiveDiscount ? (
+                              <div className="flex items-baseline gap-2 flex-wrap">
+                                <span className="text-xs font-mono font-bold text-rose-400 line-through decoration-rose-500 decoration-2">
+                                  PKR {cardOrigPrice.toLocaleString()}
+                                </span>
+                                <span className="text-sm font-mono font-black text-emerald-300">
+                                  PKR {cardOfferPrice.toLocaleString()}
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-sm font-mono font-black text-white">
+                                {cardOrigPrice === 0
+                                  ? 'PKR 0 (Free)'
+                                  : `PKR ${cardOrigPrice.toLocaleString()}`}
+                              </span>
+                            )}
+                          </div>
+                          {hasActiveDiscount && (
+                            <div className="text-right shrink-0">
+                              <span className="inline-block px-2 py-0.5 rounded-full bg-gradient-to-r from-rose-500 to-amber-500 text-slate-950 font-black text-[9px] uppercase">
+                                🔥 {cardDiscountPct}% OFF
+                              </span>
+                              <span className="block text-[9px] text-amber-300 font-bold mt-0.5 truncate max-w-[90px]">
+                                {cardOfferLabel}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-1.5 pt-1.5 border-t border-white/10 text-[10px] font-mono">
                           <div className="bg-black/25 px-2 py-1 rounded-lg">
                             <span className="text-slate-400 block">Auto Timer:</span>
                             <span className="text-cyan-300 font-bold">
@@ -2683,6 +2829,211 @@ export const SuperAdminView: React.FC = () => {
                       </button>
                     );
                   })}
+                </div>
+
+                {/* Advanced Package Pricing & Special Discount Offer (Sale Cross-Out) Controls */}
+                <div className="bg-slate-950/75 border border-amber-500/30 rounded-2xl p-4 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-slate-800 pb-2.5">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs sm:text-sm font-black text-white">
+                          🏷️ Package Price &amp; Special Discount Offer ({selectedPackageTier.toUpperCase()})
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[9px] font-black uppercase">
+                          Live 1-3s Sync
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        یہاں سے پیکج کی اصل قیمت (Free: 0, Basic: PKR 500, Pro: PKR 1000) یا اسپیشل ڈسکاؤنٹ آفر کسی بھی وقت تبدیل کریں — اصل قیمت پر کراس لائن (Line-Through) لگ جائے گی اور 1 سے 3 سیکنڈ میں تمام یوزرز کے پروفائل میں اپڈیٹ ہو جائے گی۔
+                      </p>
+                    </div>
+
+                    {/* Toggle Special Offer ON / OFF */}
+                    <button
+                      type="button"
+                      onClick={() => setPkgSpecialOfferActive(v => !v)}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-black border transition-all cursor-pointer shrink-0 flex items-center gap-1.5 ${
+                        pkgSpecialOfferActive
+                          ? 'bg-gradient-to-r from-rose-500 to-amber-500 text-slate-950 border-amber-300 shadow-md shadow-rose-500/20'
+                          : 'bg-slate-900 text-slate-300 border-slate-700 hover:bg-slate-800'
+                      }`}
+                    >
+                      <span>{pkgSpecialOfferActive ? '🔥 Special Offer: ON (Active)' : '⚪ Special Offer: OFF'}</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-3.5">
+                    {/* Column 1: Original / Regular Package Price (PKR) */}
+                    <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-black text-white">
+                          1. Original Package Price (اصل قیمت)
+                        </span>
+                        <span className="font-mono text-xs font-black text-cyan-300">
+                          PKR {pkgOriginalPricePkr.toLocaleString()}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-mono font-bold text-slate-400">PKR</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={500000}
+                          value={pkgOriginalPricePkr}
+                          onChange={e =>
+                            setPkgOriginalPricePkr(Math.max(0, Math.round(Number(e.target.value) || 0)))
+                          }
+                          className="w-full px-3 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono font-black text-white focus:outline-none focus:border-cyan-400"
+                        />
+                      </div>
+
+                      <div className="flex flex-wrap gap-1 pt-0.5">
+                        {[0, 300, 500, 750, 1000, 1500, 2000].map(p => (
+                          <button
+                            key={p}
+                            type="button"
+                            onClick={() => setPkgOriginalPricePkr(p)}
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border cursor-pointer ${
+                              pkgOriginalPricePkr === p
+                                ? 'bg-cyan-500 text-slate-950 border-cyan-300 font-black'
+                                : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                            }`}
+                          >
+                            {p === 0 ? 'Free (0)' : `PKR ${p}`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Column 2: Special Offer Discounted Price & Quick % Off Presets */}
+                    <div
+                      className={`rounded-xl p-3 space-y-2 border transition-all ${
+                        pkgSpecialOfferActive
+                          ? 'bg-rose-950/30 border-rose-500/40'
+                          : 'bg-slate-900/50 border-slate-800/80 opacity-75'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-black text-white">
+                          2. Special Offer Sale Price (ڈسکاؤنٹ قیمت)
+                        </span>
+                        <span className="font-mono text-xs font-black text-emerald-300">
+                          PKR {pkgSpecialOfferPricePkr.toLocaleString()}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-mono font-bold text-slate-400">PKR</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={500000}
+                          value={pkgSpecialOfferPricePkr}
+                          onChange={e => {
+                            const val = Math.max(0, Math.round(Number(e.target.value) || 0));
+                            setPkgSpecialOfferPricePkr(val);
+                            if (!pkgSpecialOfferActive && val < pkgOriginalPricePkr) {
+                              setPkgSpecialOfferActive(true);
+                            }
+                          }}
+                          className="w-full px-3 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono font-black text-emerald-300 focus:outline-none focus:border-emerald-400"
+                        />
+                      </div>
+
+                      {/* Quick Percentage Discount Calculator Buttons */}
+                      <div className="flex flex-wrap gap-1 pt-0.5">
+                        {[10, 20, 25, 30, 40, 50].map(pct => {
+                          const discounted = Math.max(
+                            0,
+                            Math.round(pkgOriginalPricePkr * (1 - pct / 100))
+                          );
+                          return (
+                            <button
+                              key={pct}
+                              type="button"
+                              onClick={() => {
+                                setPkgSpecialOfferActive(true);
+                                setPkgSpecialOfferPricePkr(discounted);
+                              }}
+                              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border cursor-pointer ${
+                                pkgSpecialOfferActive && pkgSpecialOfferPricePkr === discounted && pkgOriginalPricePkr > 0
+                                  ? 'bg-amber-500 text-slate-950 border-amber-300 font-black'
+                                  : 'bg-slate-950 text-amber-300 border-slate-800 hover:border-amber-500/40'
+                              }`}
+                            >
+                              -{pct}% (PKR {discounted})
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Column 3: Special Offer Badge Title & Live Cross-Out Preview */}
+                    <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 space-y-2 flex flex-col justify-between">
+                      <div className="space-y-1.5">
+                        <span className="text-[11px] font-black text-white block">
+                          3. Offer Badge Label &amp; Live Sale Preview
+                        </span>
+                        <input
+                          type="text"
+                          value={pkgSpecialOfferLabel}
+                          onChange={e => setPkgSpecialOfferLabel(e.target.value)}
+                          placeholder="e.g. Special Offer / Eid Sale / Limited Offer"
+                          className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-bold text-amber-200 focus:outline-none focus:border-amber-400"
+                        />
+                        <div className="flex flex-wrap gap-1">
+                          {['Special Offer', 'Limited Offer', 'Mega Sale', 'Eid Offer', 'Ramzan Offer'].map(lbl => (
+                            <button
+                              key={lbl}
+                              type="button"
+                              onClick={() => {
+                                setPkgSpecialOfferLabel(lbl);
+                                setPkgSpecialOfferActive(true);
+                              }}
+                              className={`px-2 py-0.5 rounded text-[9px] font-bold border cursor-pointer ${
+                                pkgSpecialOfferLabel === lbl
+                                  ? 'bg-indigo-500 text-white border-indigo-400'
+                                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-white'
+                              }`}
+                            >
+                              {lbl}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Live Preview of how it renders in Store Admin Profile */}
+                      <div className="bg-slate-950 border border-slate-800 rounded-lg p-2 flex items-center justify-between gap-2">
+                        <span className="text-[9px] text-slate-400 font-bold uppercase">
+                          Profile Preview:
+                        </span>
+                        {pkgSpecialOfferActive && pkgOriginalPricePkr > 0 && pkgSpecialOfferPricePkr < pkgOriginalPricePkr ? (
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-mono font-bold text-rose-400 line-through decoration-rose-500 decoration-2">
+                              PKR {pkgOriginalPricePkr.toLocaleString()}
+                            </span>
+                            <span className="text-xs font-mono font-black text-emerald-400">
+                              PKR {pkgSpecialOfferPricePkr.toLocaleString()}
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white font-black text-[9px]">
+                              {Math.max(
+                                1,
+                                Math.round(
+                                  ((pkgOriginalPricePkr - pkgSpecialOfferPricePkr) / pkgOriginalPricePkr) * 100
+                                )
+                              )}
+                              % OFF
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-xs font-mono font-black text-white">
+                            PKR {pkgOriginalPricePkr.toLocaleString()}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Auto Sync Timer & Shared Daily Bypass Count Controls */}
@@ -2787,7 +3138,13 @@ export const SuperAdminView: React.FC = () => {
                       {/* 15GB Google Drive Vault Package Permission Toggle */}
                       <button
                         type="button"
-                        onClick={() => setPkgAllowDriveVault(v => !v)}
+                        onClick={() => {
+                          setPkgAllowDriveVault(v => {
+                            const next = !v;
+                            setPkgModulesMap(prev => ({ ...prev, google_drive_vault: next }));
+                            return next;
+                          });
+                        }}
                         className={`px-2.5 py-1 rounded-lg text-[10px] font-black border flex items-center gap-1 cursor-pointer ${
                           pkgAllowDriveVault
                             ? 'bg-emerald-600/30 text-emerald-300 border-emerald-500/40'
@@ -2798,6 +3155,127 @@ export const SuperAdminView: React.FC = () => {
                         <span>15GB Google Drive Vault: {pkgAllowDriveVault ? 'Unlocked' : 'Locked'}</span>
                       </button>
                     </div>
+                  </div>
+                </div>
+
+                {/* Per-Package Included Features & Permissions Lock/Unlock Grid (Free vs Basic vs Pro) */}
+                <div className="bg-slate-950/70 border border-slate-800 rounded-2xl p-3.5 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-black text-white block">
+                        🔐 Included Permissions for {selectedPackageTier.toUpperCase()} Package (پیکج کے ان لاک اور لاک فیچرز)
+                      </span>
+                      <span className="text-[10px] text-slate-400 block">
+                        اس پیکج ({selectedPackageTier.toUpperCase()}) میں کون سے فیچرز ان لاک اور کون سے لاک ہوں گے — یوزر پروفائل میں پیکج سلیکٹ کرنے پر یہی لسٹ موازنہ کیلئے نظر آتی ہے۔
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allTrue: Record<string, boolean> = {};
+                          [
+                            ...ALL_CONTROLLABLE_MODULES.map(m => m.id),
+                            'data_export',
+                            'sql_import'
+                          ].forEach(k => {
+                            allTrue[k] = true;
+                          });
+                          setPkgModulesMap(allTrue);
+                          setPkgAllowDriveVault(true);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-600/25 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/40 text-[10px] font-black cursor-pointer"
+                      >
+                        🔓 Unlock All in {selectedPackageTier.toUpperCase()}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const defMods = {
+                            ...(DEFAULT_PACKAGE_POLICIES[selectedPackageTier].packageModules || {})
+                          };
+                          setPkgModulesMap(defMods);
+                          setPkgAllowDriveVault(defMods.google_drive_vault !== false);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[10px] font-bold cursor-pointer"
+                      >
+                        ↺ Reset Tier Defaults
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
+                    {[
+                      ...ALL_CONTROLLABLE_MODULES.map(m => ({
+                        id: m.id,
+                        label: m.label,
+                        urduLabel: m.urduLabel
+                      })),
+                      {
+                        id: 'data_export',
+                        label: 'JSON Data Backup',
+                        urduLabel: 'ڈیٹا بیک اپ'
+                      },
+                      {
+                        id: 'sql_import',
+                        label: 'Smart SQL Import',
+                        urduLabel: 'ایس کیو ایل امپورٹ'
+                      }
+                    ].map(feat => {
+                      const isFeatUnlocked =
+                        feat.id === 'google_drive_vault'
+                          ? pkgAllowDriveVault
+                          : pkgModulesMap[feat.id] !== false;
+                      return (
+                        <button
+                          key={feat.id}
+                          type="button"
+                          onClick={() => {
+                            const nextVal = !isFeatUnlocked;
+                            setPkgModulesMap(prev => ({
+                              ...prev,
+                              [feat.id]: nextVal
+                            }));
+                            if (feat.id === 'google_drive_vault') {
+                              setPkgAllowDriveVault(nextVal);
+                            }
+                          }}
+                          className={`px-2.5 py-1.5 rounded-xl border text-left flex items-center justify-between gap-1.5 transition-all cursor-pointer ${
+                            isFeatUnlocked
+                              ? 'bg-emerald-950/35 border-emerald-500/40 text-emerald-200'
+                              : 'bg-rose-950/35 border-rose-500/40 text-rose-200'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <span className="text-[10.5px] font-black text-white block truncate">
+                              {feat.label}
+                            </span>
+                            <span className="text-[9.5px] text-slate-400 block truncate">
+                              {feat.urduLabel}
+                            </span>
+                          </div>
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-black shrink-0 flex items-center gap-0.5 ${
+                              isFeatUnlocked
+                                ? 'bg-emerald-500/25 text-emerald-300'
+                                : 'bg-rose-500/25 text-rose-300'
+                            }`}
+                          >
+                            {isFeatUnlocked ? (
+                              <>
+                                <Unlock className="w-2.5 h-2.5" />
+                                <span>Open</span>
+                              </>
+                            ) : (
+                              <>
+                                <Lock className="w-2.5 h-2.5" />
+                                <span>Lock</span>
+                              </>
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
