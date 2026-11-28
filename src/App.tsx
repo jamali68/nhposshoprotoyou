@@ -34,6 +34,7 @@ import { DeletedHistoryView } from './views/DeletedHistoryView';
 import { EditHistoryLogsView } from './views/EditHistoryLogsView';
 import { StaffManagementView } from './views/StaffManagementView';
 import { MonthlySummaryView } from './views/MonthlySummaryView';
+import { GoogleDriveVaultView } from './views/GoogleDriveVaultView';
 import { SuperAdminView } from './superadmin/SuperAdminView';
 import { SuperAdminAuthModal } from './superadmin/SuperAdminAuthModal';
 import { superAdminService, MASTER_EMAIL, ALL_CONTROLLABLE_MODULES } from './superadmin/superAdminService';
@@ -250,6 +251,7 @@ const MainAppContent: React.FC = () => {
       !isAuthorizedSuperAdmin &&
       activeView !== 'dashboard' &&
       activeView !== 'super_admin' &&
+      activeView !== 'google_drive_vault' &&
       !lockCheck.unlocked
     ) {
       const lookupModId = activeView === 'permissions' ? 'staff_management' : activeView;
@@ -313,6 +315,8 @@ const MainAppContent: React.FC = () => {
       }
       case 'monthly_summary':
         return <MonthlySummaryView />;
+      case 'google_drive_vault':
+        return <GoogleDriveVaultView />;
       case 'super_admin':
         return isAuthorizedSuperAdmin ? <SuperAdminView /> : <DashboardView />;
       default:

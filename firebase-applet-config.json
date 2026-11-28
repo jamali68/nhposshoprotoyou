@@ -1,9 +1,12 @@
 {
-  "projectId": "taj-pos-sadiqabad",
-  "appId": "1:667439771915:web:8fb87174611616f55e320e",
-  "apiKey": "AIzaSyD8coXy7JC1HrhdXazfz3LdQkL7QHsvB9Q",
-  "authDomain": "taj-pos-sadiqabad.firebaseapp.com",
-  "storageBucket": "taj-pos-sadiqabad.firebasestorage.app",
-  "messagingSenderId": "667439771915",
+  "projectId": "nhpos-bfd1c",
+  "appId": "1:533348068082:web:4fed4f9b556acdbdb83e6b",
+  "apiKey": "AIzaSyDR58BdCDW24psxyp9tKvuKgg-hZKecDZo",
+  "authDomain": "nhpos-bfd1c.firebaseapp.com",
+  "storageBucket": "nhpos-bfd1c.firebasestorage.app",
+  "messagingSenderId": "533348068082",
+  "measurementId": "",
+  "oAuthClientId": "533348068082-6ipgbddm5sse3c1e7n41h04c86bp36h2.apps.googleusercontent.com",
+  "recaptchaSiteKey": "",
   "firestoreDatabaseId": "(default)"
 }

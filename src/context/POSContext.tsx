@@ -112,6 +112,7 @@ export type ActiveView =
   | 'edit_logs'
   | 'staff_management'
   | 'permissions'
+  | 'google_drive_vault'
   | 'super_admin';
 
 export interface BachatSummary {

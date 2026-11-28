@@ -657,6 +657,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                     const effectiveShopId = currentShop?.id || currentUser?.shopId;
                     const syncPolicy = superAdminService.getShopEffectiveSyncPolicy(effectiveShopId);
                     const canDriveVault = userRole === 'super_admin' || syncPolicy.allowGoogleDriveVault;
+                    const isDriveActive = activeView === 'google_drive_vault';
                     return (
                       <button
                         type="button"
@@ -665,10 +666,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                             showAppAlert('🔒 15GB Google Drive Receipt Vault آپ کے موجودہ پیکج پر سپر ایڈمن کی جانب سے لاک (Locked) ہے۔ ان لاک کروانے کیلئے سپر ایڈمن یا پیکج اپگریڈ سے رابطہ کریں۔');
                             return;
                           }
-                          showAppAlert('☁️ 15GB Free Google Drive Receipt & Bill Screenshot Vault آپ کے پیکج میں ان لاک (Unlocked) ہے! نیکسٹ فیز میں یہاں سے بل اور سینڈنگ/رسیونگ کی تصاویر براہ راست آپ کے اپنے 15GB Google Drive میں محفوظ ہوں گی۔');
+                          setActiveView('google_drive_vault');
+                          onClose();
                         }}
                         className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors text-left group cursor-pointer ${
-                          canDriveVault
+                          isDriveActive
+                            ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-500/40'
+                            : canDriveVault
                             ? 'text-slate-300 hover:text-white hover:bg-slate-800/70'
                             : 'text-slate-500 hover:bg-slate-800/40'
                         }`}
