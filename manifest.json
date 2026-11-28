@@ -1,0 +1,40 @@
+{
+  "name": "NH POS Shop",
+  "short_name": "NH POS Shop",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  },
+  "background_color": "#FAF8EC",
+  "theme_color": "#1e5631",
+  "description": "NH POS Shop - Complete POS, Daily Cash Book, Easyload Ledger & Khata Management System",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
