@@ -5,7 +5,6 @@
 
 import React, { useState } from 'react';
 import {
-  ArrowLeft,
   Search,
   PlusCircle,
   Edit2,
@@ -17,6 +16,8 @@ import {
   Phone,
   MapPin,
   Printer,
+  Image as ImageIcon,
+  MessageCircle,
   X
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
@@ -24,7 +25,14 @@ import { CustomerBill } from '../types/pos';
 import { PrintReceiptModal } from '../components/PrintReceiptModal';
 import { showAppAlert, showAppConfirm } from '../components/AppDialogHost';
 import { AmountInput } from '../components/AmountInput';
+import { StickyPageHeader } from '../components/StickyPageHeader';
 import { superAdminService } from '../superadmin/superAdminService';
+import {
+  LedgerExportPayload,
+  downloadLedgerAsJpg,
+  downloadLedgerAsPdf,
+  shareLedgerOnWhatsApp
+} from '../utils/ledgerExport';
 
 export const CustomerBillsView: React.FC = () => {
   const {
@@ -72,19 +80,105 @@ export const CustomerBillsView: React.FC = () => {
     return rawVal;
   };
 
+  // Compute true cumulative lifetime totals (combining stored totals + linked customer daily transactions)
+  const getCustomerLifetimeTotals = (c: CustomerBill) => {
+    const linkedTxs = dailyTransactions.filter(
+      t => t.bill_id === c.id && t.party_type === 'customer'
+    );
+    const txOutSum = linkedTxs
+      .filter(t => t.type === 'out')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    const txInSum = linkedTxs
+      .filter(t => t.type === 'in')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+    const remaining = Math.max(0, Number(c.remaining_balance) || 0);
+    const storedTotal = Math.max(0, Number(c.total_bill) || 0);
+    const storedReceived = Math.max(0, Number(c.total_received) || 0);
+
+    const totalReceived = Math.max(
+      storedReceived,
+      txInSum,
+      Math.max(0, storedTotal - remaining)
+    );
+    const totalGiven = Math.max(
+      storedTotal,
+      txOutSum,
+      totalReceived + remaining
+    );
+
+    return { totalGiven, totalReceived, remaining };
+  };
+
   const openEditCustomerModal = (c: CustomerBill) => {
     if (!superAdminService.isActionUnlockedForUser('allowManageBills', userWithShop)) {
       showAppAlert('🔒 کسٹمر کھاتہ ایڈٹ کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
       return;
     }
-    setEditItem(c);
-    setEditBillStr(c.total_bill === 0 ? '' : c.total_bill.toString());
-    setEditRemainingStr(c.remaining_balance === 0 ? '' : c.remaining_balance.toString());
+    const { totalGiven, totalReceived, remaining } = getCustomerLifetimeTotals(c);
+    setEditItem({
+      ...c,
+      total_bill: totalGiven,
+      total_received: totalReceived,
+      remaining_balance: remaining
+    });
+    setEditBillStr(totalGiven.toString());
+    setEditRemainingStr(remaining.toString());
   };
 
   // Statement Ledger Modal & Slip Modal
   const [statementCustomer, setStatementCustomer] = useState<CustomerBill | null>(null);
   const [printReceiptBill, setPrintReceiptBill] = useState<CustomerBill | null>(null);
+  const [exportStatusMsg, setExportStatusMsg] = useState<string | null>(null);
+
+  const buildCustomerLedgerExportPayload = (c: CustomerBill): LedgerExportPayload => {
+    const { totalGiven, totalReceived, remaining } = getCustomerLifetimeTotals(c);
+    const linkedTxs = dailyTransactions.filter(
+      t => t.bill_id === c.id && t.party_type === 'customer'
+    );
+    const entries =
+      linkedTxs.length > 0
+        ? linkedTxs.map(tx => ({
+            description: tx.description,
+            date: tx.transaction_date,
+            by: tx.created_by_name || tx.created_by,
+            type: tx.amount === 0 ? 'opening' : tx.type,
+            amount: Number(tx.amount) || 0
+          }))
+        : [
+            {
+              description:
+                totalGiven === 0
+                  ? 'Khata Started (Opening Balance: Rs. 0)'
+                  : 'Opening Bill / Credit',
+              date: c.created_date,
+              type: 'opening',
+              amount: totalGiven
+            }
+          ];
+
+    return {
+      shopName: currentShop?.shop_name || currentUser?.shopName || 'NH POS Shop',
+      shopPhone: currentShop?.phone,
+      partyTypeLabel: 'Customer',
+      partyName: c.customer_name,
+      partyPhone: c.phone_number,
+      invoiceNumber: c.invoice_number,
+      address: c.address,
+      totalGivenLabel: 'Total Diya',
+      totalReceivedLabel: 'Wapas Mila',
+      remainingLabel: 'Baqi Lena Hai',
+      totalGiven,
+      totalReceived,
+      remaining,
+      entries
+    };
+  };
+
+  const triggerExportFeedback = (msg: string) => {
+    setExportStatusMsg(msg);
+    setTimeout(() => setExportStatusMsg(null), 2600);
+  };
 
   const totalReceivable = getTotalCustomerReceivable();
   const totalCount = customers.length;
@@ -202,19 +296,33 @@ export const CustomerBillsView: React.FC = () => {
       return;
     }
 
-    const totalBillVal = editBillStr.trim() === '' ? 0 : parseFloat(editBillStr);
+    const rawTotalBillVal = editBillStr.trim() === '' ? 0 : parseFloat(editBillStr);
     const remainingVal = editRemainingStr.trim() === '' ? 0 : parseFloat(editRemainingStr);
 
-    if (isNaN(totalBillVal) || totalBillVal < 0 || isNaN(remainingVal) || remainingVal < 0) {
+    if (isNaN(rawTotalBillVal) || rawTotalBillVal < 0 || isNaN(remainingVal) || remainingVal < 0) {
       showAppAlert('Baraye meharbani durust raqam (0 ya us se zyada) darj karein!');
       return;
     }
+
+    // If user increased Remaining Balance without bumping Total Di Gayi Rakam, keep Total Di Gayi Rakam >= Remaining Balance
+    const prevRem = Math.max(0, Number(editItem.remaining_balance) || 0);
+    const prevReceived = Math.max(0, Number(editItem.total_received) || 0);
+    const totalBillVal =
+      remainingVal > prevRem
+        ? Math.max(rawTotalBillVal, remainingVal + prevReceived)
+        : Math.max(rawTotalBillVal, remainingVal);
 
     const updatedCustomer: CustomerBill = {
       ...editItem,
       customer_name: trimmedName,
       total_bill: totalBillVal,
+      total_received: Math.max(0, totalBillVal - remainingVal),
       remaining_balance: remainingVal,
+      invoice_number: editItem.invoice_number?.trim() || undefined,
+      phone_number: editItem.phone_number?.trim() || undefined,
+      address: editItem.address?.trim() || undefined,
+      order_day: editItem.order_day?.trim() || undefined,
+      supply_day: editItem.supply_day?.trim() || undefined,
       status: remainingVal <= 0 ? 'paid' : 'pending'
     };
 
@@ -224,23 +332,11 @@ export const CustomerBillsView: React.FC = () => {
 
   return (
     <div className="space-y-4 pb-12">
-      {/* Top Header */}
-      <div className="flex items-center justify-between bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
-        <button
-          type="button"
-          onClick={() => setActiveView('dashboard')}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2c3e50] hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-colors"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back</span>
-        </button>
-
-        <h2 className="text-base sm:text-lg font-black text-slate-800 text-center tracking-tight">
-          Customer Credit Ledger
-        </h2>
-
-        <div className="w-8" />
-      </div>
+      {/* Sticky Top Header (Shrinks 50% with frosted glass on scroll) */}
+      <StickyPageHeader
+        title="Customer Credit Ledger"
+        onBack={() => setActiveView('dashboard')}
+      />
 
       {/* Emerald Box Banner matching PHP #407a22 */}
       <div className="bg-[#407a22] text-white p-4 sm:p-5 rounded-2xl shadow-md flex items-center justify-between">
@@ -284,17 +380,19 @@ export const CustomerBillsView: React.FC = () => {
       <button
         type="button"
         onClick={() => setShowAddForm(prev => !prev)}
-        className="w-full py-3 bg-[#1e293b] hover:bg-slate-900 text-white font-bold text-xs rounded-xl shadow-sm flex items-center justify-center gap-2 transition-colors"
+        className="w-full py-3 bg-[#1e293b] hover:bg-slate-900 text-white font-bold text-xs rounded-xl shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
       >
         <PlusCircle className="w-4 h-4 text-emerald-400" />
-        <span>{showAddForm ? '× Close Form' : '+ Add New Customer Bill'}</span>
+        <span>{showAddForm ? '× Form Band Karein' : '+ Add New Customer Bill'}</span>
       </button>
 
       {/* Add Form */}
       {showAddForm && (
-        <div className="bg-white rounded-2xl p-4 sm:p-5 shadow-xs border border-slate-200/80 space-y-3 animate-in fade-in duration-200">
-          <h3 className="font-black text-sm text-slate-800 text-center">New Customer Bill Details</h3>
-          <form onSubmit={handleAddCustomer} className="space-y-2.5 text-xs">
+        <div className="bg-white rounded-2xl p-4 sm:p-5 shadow-xs border border-slate-200/80 space-y-3.5 animate-in fade-in duration-200">
+          <h3 className="font-black text-sm sm:text-base text-slate-900 text-center">
+            Customer Ko Rakam Dene ki Tafseel
+          </h3>
+          <form onSubmit={handleAddCustomer} className="space-y-3 text-xs">
             <input
               type="text"
               name="customer_name"
@@ -302,69 +400,72 @@ export const CustomerBillsView: React.FC = () => {
               autoComplete="on"
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder="Customer Name *"
+              placeholder="Customer Ka Naam *"
               required
-              className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-semibold"
+              className="w-full px-3.5 py-3 bg-white border border-slate-300 rounded-xl font-semibold text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500"
             />
             <AmountInput
               value={amount}
               onValueChange={setAmount}
-              placeholder="Bill / Credit Amount (e.g. 10,000)"
-              className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl font-bold text-sm"
+              placeholder="Rakam (Amount) Jo Di Hai *"
+              className="w-full px-3.5 py-3 bg-white border border-slate-300 rounded-xl font-bold text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500"
             />
 
-            <div className="pt-1 text-[11px] text-slate-400 font-semibold">Optional Details:</div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="border-t border-dashed border-slate-200 pt-2.5 text-[11px] text-slate-500 font-bold">
+              Optional Details (Zaroori Nahi Hain):
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
               <input
                 type="text"
                 value={invNum}
                 onChange={e => setInvNum(e.target.value)}
                 placeholder="Invoice Number"
-                className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl"
+                className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500"
               />
               <input
                 type="text"
                 value={phone}
                 onChange={e => setPhone(e.target.value)}
                 placeholder="Phone Number"
-                className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl"
+                className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500"
               />
             </div>
 
             <textarea
               value={address}
               onChange={e => setAddress(e.target.value)}
-              placeholder="Customer Address"
+              placeholder="Customer Ka Pata (Address)"
               rows={2}
-              className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl resize-none"
+              className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 resize-none focus:outline-none focus:border-emerald-500"
             />
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-2.5">
               <div>
-                <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Payment Date</label>
+                <label className="block text-[11px] font-bold text-slate-600 mb-1">Payment Date</label>
                 <input
                   type="date"
                   value={orderDay}
                   onChange={e => setOrderDay(e.target.value)}
-                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-xl text-xs"
+                  className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-800 focus:outline-none focus:border-emerald-500"
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-bold text-slate-500 mb-0.5">Return Date</label>
+                <label className="block text-[11px] font-bold text-slate-600 mb-1">Return Date</label>
                 <input
                   type="date"
                   value={supplyDay}
                   onChange={e => setSupplyDay(e.target.value)}
-                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-xl text-xs"
+                  className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-800 focus:outline-none focus:border-emerald-500"
                 />
               </div>
             </div>
 
             <button
               type="submit"
-              className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition-colors"
+              className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm rounded-xl shadow-md transition-colors cursor-pointer"
             >
-              Save Customer Bill
+              Khata Save Karein
             </button>
           </form>
         </div>
@@ -391,9 +492,22 @@ export const CustomerBillsView: React.FC = () => {
                       )}
                     </div>
 
-                    <div className="text-slate-500 text-[11px]">
-                      Opening: Rs. {c.total_bill.toLocaleString()} | Date: {c.created_date}
-                    </div>
+                    {(() => {
+                      const { totalGiven, totalReceived } = getCustomerLifetimeTotals(c);
+                      return (
+                        <div className="text-slate-500 text-[11px] flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          <span>
+                            Total Diya: <b className="font-mono text-slate-700">Rs. {totalGiven.toLocaleString()}</b>
+                          </span>
+                          <span>|</span>
+                          <span>
+                            Wapas Mila: <b className="font-mono text-emerald-700">Rs. {totalReceived.toLocaleString()}</b>
+                          </span>
+                          <span>|</span>
+                          <span>Date: {c.created_date}</span>
+                        </div>
+                      );
+                    })()}
 
                     {c.invoice_number && (
                       <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-mono font-bold">
@@ -511,17 +625,34 @@ export const CustomerBillsView: React.FC = () => {
         </div>
       </div>
 
-      {/* Edit Modal */}
+      {/* Edit Modal — Exact same fields & layout as Add Customer Form */}
       {editItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white text-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl border border-slate-100 space-y-3">
-            <h3 className="font-bold text-sm text-slate-800 pb-2 border-b border-slate-100">
-              Edit Customer Details
-            </h3>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs"
+          onClick={e => {
+            if (e.target === e.currentTarget) setEditItem(null);
+          }}
+        >
+          <div className="bg-white text-slate-800 w-full max-w-md rounded-2xl p-5 shadow-2xl border border-slate-100 space-y-3.5 max-h-[92vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between">
+              <h3 className="font-black text-base text-slate-900">
+                Customer Khata Edit Karein
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditItem(null)}
+                aria-label="Close"
+                className="text-slate-400 hover:text-slate-700 p-1 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
 
-            <form onSubmit={handleEditSubmit} className="space-y-2.5 text-xs">
+            <form onSubmit={handleEditSubmit} className="space-y-3 text-xs">
               <div>
-                <label className="block text-[11px] font-bold text-slate-500 mb-1">Customer Name</label>
+                <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                  Customer Ka Naam
+                </label>
                 <input
                   type="text"
                   name="edit_customer_name"
@@ -529,14 +660,17 @@ export const CustomerBillsView: React.FC = () => {
                   autoComplete="on"
                   value={editItem.customer_name}
                   onChange={e => setEditItem({ ...editItem, customer_name: e.target.value })}
+                  placeholder="Customer Ka Naam"
                   required
-                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold"
+                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl font-semibold text-sm text-slate-900 focus:outline-none focus:border-blue-500"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-500 mb-1">Total Bill</label>
+              <div className="grid grid-cols-2 gap-2.5 items-end">
+                <div className="flex flex-col">
+                  <label className="min-h-[28px] flex items-end text-[11px] font-bold text-slate-600 mb-1 leading-tight">
+                    Total Di Gayi Rakam (Rs.)
+                  </label>
                   <AmountInput
                     value={editBillStr}
                     onValueChange={val => setEditBillStr(sanitizeNumberInput(val))}
@@ -548,11 +682,13 @@ export const CustomerBillsView: React.FC = () => {
                       }
                     }}
                     placeholder="0"
-                    className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold"
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl font-bold text-sm text-slate-900 focus:outline-none focus:border-blue-500"
                   />
                 </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-500 mb-1">Remaining Balance</label>
+                <div className="flex flex-col">
+                  <label className="min-h-[28px] flex items-end text-[11px] font-bold text-slate-600 mb-1 leading-tight">
+                    Baqi Lene Wali Rakam (Rs.)
+                  </label>
                   <AmountInput
                     value={editRemainingStr}
                     onValueChange={val => setEditRemainingStr(sanitizeNumberInput(val))}
@@ -564,65 +700,93 @@ export const CustomerBillsView: React.FC = () => {
                       }
                     }}
                     placeholder="0"
-                    className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold"
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl font-bold text-sm text-slate-900 focus:outline-none focus:border-blue-500"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="flex items-center justify-between px-3 py-2 bg-slate-50 border border-slate-200/80 rounded-xl text-[11px]">
+                <span className="font-semibold text-slate-600">Total Wapas Mili (Received):</span>
+                <span className="font-mono font-black text-emerald-700">
+                  Rs.{' '}
+                  {Math.max(
+                    0,
+                    (parseFloat(editBillStr || '0') || 0) - (parseFloat(editRemainingStr || '0') || 0)
+                  ).toLocaleString()}
+                </span>
+              </div>
+
+              <div className="border-t border-dashed border-slate-200 pt-2.5 grid grid-cols-2 gap-2.5">
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-500 mb-1">Invoice Number</label>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                    Invoice Number
+                  </label>
                   <input
                     type="text"
                     value={editItem.invoice_number || ''}
                     onChange={e => setEditItem({ ...editItem, invoice_number: e.target.value })}
-                    className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg"
+                    placeholder="Invoice Number"
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-blue-500"
                   />
                 </div>
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-500 mb-1">Phone Number</label>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                    Phone Number
+                  </label>
                   <input
                     type="text"
                     value={editItem.phone_number || ''}
                     onChange={e => setEditItem({ ...editItem, phone_number: e.target.value })}
-                    className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg"
+                    placeholder="Phone Number"
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-blue-500"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-[11px] font-bold text-slate-500 mb-1">Entry Date (تاریخ)</label>
-                <input
-                  type="date"
-                  value={editItem.created_date || ''}
-                  onChange={e => setEditItem({ ...editItem, created_date: e.target.value })}
-                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold text-slate-800"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-500 mb-1">Address</label>
-                <input
-                  type="text"
+                <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                  Address
+                </label>
+                <textarea
                   value={editItem.address || ''}
                   onChange={e => setEditItem({ ...editItem, address: e.target.value })}
-                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg"
+                  placeholder="Customer Ka Pata (Address)"
+                  rows={2}
+                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 resize-none focus:outline-none focus:border-blue-500"
                 />
               </div>
 
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setEditItem(null)}
-                  className="flex-1 py-2 bg-slate-100 text-slate-600 font-bold rounded-xl"
-                >
-                  Cancel
-                </button>
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                    Payment Date
+                  </label>
+                  <input
+                    type="date"
+                    value={editItem.order_day || ''}
+                    onChange={e => setEditItem({ ...editItem, order_day: e.target.value })}
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                    Return Date
+                  </label>
+                  <input
+                    type="date"
+                    value={editItem.supply_day || ''}
+                    onChange={e => setEditItem({ ...editItem, supply_day: e.target.value })}
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-1">
                 <button
                   type="submit"
-                  className="flex-1 py-2 bg-emerald-600 text-white font-bold rounded-xl shadow-sm"
+                  className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm rounded-xl shadow-md transition-colors cursor-pointer"
                 >
-                  Save
+                  Tabdeeli Save Karein
                 </button>
               </div>
             </form>
@@ -650,12 +814,25 @@ export const CustomerBillsView: React.FC = () => {
               </button>
             </div>
 
-            <div className="p-3 bg-slate-50 my-3 rounded-xl flex justify-between items-center text-xs">
-              <span className="font-semibold text-slate-700">Opening Balance: <b className="font-mono text-slate-900">Rs. {statementCustomer.total_bill.toLocaleString()}</b></span>
-              <span className="font-bold text-emerald-700">
-                Remaining Receivable: <b className="font-mono">Rs. {statementCustomer.remaining_balance.toLocaleString()}</b>
-              </span>
-            </div>
+            {(() => {
+              const { totalGiven, totalReceived, remaining } = getCustomerLifetimeTotals(statementCustomer);
+              return (
+                <div className="p-3 bg-slate-50 my-3 rounded-xl grid grid-cols-3 gap-2 text-center text-xs border border-slate-200/70">
+                  <div>
+                    <div className="text-[10px] font-bold text-slate-500">Total Diya</div>
+                    <div className="font-mono font-black text-slate-900">Rs. {totalGiven.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold text-slate-500">Wapas Mila</div>
+                    <div className="font-mono font-black text-emerald-700">Rs. {totalReceived.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold text-slate-500">Baqi Lena Hai</div>
+                    <div className="font-mono font-black text-rose-600">Rs. {remaining.toLocaleString()}</div>
+                  </div>
+                </div>
+              );
+            })()}
 
             <div className="flex-1 overflow-y-auto space-y-2 text-xs divide-y divide-slate-100 pr-1">
               {(() => {
@@ -705,15 +882,55 @@ export const CustomerBillsView: React.FC = () => {
               })()}
             </div>
 
-            <div className="pt-4 border-t border-slate-100 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm"
-              >
-                <Printer className="w-4 h-4" />
-                <span>Print / Download PDF</span>
-              </button>
+            <div className="pt-3.5 border-t border-slate-100 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-black uppercase tracking-wider text-slate-500">
+                  Download Format
+                </span>
+                {exportStatusMsg && (
+                  <span className="text-[11px] font-bold text-emerald-600 animate-in fade-in">
+                    {exportStatusMsg}
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    downloadLedgerAsPdf(buildCustomerLedgerExportPayload(statementCustomer));
+                    triggerExportFeedback('✓ PDF Downloaded!');
+                  }}
+                  className="py-2.5 px-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors cursor-pointer active:scale-95"
+                >
+                  <FileText className="w-4 h-4 shrink-0" />
+                  <span>PDF</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    downloadLedgerAsJpg(buildCustomerLedgerExportPayload(statementCustomer));
+                    triggerExportFeedback('✓ JPG Downloaded!');
+                  }}
+                  className="py-2.5 px-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors cursor-pointer active:scale-95"
+                >
+                  <ImageIcon className="w-4 h-4 shrink-0" />
+                  <span>JPG</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await shareLedgerOnWhatsApp(buildCustomerLedgerExportPayload(statementCustomer));
+                    triggerExportFeedback('✓ Ready on WhatsApp!');
+                  }}
+                  className="py-2.5 px-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[11px] sm:text-xs font-bold flex items-center justify-center gap-1 shadow-sm transition-colors cursor-pointer active:scale-95"
+                >
+                  <MessageCircle className="w-4 h-4 shrink-0" />
+                  <span className="truncate">Share WhatsApp</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

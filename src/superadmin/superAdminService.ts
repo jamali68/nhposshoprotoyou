@@ -3,9 +3,70 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { db, collection, doc, getDocs, getDoc, setDoc, updateDoc } from '../firebase';
+import { db, auth, collection, doc, getDocs, getDoc, setDoc, updateDoc } from '../firebase';
+import firebaseConfig from '../../firebase-applet-config.json';
+import { withTimeout, patchFirestoreDocDirect } from '../utils/bgSyncStore';
 import { authApi } from '../services/authApi';
 import { generateSecurityRequestHeaders } from '../utils/securityShield';
+
+/**
+ * Resilient Firestore document write for Super Admin settings/policies:
+ * - Tries Firestore SDK setDoc with a strict 6s timeout so stalled mobile WebChannel sockets never freeze UI buttons.
+ * - Automatically falls back to Direct Firestore REST API (8s AbortController timeout + Firebase Auth ID token).
+ */
+async function writeAdminDocResilient(
+  collectionName: string,
+  docId: string,
+  payload: Record<string, any>
+): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return false;
+  }
+
+  try {
+    await withTimeout(
+      setDoc(doc(db, collectionName, docId), payload, { merge: true }),
+      6000,
+      `setDoc:${collectionName}/${docId}`
+    );
+    return true;
+  } catch (sdkErr: any) {
+    const code = String(sdkErr?.code || sdkErr?.message || '').toLowerCase();
+    // If explicitly permission-denied by Firestore rules, no need to retry unauthenticated REST unless we have an ID token
+    let authToken: string | null = null;
+    try {
+      if (auth.currentUser) {
+        authToken = await withTimeout(auth.currentUser.getIdToken(), 2500, 'adminGetIdToken');
+      }
+    } catch {
+      authToken = null;
+    }
+
+    if (code.includes('permission-denied') && !authToken) {
+      console.warn(`Firestore permission denied for ${collectionName}/${docId}:`, sdkErr);
+      return false;
+    }
+
+    console.warn(`SDK setDoc timed out/failed for ${collectionName}/${docId}, falling back to direct REST:`, sdkErr);
+    const restPath = `${encodeURIComponent(collectionName)}/${encodeURIComponent(docId)}`;
+    const restRes = await patchFirestoreDocDirect(
+      {
+        projectId: firebaseConfig.projectId,
+        databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
+        apiKey: firebaseConfig.apiKey,
+        authToken
+      },
+      restPath,
+      payload,
+      8000
+    );
+    if (!restRes.ok) {
+      console.error(`Direct REST write failed for ${collectionName}/${docId}:`, restRes.status, restRes.error);
+      return false;
+    }
+    return true;
+  }
+}
 import {
   mergeShopUsageTelemetry,
   loadShopTelemetry,
@@ -513,9 +574,9 @@ export const superAdminService = {
       window.dispatchEvent(new CustomEvent('taj_module_control_updated', { detail: updated }));
 
       if (typeof navigator === 'undefined' || navigator.onLine) {
-        await setDoc(doc(db, 'platform_settings', 'module_control'), updated, { merge: true });
+        return await writeAdminDocResilient('platform_settings', 'module_control', updated as any);
       }
-      return true;
+      return false;
     } catch (err) {
       console.error('Error saving module control config to Firestore:', err);
       return false;
@@ -1291,13 +1352,9 @@ export const superAdminService = {
         new CustomEvent('taj_shop_bypass_updated', { detail: { shopId, state: resetState } })
       );
       if (typeof navigator === 'undefined' || navigator.onLine) {
-        await setDoc(
-          doc(db, 'shops', shopId),
-          {
-            daily_bypass_state: resetState
-          },
-          { merge: true }
-        );
+        return await writeAdminDocResilient('shops', shopId, {
+          daily_bypass_state: resetState
+        });
       }
       return true;
     } catch {
@@ -1412,16 +1469,12 @@ export const superAdminService = {
 
       if (typeof navigator === 'undefined' || navigator.onLine) {
         try {
-          await setDoc(
-            doc(db, 'shops', targetShopId),
-            {
-              package_type: params.packageType,
-              auto_sync_interval_minutes: clampedTimer,
-              daily_manual_bypass_limit: clampedLimit,
-              daily_bypass_state: nextState
-            },
-            { merge: true }
-          );
+          await writeAdminDocResilient('shops', targetShopId, {
+            package_type: params.packageType,
+            auto_sync_interval_minutes: clampedTimer,
+            daily_manual_bypass_limit: clampedLimit,
+            daily_bypass_state: nextState
+          });
         } catch (err) {
           console.warn('Shop package doc sync note:', err);
         }

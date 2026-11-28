@@ -67,6 +67,15 @@ import {
   setPlatformHostingMode,
   getQuotaResetCountdown
 } from '../utils/usageTracker';
+import {
+  CloudDemoTemplateMeta,
+  DEFAULT_DEMO_RESET_MINUTES,
+  clearCloudDemoTemplate,
+  fetchCloudDemoTemplate,
+  getLocalCachedDemoTemplate,
+  getTotalDemoRecordCount,
+  updateDemoResetIntervalCloud
+} from '../utils/demoTemplateService';
 
 export const SuperAdminView: React.FC = () => {
   const {
@@ -78,7 +87,8 @@ export const SuperAdminView: React.FC = () => {
     maintenanceNotice,
     setMaintenanceNotice,
     firebaseSyncStatus,
-    triggerMutationLoader
+    triggerMutationLoader,
+    enterSuperAdminDemoEditor
   } = usePOS();
 
   // 7-Tab Master Command Center (including Quota & Usage 99% Tracker & Geo Push / Popup Ads Studio)
@@ -224,7 +234,114 @@ export const SuperAdminView: React.FC = () => {
     ...(DEFAULT_PACKAGE_POLICIES.free.packageModules || {})
   }));
   const [isSavingPkgPolicy, setIsSavingPkgPolicy] = useState<boolean>(false);
+  const [pkgSaveFeedback, setPkgSaveFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const [bypassRefreshTick, setBypassRefreshTick] = useState<number>(0);
+
+  // Global Cloud Demo Store Manager State (Master Demo Data & 30-Minute Auto-Reset)
+  const [demoTemplateMeta, setDemoTemplateMeta] = useState<CloudDemoTemplateMeta>(() => {
+    return getLocalCachedDemoTemplate().meta;
+  });
+  const [demoResetMinsInput, setDemoResetMinsInput] = useState<number>(() => {
+    return getLocalCachedDemoTemplate().meta.resetIntervalMinutes || DEFAULT_DEMO_RESET_MINUTES;
+  });
+  const [isLoadingDemoMeta, setIsLoadingDemoMeta] = useState<boolean>(false);
+  const [isUpdatingDemoTimer, setIsUpdatingDemoTimer] = useState<boolean>(false);
+  const [isClearingDemoCloud, setIsClearingDemoCloud] = useState<boolean>(false);
+  const [confirmClearDemo, setConfirmClearDemo] = useState<boolean>(false);
+  const [demoManagerFeedback, setDemoManagerFeedback] = useState<{
+    ok: boolean;
+    text: string;
+    needsGoogleAuth?: boolean;
+  } | null>(null);
+
+  const refreshCloudDemoMeta = async () => {
+    setIsLoadingDemoMeta(true);
+    try {
+      const res = await fetchCloudDemoTemplate({ rebaseToToday: false });
+      setDemoTemplateMeta(res.meta);
+      setDemoResetMinsInput(res.meta.resetIntervalMinutes || DEFAULT_DEMO_RESET_MINUTES);
+    } catch {
+      // keep existing meta
+    } finally {
+      setIsLoadingDemoMeta(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshCloudDemoMeta();
+    const onDemoUpdated = (e: Event) => {
+      const meta = (e as CustomEvent<CloudDemoTemplateMeta>).detail;
+      if (meta) {
+        setDemoTemplateMeta(meta);
+        setDemoResetMinsInput(meta.resetIntervalMinutes || DEFAULT_DEMO_RESET_MINUTES);
+      }
+    };
+    window.addEventListener('taj_demo_template_updated', onDemoUpdated);
+    return () => window.removeEventListener('taj_demo_template_updated', onDemoUpdated);
+  }, []);
+
+  const handleSaveDemoResetTimer = async () => {
+    if (isUpdatingDemoTimer) return;
+    setIsUpdatingDemoTimer(true);
+    setDemoManagerFeedback(null);
+    const clamped = Math.max(1, Math.min(240, Math.round(Number(demoResetMinsInput) || DEFAULT_DEMO_RESET_MINUTES)));
+    setDemoResetMinsInput(clamped);
+    try {
+      const res = await Promise.race([
+        updateDemoResetIntervalCloud(clamped, currentUser?.email || MASTER_EMAIL),
+        new Promise<{ ok: false; error: string }>(resolve =>
+          setTimeout(() => resolve({ ok: false, error: 'Timed out saving timer. Please try again.' }), 15000)
+        )
+      ]);
+      if (res.ok && 'meta' in res && res.meta) {
+        setDemoTemplateMeta(res.meta);
+        setDemoManagerFeedback({
+          ok: true,
+          text: `✓ Demo Auto-Reset Timer updated to ${clamped} minutes for all customers!`
+        });
+        setTimeout(() => setDemoManagerFeedback(null), 5000);
+      } else {
+        setDemoManagerFeedback({
+          ok: false,
+          text: res.error || 'Could not update Demo Auto-Reset Timer.',
+          needsGoogleAuth: 'needsGoogleAuth' in res ? Boolean(res.needsGoogleAuth) : false
+        });
+      }
+    } finally {
+      setIsUpdatingDemoTimer(false);
+    }
+  };
+
+  const handleClearCloudDemoData = async () => {
+    if (isClearingDemoCloud) return;
+    setIsClearingDemoCloud(true);
+    setDemoManagerFeedback(null);
+    try {
+      const res = await Promise.race([
+        clearCloudDemoTemplate(currentUser?.email || MASTER_EMAIL),
+        new Promise<{ ok: false; error: string }>(resolve =>
+          setTimeout(() => resolve({ ok: false, error: 'Timed out clearing Cloud Demo Data.' }), 15000)
+        )
+      ]);
+      if (res.ok && 'meta' in res && res.meta) {
+        setDemoTemplateMeta(res.meta);
+        setConfirmClearDemo(false);
+        setDemoManagerFeedback({
+          ok: true,
+          text: '✓ Cloud Demo Data cleared! Open Demo Editor anytime to add fresh demo records.'
+        });
+        setTimeout(() => setDemoManagerFeedback(null), 5000);
+      } else {
+        setDemoManagerFeedback({
+          ok: false,
+          text: res.error || 'Could not clear Cloud Demo Data.',
+          needsGoogleAuth: 'needsGoogleAuth' in res ? Boolean(res.needsGoogleAuth) : false
+        });
+      }
+    } finally {
+      setIsClearingDemoCloud(false);
+    }
+  };
 
   useEffect(() => {
     const onBypassUpdate = () => setBypassRefreshTick(t => t + 1);
@@ -334,13 +451,15 @@ export const SuperAdminView: React.FC = () => {
   };
 
   const handleSavePackageAndSyncPolicy = async () => {
+    if (isSavingPkgPolicy) return;
     setIsSavingPkgPolicy(true);
+    setPkgSaveFeedback(null);
     try {
       const mergedPkgMods = {
         ...pkgModulesMap,
         google_drive_vault: pkgAllowDriveVault
       };
-      const ok = await superAdminService.saveShopPackageAndSyncPolicy(selectedShopForModules, {
+      const savePromise = superAdminService.saveShopPackageAndSyncPolicy(selectedShopForModules, {
         packageType: selectedPackageTier,
         autoSyncIntervalMinutes: pkgSyncMinutes,
         dailyManualBypassLimit: pkgDailyBypassLimit,
@@ -352,6 +471,11 @@ export const SuperAdminView: React.FC = () => {
         specialOfferLabel: pkgSpecialOfferLabel,
         updatedBy: currentUser?.email || MASTER_EMAIL
       });
+      // Absolute 15s UI safety cap so the Save button can NEVER stay stuck on "Saving Policy..."
+      const ok = await Promise.race<boolean>([
+        savePromise,
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), 15000))
+      ]);
       const latestCfg = superAdminService.getModuleControlConfig();
       setModuleConfig(latestCfg);
       setBypassRefreshTick(t => t + 1);
@@ -366,12 +490,25 @@ export const SuperAdminView: React.FC = () => {
         pkgSpecialOfferActive && pkgSpecialOfferPricePkr < pkgOriginalPricePkr
           ? `Special Offer PKR ${pkgSpecialOfferPricePkr.toLocaleString()} (was PKR ${pkgOriginalPricePkr.toLocaleString()})`
           : `PKR ${pkgOriginalPricePkr.toLocaleString()}`;
-      showCloudSaveResult(
-        ok,
+      const successText =
         selectedShopForModules === 'GLOBAL'
-          ? `✓ ${selectedPackageTier.toUpperCase()} Package Default Policy & Price (${priceSummary}) saved & synced in 1-3s across all profiles!`
-          : `✓ Store Assigned to ${selectedPackageTier.toUpperCase()} Package (${priceSummary} · ${pkgSyncMinutes}m Auto Timer · ${pkgDailyBypassLimit} Shared Daily Bypasses)!`
-      );
+          ? `✓ ${selectedPackageTier.toUpperCase()} Package Defaults & Price (${priceSummary}) saved & live-synced!`
+          : `✓ Store updated to ${selectedPackageTier.toUpperCase()} (${priceSummary} · ${pkgSyncMinutes}m Timer · ${pkgDailyBypassLimit} Bypass)!`;
+      const errorText = !isFirebaseMasterVerified
+        ? '⚠️ Saved locally, but Cloud Sync needs Master Google Auth — tap "Verify Cloud Auth" below to sync live across all devices!'
+        : '⚠️ Saved locally, but Cloud sync timed out. Check internet and tap Save again.';
+      setPkgSaveFeedback({ ok, text: ok ? successText : errorText });
+      showCloudSaveResult(ok, successText);
+      if (ok) {
+        setTimeout(() => setPkgSaveFeedback(null), 5000);
+      }
+    } catch (err) {
+      console.error('handleSavePackageAndSyncPolicy error:', err);
+      setPkgSaveFeedback({
+        ok: false,
+        text: '⚠️ Could not sync to Cloud. Please check internet and try again.'
+      });
+      showCloudSaveResult(false, '');
     } finally {
       setIsSavingPkgPolicy(false);
     }
@@ -1108,6 +1245,161 @@ export const SuperAdminView: React.FC = () => {
                 );
               })}
             </div>
+          </div>
+
+          {/* Customer Live Demo Store Manager (Global Cloud Master Snapshot & 30-Min Auto-Reset) */}
+          <div className="bg-gradient-to-br from-indigo-950 via-slate-900 to-purple-950 text-white rounded-2xl p-4 sm:p-5 border border-indigo-500/30 shadow-md space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/10 pb-3.5">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-black uppercase tracking-wider">
+                    🧪 Live Demo Manager
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${
+                      demoTemplateMeta.hasCustomTemplate
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40'
+                        : 'bg-amber-500/20 text-amber-200 border-amber-400/40'
+                    }`}
+                  >
+                    {demoTemplateMeta.hasCustomTemplate
+                      ? `☁️ Published Live (${getTotalDemoRecordCount(demoTemplateMeta.counts)} records)`
+                      : '📦 Empty — Ready for Your Demo Data'}
+                  </span>
+                </div>
+                <h2 className="text-sm sm:text-base font-black text-white mt-1.5">
+                  Customer Demo Store — Global Cloud Data &amp; {demoTemplateMeta.resetIntervalMinutes}-Min Auto-Reset
+                </h2>
+                <p className="text-[11px] text-indigo-200 mt-0.5 leading-relaxed">
+                  Jo data aap ek baar Demo Editor mein save &amp; publish karenge wohi tamam customers ko show hoga, aur har{' '}
+                  <strong className="text-amber-300">{demoTemplateMeta.resetIntervalMinutes} minutes</strong> baad customer ka demo khud-ba-khud aap ke saved data par reset ho jayega.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap shrink-0">
+                <button
+                  type="button"
+                  onClick={() => enterSuperAdminDemoEditor()}
+                  className="px-4 py-2.5 bg-emerald-400 hover:bg-emerald-300 text-slate-950 rounded-xl text-xs font-black shadow-md transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  <span>Open Demo Store (Edit &amp; Save Data)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={refreshCloudDemoMeta}
+                  disabled={isLoadingDemoMeta}
+                  className="px-3 py-2.5 bg-white/10 hover:bg-white/20 text-white border border-white/15 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                  title="Refresh live cloud demo status"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingDemoMeta ? 'animate-spin' : ''}`} />
+                  <span>Refresh</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Live Cloud Snapshot Record Breakdown */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 text-center">
+              {[
+                { label: 'Daily Cash', value: demoTemplateMeta.counts.daily },
+                { label: 'Back Cash', value: demoTemplateMeta.counts.backCash },
+                { label: 'EasyLoad Days', value: demoTemplateMeta.counts.easyloadDays },
+                { label: 'Wholesalers', value: demoTemplateMeta.counts.wholesalers },
+                { label: 'Customers', value: demoTemplateMeta.counts.customers },
+                { label: 'Items / Bottles', value: demoTemplateMeta.counts.bottles },
+                { label: 'Stock Logs', value: demoTemplateMeta.counts.stockTx }
+              ].map(item => (
+                <div
+                  key={item.label}
+                  className="bg-white/5 border border-white/10 rounded-xl px-2.5 py-2"
+                >
+                  <div className="text-base font-black text-white font-mono">{item.value}</div>
+                  <div className="text-[10px] font-bold text-indigo-200 truncate">{item.label}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Timer Setting, Last Published Info & Clear Control */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pt-1">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-indigo-200">
+                <Clock className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                <span>Auto-Reset Timer (min):</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={240}
+                  value={demoResetMinsInput}
+                  onChange={e => setDemoResetMinsInput(Number(e.target.value))}
+                  className="w-16 px-2 py-1 bg-slate-950/70 border border-indigo-400/40 rounded-lg text-xs font-mono font-bold text-white text-center focus:outline-none focus:border-emerald-400"
+                />
+                <button
+                  type="button"
+                  disabled={isUpdatingDemoTimer}
+                  onClick={handleSaveDemoResetTimer}
+                  className="px-2.5 py-1 bg-indigo-500 hover:bg-indigo-400 disabled:opacity-60 text-white rounded-lg text-[11px] font-black cursor-pointer transition-colors"
+                >
+                  {isUpdatingDemoTimer ? 'Saving...' : 'Save Timer'}
+                </button>
+                {demoTemplateMeta.updatedAt && (
+                  <span className="text-[10px] text-slate-300 font-mono">
+                    | Last Published: {new Date(demoTemplateMeta.updatedAt).toLocaleString()}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                {!confirmClearDemo ? (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmClearDemo(true)}
+                    className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-400/30 rounded-lg text-[11px] font-bold cursor-pointer transition-colors"
+                  >
+                    Clear Cloud Demo Data
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1.5 bg-rose-950/70 border border-rose-400/40 rounded-lg px-2.5 py-1">
+                    <span className="text-[10px] font-bold text-rose-100">Confirm clear all demo records?</span>
+                    <button
+                      type="button"
+                      disabled={isClearingDemoCloud}
+                      onClick={handleClearCloudDemoData}
+                      className="px-2 py-0.5 bg-rose-600 hover:bg-rose-500 text-white rounded text-[10px] font-black cursor-pointer"
+                    >
+                      {isClearingDemoCloud ? 'Clearing...' : 'Yes, Clear'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmClearDemo(false)}
+                      className="px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-white rounded text-[10px] font-bold cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {demoManagerFeedback && (
+              <div
+                className={`px-3 py-2 rounded-xl text-[11px] font-bold flex flex-wrap items-center justify-between gap-2 ${
+                  demoManagerFeedback.ok
+                    ? 'bg-emerald-500/20 border border-emerald-400/40 text-emerald-200'
+                    : 'bg-rose-500/20 border border-rose-400/40 text-rose-200'
+                }`}
+              >
+                <span>{demoManagerFeedback.text}</span>
+                {demoManagerFeedback.needsGoogleAuth && (
+                  <button
+                    type="button"
+                    disabled={isVerifyingCloudAuth}
+                    onClick={handleVerifyMasterGoogleCloudAuth}
+                    className="px-2.5 py-1 bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-lg font-black text-[10px] cursor-pointer"
+                  >
+                    {isVerifyingCloudAuth ? 'Verifying...' : '🔐 Verify Cloud Auth (Google)'}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Quick Metrics & Search Header */}
@@ -3169,7 +3461,7 @@ export const SuperAdminView: React.FC = () => {
                         اس پیکج ({selectedPackageTier.toUpperCase()}) میں کون سے فیچرز ان لاک اور کون سے لاک ہوں گے — یوزر پروفائل میں پیکج سلیکٹ کرنے پر یہی لسٹ موازنہ کیلئے نظر آتی ہے۔
                       </span>
                     </div>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <button
                         type="button"
                         onClick={() => {
@@ -3186,7 +3478,25 @@ export const SuperAdminView: React.FC = () => {
                         }}
                         className="px-2.5 py-1 rounded-lg bg-emerald-600/25 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/40 text-[10px] font-black cursor-pointer"
                       >
-                        🔓 Unlock All in {selectedPackageTier.toUpperCase()}
+                        🔓 Open All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allFalse: Record<string, boolean> = {};
+                          [
+                            ...ALL_CONTROLLABLE_MODULES.map(m => m.id),
+                            'data_export',
+                            'sql_import'
+                          ].forEach(k => {
+                            allFalse[k] = false;
+                          });
+                          setPkgModulesMap(allFalse);
+                          setPkgAllowDriveVault(false);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-rose-600/25 hover:bg-rose-600/40 text-rose-300 border border-rose-500/40 text-[10px] font-black cursor-pointer"
+                      >
+                        🔒 Lock All
                       </button>
                       <button
                         type="button"
@@ -3199,7 +3509,7 @@ export const SuperAdminView: React.FC = () => {
                         }}
                         className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[10px] font-bold cursor-pointer"
                       >
-                        ↺ Reset Tier Defaults
+                        ↺ Reset Defaults
                       </button>
                     </div>
                   </div>
@@ -3279,27 +3589,51 @@ export const SuperAdminView: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Save Package & Sync Policy Button */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-2 border-t border-white/10">
-                  <span className="text-[11px] text-indigo-200">
-                    {selectedShopForModules === 'GLOBAL'
-                      ? `💡 Global Mode: Saving will update default settings for the "${selectedPackageTier.toUpperCase()}" package across the platform.`
-                      : `💡 Store Mode: Saving will assign "${
-                          shops.find(s => s.id === selectedShopForModules)?.shop_name || selectedShopForModules
-                        }" to ${selectedPackageTier.toUpperCase()} (${pkgSyncMinutes}m timer · ${pkgDailyBypassLimit} daily bypasses).`}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={isSavingPkgPolicy}
-                    onClick={handleSavePackageAndSyncPolicy}
-                    className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-slate-950 font-black text-xs rounded-xl shadow-md cursor-pointer shrink-0 disabled:opacity-60"
-                  >
-                    {isSavingPkgPolicy
-                      ? 'Saving Policy...'
-                      : selectedShopForModules === 'GLOBAL'
-                      ? `💾 Save ${selectedPackageTier.toUpperCase()} Package Defaults`
-                      : `💾 Apply ${selectedPackageTier.toUpperCase()} Package & Limits to Store`}
-                  </button>
+                {/* Save Package & Sync Policy Button + Inline Feedback */}
+                <div className="space-y-2.5 pt-2 border-t border-white/10">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                    <span className="text-[11px] text-indigo-200">
+                      {selectedShopForModules === 'GLOBAL'
+                        ? `💡 Global Mode: Saving will update default settings for the "${selectedPackageTier.toUpperCase()}" package across the platform.`
+                        : `💡 Store Mode: Saving will assign "${
+                            shops.find(s => s.id === selectedShopForModules)?.shop_name || selectedShopForModules
+                          }" to ${selectedPackageTier.toUpperCase()} (${pkgSyncMinutes}m timer · ${pkgDailyBypassLimit} daily bypasses).`}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={isSavingPkgPolicy}
+                      onClick={handleSavePackageAndSyncPolicy}
+                      className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-slate-950 font-black text-xs rounded-xl shadow-md cursor-pointer shrink-0 disabled:opacity-60"
+                    >
+                      {isSavingPkgPolicy
+                        ? 'Saving Policy...'
+                        : selectedShopForModules === 'GLOBAL'
+                        ? `💾 Save ${selectedPackageTier.toUpperCase()} Package Defaults`
+                        : `💾 Apply ${selectedPackageTier.toUpperCase()} Package & Limits to Store`}
+                    </button>
+                  </div>
+
+                  {pkgSaveFeedback && (
+                    <div
+                      className={`p-2.5 rounded-xl border text-[11px] font-bold flex flex-col sm:flex-row sm:items-center justify-between gap-2 animate-in fade-in ${
+                        pkgSaveFeedback.ok
+                          ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-200'
+                          : 'bg-amber-500/20 border-amber-400/40 text-amber-200'
+                      }`}
+                    >
+                      <span>{pkgSaveFeedback.text}</span>
+                      {!pkgSaveFeedback.ok && !isFirebaseMasterVerified && (
+                        <button
+                          type="button"
+                          onClick={handleVerifyMasterGoogleCloudAuth}
+                          disabled={isVerifyingCloudAuth}
+                          className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-lg text-[10.5px] font-black shrink-0 cursor-pointer disabled:opacity-60"
+                        >
+                          {isVerifyingCloudAuth ? 'Verifying...' : '🔐 Verify Cloud Auth (Google)'}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             );

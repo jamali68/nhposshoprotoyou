@@ -69,7 +69,7 @@ const POPUP_THEME_STYLES: Record<
 };
 
 export const PushNotificationHost: React.FC = () => {
-  const { currentUser, currentShop } = usePOS();
+  const { currentUser, currentShop, isDemoMode } = usePOS();
   const [activeNotif, setActiveNotif] = useState<RichPushNotification | null>(null);
   const [activePopup, setActivePopup] = useState<PopupAdCampaign | null>(null);
   const [isPreviewPopup, setIsPreviewPopup] = useState<boolean>(false);
@@ -86,9 +86,9 @@ export const PushNotificationHost: React.FC = () => {
   };
   const userRole = currentUser?.role || '';
 
-  // 1. Live Super Admin Rich Push Broadcast Listener
+  // 1. Live Super Admin Rich Push Broadcast Listener (Disabled in Demo Mode = 0 background reads)
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || isDemoMode || currentUser.isDemo) return;
 
     const unsubscribe = subscribeToPushBroadcasts(notif => {
       if (!notif || !notif.id) return;
@@ -105,6 +105,7 @@ export const PushNotificationHost: React.FC = () => {
     return () => unsubscribe();
   }, [
     currentUser,
+    isDemoMode,
     userShopContext.id,
     userShopContext.province,
     userShopContext.district,
@@ -113,9 +114,9 @@ export const PushNotificationHost: React.FC = () => {
     userRole
   ]);
 
-  // 2. Live Super Admin Private Popup Ad / Event Greeting Modal Listener
+  // 2. Live Super Admin Private Popup Ad / Event Greeting Modal Listener (Disabled in Demo Mode = 0 background reads)
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || isDemoMode || currentUser.isDemo) return;
 
     const unsubscribe = subscribeToActivePopupAds(campaign => {
       if (!campaign || !isActivePopupCampaign(campaign)) return;
@@ -130,6 +131,7 @@ export const PushNotificationHost: React.FC = () => {
     return () => unsubscribe();
   }, [
     currentUser,
+    isDemoMode,
     userShopContext.id,
     userShopContext.province,
     userShopContext.district,

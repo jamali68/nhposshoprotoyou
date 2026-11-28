@@ -4,6 +4,7 @@
  */
 
 import React from 'react';
+import { NH_POS_LOGO_DATA_URI } from '../assets/nhPosLogoData';
 
 interface TajLogoProps {
   className?: string;
@@ -13,8 +14,7 @@ interface TajLogoProps {
 
 export const TajLogo: React.FC<TajLogoProps> = ({
   className = '',
-  size = 'md',
-  showSubtitle = true
+  size = 'md'
 }) => {
   const sizeMap = {
     sm: 'w-8 h-8',
@@ -24,17 +24,16 @@ export const TajLogo: React.FC<TajLogoProps> = ({
   };
 
   return (
-    <div className={`relative flex items-center justify-center shrink-0 ${sizeMap[size]} ${className}`}>
+    <div
+      role="img"
+      aria-label="NH POS Shop"
+      className={`relative flex items-center justify-center shrink-0 ${sizeMap[size]} ${className}`}
+    >
       <img
-        src="icon-192.png"
-        alt="NH POS Official Logo"
+        src={NH_POS_LOGO_DATA_URI}
+        alt=""
+        decoding="sync"
         className="w-full h-full object-contain rounded-full shadow-xs select-none"
-        onError={(e) => {
-          const target = e.currentTarget;
-          if (!target.src.includes('1792729704800')) {
-            target.src = 'assets/aistudio/1792729704800__1__bf19ca55.png';
-          }
-        }}
       />
     </div>
   );

@@ -150,6 +150,7 @@ export interface WholesalerBill {
   id: string;
   customer_name: string;
   total_bill: number;
+  total_paid?: number;
   remaining_balance: number;
   created_date: string;
   status: 'pending' | 'paid';
@@ -165,6 +166,7 @@ export interface CustomerBill {
   id: string;
   customer_name: string;
   total_bill: number;
+  total_received?: number;
   remaining_balance: number;
   created_date: string;
   status: 'pending' | 'paid';

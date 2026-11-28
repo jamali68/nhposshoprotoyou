@@ -216,6 +216,7 @@ async function checkRemoteVersionManifest(): Promise<void> {
 export function triggerSilentPwaCheck(force = false): void {
   if (!isProductionPwaHost()) return;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  if (!force && typeof localStorage !== 'undefined' && localStorage.getItem('taj_pos_is_demo') === 'true') return;
 
   const now = Date.now();
   if (!force && now - lastCheckAt < CHECK_DEBOUNCE_MS) return;

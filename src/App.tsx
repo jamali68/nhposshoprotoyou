@@ -38,6 +38,7 @@ import { GoogleDriveVaultView } from './views/GoogleDriveVaultView';
 import { SuperAdminView } from './superadmin/SuperAdminView';
 import { SuperAdminAuthModal } from './superadmin/SuperAdminAuthModal';
 import { superAdminService, MASTER_EMAIL, ALL_CONTROLLABLE_MODULES } from './superadmin/superAdminService';
+import { auth, googleProvider, signInWithPopup } from './firebase';
 
 const MainAppContent: React.FC = () => {
   const {
@@ -63,9 +64,12 @@ const MainAppContent: React.FC = () => {
     activeShopPackageType,
     syncNow,
     isDemoMode,
+    isSuperAdminDemoEditor,
+    demoResetIntervalMinutes,
     demoTimeLeft,
     resetDemoData,
     saveCurrentAsDemoTemplate,
+    exitSuperAdminDemoEditor,
     logout,
     loginWithGmail,
     showAdminProfileModal,
@@ -75,7 +79,13 @@ const MainAppContent: React.FC = () => {
     mutationLoader
   } = usePOS();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [templateSavedMsg, setTemplateSavedMsg] = useState(false);
+  const [isPublishingDemo, setIsPublishingDemo] = useState(false);
+  const [isVerifyingDemoAuth, setIsVerifyingDemoAuth] = useState(false);
+  const [demoPublishFeedback, setDemoPublishFeedback] = useState<{
+    ok: boolean;
+    text: string;
+    needsGoogleAuth?: boolean;
+  } | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [showStatusToast, setShowStatusToast] = useState<boolean>(false);
   const [topSyncFeedback, setTopSyncFeedback] = useState<{ text: string; isNoPending?: boolean } | null>(null);
@@ -353,8 +363,145 @@ const MainAppContent: React.FC = () => {
 
       {/* Main Content Area */}
       <div className="md:ml-64 flex-1 flex flex-col min-w-0">
-        {/* Interactive Demo Mode Top Banner with Auto-Reset Countdown */}
-        {isDemoMode && (
+        {/* Interactive Demo Mode Top Banner (Super Admin Demo Editor vs Customer 30-Min Auto-Reset Mode) */}
+        {isDemoMode && isSuperAdminDemoEditor && (
+          <div className="bg-gradient-to-r from-indigo-700 via-purple-700 to-indigo-800 text-white px-3 sm:px-4 py-2.5 text-xs shadow-md z-30 border-b border-indigo-400/40">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="px-2 py-0.5 rounded-full bg-amber-400 text-slate-950 font-black text-[10px] uppercase tracking-wider shadow-xs">
+                  👑 Super Admin Demo Editor
+                </span>
+                <span className="text-[11px] font-semibold text-indigo-100">
+                  Add or edit data anywhere in this Demo Store, then click Publish. Customers auto-reset to your saved data every {demoResetIntervalMinutes}m.
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-[11px] font-bold flex-wrap">
+                <button
+                  type="button"
+                  disabled={isPublishingDemo}
+                  onClick={async () => {
+                    if (isPublishingDemo) return;
+                    setIsPublishingDemo(true);
+                    setDemoPublishFeedback(null);
+                    try {
+                      const res = await Promise.race([
+                        saveCurrentAsDemoTemplate(),
+                        new Promise<{ ok: false; error: string }>(resolve =>
+                          setTimeout(
+                            () =>
+                              resolve({
+                                ok: false,
+                                error: 'Cloud publish timed out. Please check internet connection and try again.'
+                              }),
+                            15000
+                          )
+                        )
+                      ]);
+                      if (res.ok) {
+                        setDemoPublishFeedback({
+                          ok: true,
+                          text: `✓ Demo Data Published Live to Cloud! All customers will now see this data (auto-resets every ${demoResetIntervalMinutes}m).`
+                        });
+                        setTimeout(() => setDemoPublishFeedback(null), 6000);
+                      } else {
+                        setDemoPublishFeedback({
+                          ok: false,
+                          text: res.error || 'Could not publish Demo Data to Cloud.',
+                          needsGoogleAuth: 'needsGoogleAuth' in res ? Boolean(res.needsGoogleAuth) : false
+                        });
+                      }
+                    } finally {
+                      setIsPublishingDemo(false);
+                    }
+                  }}
+                  className="px-3 py-1.5 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-60 text-slate-950 font-black rounded-lg transition-all shadow-sm active:scale-95 cursor-pointer"
+                >
+                  {isPublishingDemo ? '⏳ Publishing to Cloud...' : '☁️ Save & Publish to All Customers'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetDemoData({ forceCloudRefresh: true });
+                    setDemoPublishFeedback({
+                      ok: true,
+                      text: '↺ Reloaded last published Cloud Demo Data.'
+                    });
+                    setTimeout(() => setDemoPublishFeedback(null), 3500);
+                  }}
+                  className="px-2.5 py-1.5 bg-white/15 hover:bg-white/25 text-white border border-white/25 rounded-lg transition-colors cursor-pointer"
+                >
+                  ↺ Reload Saved
+                </button>
+                <button
+                  type="button"
+                  onClick={exitSuperAdminDemoEditor}
+                  className="px-2.5 py-1.5 bg-slate-950/60 hover:bg-slate-950 text-white border border-white/25 rounded-lg transition-colors cursor-pointer"
+                >
+                  ← Back to Super Admin
+                </button>
+              </div>
+            </div>
+
+            {demoPublishFeedback && (
+              <div
+                className={`mt-2 px-3 py-2 rounded-xl text-[11px] font-bold flex flex-wrap items-center justify-between gap-2 ${
+                  demoPublishFeedback.ok
+                    ? 'bg-emerald-950/60 border border-emerald-400/50 text-emerald-100'
+                    : 'bg-rose-950/70 border border-rose-400/50 text-rose-100'
+                }`}
+              >
+                <span>{demoPublishFeedback.text}</span>
+                {demoPublishFeedback.needsGoogleAuth && (
+                  <button
+                    type="button"
+                    disabled={isVerifyingDemoAuth}
+                    onClick={async () => {
+                      setIsVerifyingDemoAuth(true);
+                      try {
+                        const authRes = await signInWithPopup(auth, googleProvider);
+                        const signedEmail = authRes.user?.email?.toLowerCase() || '';
+                        if (superAdminService.isMasterAdminEmail(signedEmail)) {
+                          const retry = await saveCurrentAsDemoTemplate();
+                          if (retry.ok) {
+                            setDemoPublishFeedback({
+                              ok: true,
+                              text: `✓ Verified (${signedEmail}) & Published Live to Cloud! All customers will now see this demo data.`
+                            });
+                            setTimeout(() => setDemoPublishFeedback(null), 6000);
+                          } else {
+                            setDemoPublishFeedback({
+                              ok: false,
+                              text: retry.error || 'Publish failed after auth.'
+                            });
+                          }
+                        } else {
+                          setDemoPublishFeedback({
+                            ok: false,
+                            text: 'Please sign in with your Master Super Admin Gmail account.',
+                            needsGoogleAuth: true
+                          });
+                        }
+                      } catch {
+                        setDemoPublishFeedback({
+                          ok: false,
+                          text: 'Google sign-in popup was closed or blocked. Please try again.',
+                          needsGoogleAuth: true
+                        });
+                      } finally {
+                        setIsVerifyingDemoAuth(false);
+                      }
+                    }}
+                    className="px-2.5 py-1 bg-amber-400 hover:bg-amber-300 text-slate-950 rounded-lg font-black text-[10px] cursor-pointer"
+                  >
+                    {isVerifyingDemoAuth ? 'Verifying...' : '🔐 Verify Google Auth & Publish'}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {isDemoMode && !isSuperAdminDemoEditor && (
           <div className="bg-gradient-to-r from-amber-600 via-orange-600 to-amber-700 text-white px-4 py-2 text-xs flex flex-wrap items-center justify-between gap-2 shadow-sm z-30">
             <div className="flex items-center gap-2">
               <span className="px-2 py-0.5 rounded-full bg-white/20 font-bold text-[10px] uppercase tracking-wider">
@@ -368,23 +515,11 @@ const MainAppContent: React.FC = () => {
               </span>
             </div>
             <div className="flex items-center gap-2 text-[10px] font-bold">
-              {currentUser?.role === 'super_admin' && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    saveCurrentAsDemoTemplate();
-                    setTemplateSavedMsg(true);
-                    setTimeout(() => setTemplateSavedMsg(false), 3000);
-                  }}
-                  title="Super Admin: Save current state as new demo baseline"
-                  className="px-2.5 py-1 bg-amber-300 hover:bg-amber-200 text-amber-950 font-bold rounded-lg transition-colors shadow-xs active:scale-95 cursor-pointer"
-                >
-                  {templateSavedMsg ? '✓ Baseline Saved!' : 'Save Demo Baseline'}
-                </button>
-              )}
               <button
                 type="button"
-                onClick={resetDemoData}
+                onClick={() => {
+                  resetDemoData();
+                }}
                 title="تمام ڈیٹا کو اصل ڈیمو حالت میں واپس لائیں"
                 className="px-2.5 py-1 bg-white hover:bg-amber-100 text-amber-900 rounded-lg transition-colors shadow-xs active:scale-95 cursor-pointer"
               >

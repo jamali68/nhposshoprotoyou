@@ -99,6 +99,14 @@ import { authApi } from '../services/authApi';
 import { showAppAlert } from '../components/AppDialogHost';
 import { superAdminService, MASTER_SUPER_ADMIN_EMAILS } from '../superadmin/superAdminService';
 import { StaffPermissionActionId } from '../superadmin/types';
+import {
+  DEFAULT_DEMO_RESET_MINUTES,
+  DemoTemplatePayload,
+  PublishDemoTemplateResult,
+  fetchCloudDemoTemplate,
+  getLocalCachedDemoTemplate,
+  publishCloudDemoTemplate
+} from '../utils/demoTemplateService';
 
 export type ActiveView =
   | 'dashboard'
@@ -186,12 +194,16 @@ interface POSContextType {
   resetToCleanZeroData: () => void;
   loadDemoSampleData: () => void;
 
-  // Interactive Demo Store Mode (Auto-resets every 30 minutes)
+  // Interactive Demo Store Mode (Auto-resets every 30 minutes from Cloud Master Demo Template)
   isDemoMode: boolean;
+  isSuperAdminDemoEditor: boolean;
+  demoResetIntervalMinutes: number;
   loginDemoStore: () => void;
-  resetDemoData: () => void;
+  enterSuperAdminDemoEditor: () => Promise<void>;
+  exitSuperAdminDemoEditor: () => void;
+  resetDemoData: (options?: { forceCloudRefresh?: boolean }) => Promise<void>;
   demoTimeLeft: number;
-  saveCurrentAsDemoTemplate: () => void;
+  saveCurrentAsDemoTemplate: (options?: { resetIntervalMinutes?: number }) => Promise<PublishDemoTemplateResult>;
 
   // View Navigation & Back Button Management
   activeView: ActiveView;
@@ -515,14 +527,27 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [showIndependenceModal, setShowIndependenceModal] = useState<boolean>(false);
   const [showWhatsNewModal, setShowWhatsNewModal] = useState<boolean>(false);
 
-  // Interactive Demo Mode & 30-Minute Auto-Restore
+  // Interactive Demo Mode, Super Admin Demo Editor & 30-Minute Auto-Restore
   const [isDemoMode, setIsDemoMode] = useState<boolean>(() => {
     return localStorage.getItem('taj_pos_is_demo') === 'true' || currentUser?.isDemo === true;
   });
+  const [isSuperAdminDemoEditor, setIsSuperAdminDemoEditor] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem('taj_pos_demo_editor_mode') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [demoResetIntervalMinutes, setDemoResetIntervalMinutes] = useState<number>(() => {
+    const cached = getLocalCachedDemoTemplate();
+    return cached.meta.resetIntervalMinutes || DEFAULT_DEMO_RESET_MINUTES;
+  });
   const [demoTimeLeft, setDemoTimeLeft] = useState<number>(() => {
+    const cached = getLocalCachedDemoTemplate();
+    const totalSec = (cached.meta.resetIntervalMinutes || DEFAULT_DEMO_RESET_MINUTES) * 60;
     const lastReset = Number(localStorage.getItem('taj_pos_demo_last_reset') || Date.now());
     const elapsed = Math.floor((Date.now() - lastReset) / 1000);
-    return Math.max(0, 1800 - elapsed);
+    return Math.max(0, totalSec - elapsed);
   });
 
   // Firebase Auth State Tracking
@@ -4489,6 +4514,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setCurrentUser(null);
     setCurrentShop(null);
     setIsDemoMode(false);
+    setIsSuperAdminDemoEditor(false);
     setMustChangePassword(false);
     localStorage.removeItem('taj_pos_user');
     localStorage.removeItem('taj_pos_shop');
@@ -4497,6 +4523,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     localStorage.removeItem('taj_pos_must_change_password');
     localStorage.removeItem('taj_pos_password_reset_mode');
     try {
+      sessionStorage.removeItem('taj_pos_demo_editor_mode');
+      sessionStorage.removeItem('taj_pos_saved_superadmin_user');
+      sessionStorage.removeItem('taj_pos_saved_superadmin_shop');
       sessionStorage.removeItem('taj_pos_google_redirecting');
       sessionStorage.removeItem('taj_pos_google_password_reset');
       sessionStorage.removeItem('taj_pos_google_reset_email');
@@ -4988,12 +5017,38 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const loginDemoStore = () => {
+  const applyDemoPayloadToState = useCallback((payload: DemoTemplatePayload, resetMinutes?: number) => {
+    const mins = Math.max(1, Math.min(240, Math.round(Number(resetMinutes) || DEFAULT_DEMO_RESET_MINUTES)));
+    hydratedShopIdRef.current = 'demo_shop_shared';
+    setDailyTransactions(payload.daily || []);
+    setBackCashTransactions(payload.backCash || []);
+    setWholesalers(payload.wholesalers || []);
+    setCustomers(payload.customers || []);
+    setEasyloadRecords(payload.easyload || {});
+    setBottleItems(payload.bottles || []);
+    setStockTransactions(payload.stockTx || []);
+    setEditHistory([]);
+    setDeletedHistory([]);
+    setCart([]);
+    setDemoResetIntervalMinutes(mins);
+
+    try {
+      localStorage.setItem('taj_pos_demo_shop_shared_daily_tx', JSON.stringify(payload.daily || []));
+      localStorage.setItem('taj_pos_demo_shop_shared_back_tx', JSON.stringify(payload.backCash || []));
+      localStorage.setItem('taj_pos_demo_shop_shared_wholesalers', JSON.stringify(payload.wholesalers || []));
+      localStorage.setItem('taj_pos_demo_shop_shared_customers', JSON.stringify(payload.customers || []));
+      localStorage.setItem('taj_pos_demo_shop_shared_easyload', JSON.stringify(payload.easyload || {}));
+      localStorage.setItem('taj_pos_demo_shop_shared_bottles', JSON.stringify(payload.bottles || []));
+      localStorage.setItem('taj_pos_demo_shop_shared_stock_tx', JSON.stringify(payload.stockTx || []));
+    } catch {}
+  }, []);
+
+  const buildDemoSessionObjects = (isEditor: boolean) => {
     const demoUser: User = {
-      username: 'demo_store',
-      name: 'تاج ڈیمو سپر سٹور (Demo)',
-      email: 'demo@tajpos.com',
-      role: 'admin',
+      username: isEditor ? 'super_admin_demo_editor' : 'demo_store',
+      name: isEditor ? 'Super Admin (Demo Editor)' : 'تاج ڈیمو سپر سٹور (Demo)',
+      email: isEditor ? (currentUser?.email || auth.currentUser?.email || 'demo@tajpos.com') : 'demo@tajpos.com',
+      role: isEditor ? 'super_admin' : 'admin',
       isDemo: true,
       shopId: 'demo_shop_shared',
       shopName: 'تاج ڈیمو سپر سٹور'
@@ -5002,7 +5057,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const demoShop: ShopProfile = {
       id: 'demo_shop_shared',
       shop_name: 'تاج ڈیمو سپر سٹور',
-      owner_name: 'ڈیمو ایڈمن (Demo Admin)',
+      owner_name: isEditor ? 'Super Admin Demo Editor' : 'ڈیمو ایڈمن (Demo Admin)',
       owner_email: 'demo@tajpos.com',
       owner_uid: 'demo_shop_shared',
       phone: '0300-1234567',
@@ -5010,105 +5065,216 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       created_at: new Date().toISOString()
     };
 
+    return { demoUser, demoShop };
+  };
+
+  const loginDemoStore = () => {
+    try {
+      sessionStorage.removeItem('taj_pos_demo_editor_mode');
+      sessionStorage.removeItem('taj_pos_saved_superadmin_user');
+      sessionStorage.removeItem('taj_pos_saved_superadmin_shop');
+    } catch {}
+
+    const { demoUser, demoShop } = buildDemoSessionObjects(false);
+    const localCached = getLocalCachedDemoTemplate();
+    const totalSec = (localCached.meta.resetIntervalMinutes || DEFAULT_DEMO_RESET_MINUTES) * 60;
+
+    setIsSuperAdminDemoEditor(false);
     setCurrentUser(demoUser);
     setCurrentShop(demoShop);
     setIsDemoMode(true);
     setIsCleanStore(false);
     setIsNewShopSetupRequired(false);
+    setFilterDate(getTodayDateString());
+    setActiveView('dashboard');
 
     localStorage.setItem('taj_pos_user', JSON.stringify(demoUser));
     localStorage.setItem('taj_pos_shop', JSON.stringify(demoShop));
     localStorage.setItem('taj_pos_is_demo', 'true');
     localStorage.setItem('taj_pos_demo_last_reset', String(Date.now()));
 
-    // Load full sample demonstration data (from official baseline or custom super admin baseline)
-    const baseline = getDemoTemplateData();
-    setDailyTransactions(baseline.daily);
-    setBackCashTransactions(baseline.backCash);
-    setWholesalers(baseline.wholesalers);
-    setCustomers(baseline.customers);
-    setEasyloadRecords(baseline.easyload);
-    setBottleItems(baseline.bottles);
-    setStockTransactions(baseline.stockTx);
-    setCart([]);
-    setDemoTimeLeft(1800);
-  };
+    applyDemoPayloadToState(localCached.data, localCached.meta.resetIntervalMinutes);
+    setDemoTimeLeft(totalSec);
 
-  const getDemoTemplateData = () => {
-    const saved = localStorage.getItem('taj_pos_custom_demo_template');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        return {
-          daily: parsed.daily || initialDailyTransactions,
-          backCash: parsed.backCash || initialBackCashTransactions,
-          wholesalers: parsed.wholesalers || initialWholesalers,
-          customers: parsed.customers || initialCustomers,
-          easyload: parsed.easyload || initialEasyloadRecords,
-          bottles: parsed.bottles || initialBottleItems,
-          stockTx: parsed.stockTx || initialStockTransactions
-        };
-      } catch (e) {
-        // fallback
-      }
+    // Fetch Super Admin's published Cloud Demo Template at most ONCE per browser session (1 single read, 0 Netlify calls).
+    // All subsequent demo usage, edits, manual resets, and 30m auto-resets run 100% locally with ZERO cloud/Netlify usage!
+    let alreadyFetchedInSession = false;
+    try {
+      alreadyFetchedInSession =
+        sessionStorage.getItem('taj_pos_demo_cloud_fetched') === '1' &&
+        localCached.source === 'local';
+    } catch {}
+
+    if (!alreadyFetchedInSession) {
+      fetchCloudDemoTemplate({ rebaseToToday: true })
+        .then(cloudRes => {
+          try {
+            sessionStorage.setItem('taj_pos_demo_cloud_fetched', '1');
+          } catch {}
+          if (localStorage.getItem('taj_pos_is_demo') !== 'true') return;
+          if (cloudRes.source === 'cloud') {
+            applyDemoPayloadToState(cloudRes.data, cloudRes.meta.resetIntervalMinutes);
+            const freshSec = (cloudRes.meta.resetIntervalMinutes || DEFAULT_DEMO_RESET_MINUTES) * 60;
+            localStorage.setItem('taj_pos_demo_last_reset', String(Date.now()));
+            setDemoTimeLeft(freshSec);
+          }
+        })
+        .catch(() => {});
     }
-    return {
-      daily: initialDailyTransactions,
-      backCash: initialBackCashTransactions,
-      wholesalers: initialWholesalers,
-      customers: initialCustomers,
-      easyload: initialEasyloadRecords,
-      bottles: initialBottleItems,
-      stockTx: initialStockTransactions
-    };
   };
 
-  const saveCurrentAsDemoTemplate = () => {
-    const template = {
+  const enterSuperAdminDemoEditor = async () => {
+    const isMaster =
+      currentUser?.role === 'super_admin' ||
+      superAdminService.isMasterAdminEmail(currentUser?.email) ||
+      superAdminService.isMasterAdminEmail(auth.currentUser?.email);
+    if (!isMaster) return;
+
+    // Preserve Super Admin's real session in sessionStorage so returning never logs them out
+    try {
+      if (currentUser && !currentUser.isDemo) {
+        sessionStorage.setItem('taj_pos_saved_superadmin_user', JSON.stringify(currentUser));
+      }
+      if (currentShop && currentShop.id !== 'demo_shop_shared') {
+        sessionStorage.setItem('taj_pos_saved_superadmin_shop', JSON.stringify(currentShop));
+      }
+      sessionStorage.setItem('taj_pos_demo_editor_mode', 'true');
+    } catch {}
+
+    const { demoUser, demoShop } = buildDemoSessionObjects(true);
+    setIsSuperAdminDemoEditor(true);
+    setCurrentUser(demoUser);
+    setCurrentShop(demoShop);
+    setIsDemoMode(true);
+    setIsCleanStore(false);
+    setIsNewShopSetupRequired(false);
+    setFilterDate(getTodayDateString());
+    setActiveView('dashboard');
+
+    localStorage.setItem('taj_pos_user', JSON.stringify(demoUser));
+    localStorage.setItem('taj_pos_shop', JSON.stringify(demoShop));
+    localStorage.setItem('taj_pos_is_demo', 'true');
+
+    // Load cached first for instant open, then hydrate latest published cloud template
+    const cached = getLocalCachedDemoTemplate();
+    applyDemoPayloadToState(cached.data, cached.meta.resetIntervalMinutes);
+
+    try {
+      const cloudRes = await fetchCloudDemoTemplate({ rebaseToToday: true });
+      if (cloudRes.source === 'cloud') {
+        applyDemoPayloadToState(cloudRes.data, cloudRes.meta.resetIntervalMinutes);
+      }
+    } catch {}
+  };
+
+  const exitSuperAdminDemoEditor = () => {
+    let restoredUser: User | null = null;
+    let restoredShop: ShopProfile | null = null;
+    try {
+      const rawU = sessionStorage.getItem('taj_pos_saved_superadmin_user');
+      const rawS = sessionStorage.getItem('taj_pos_saved_superadmin_shop');
+      if (rawU) restoredUser = JSON.parse(rawU);
+      if (rawS) restoredShop = JSON.parse(rawS);
+      sessionStorage.removeItem('taj_pos_demo_editor_mode');
+      sessionStorage.removeItem('taj_pos_saved_superadmin_user');
+      sessionStorage.removeItem('taj_pos_saved_superadmin_shop');
+    } catch {}
+
+    setIsSuperAdminDemoEditor(false);
+    setIsDemoMode(false);
+    localStorage.removeItem('taj_pos_is_demo');
+
+    if (restoredUser && restoredShop) {
+      hydratedShopIdRef.current = undefined;
+      setCurrentUser(restoredUser);
+      setCurrentShop(restoredShop);
+      localStorage.setItem('taj_pos_user', JSON.stringify(restoredUser));
+      localStorage.setItem('taj_pos_shop', JSON.stringify(restoredShop));
+      setActiveView('super_admin');
+    } else {
+      logout();
+    }
+  };
+
+  const saveCurrentAsDemoTemplate = async (options?: {
+    resetIntervalMinutes?: number;
+  }): Promise<PublishDemoTemplateResult> => {
+    const payload: DemoTemplatePayload = {
       daily: dailyTransactions,
       backCash: backCashTransactions,
-      wholesalers: wholesalers,
-      customers: customers,
+      wholesalers,
+      customers,
       easyload: easyloadRecords,
       bottles: bottleItems,
-      stockTx: stockTransactions,
-      savedAt: new Date().toISOString()
+      stockTx: stockTransactions
     };
-    localStorage.setItem('taj_pos_custom_demo_template', JSON.stringify(template));
+    const minutes = options?.resetIntervalMinutes || demoResetIntervalMinutes || DEFAULT_DEMO_RESET_MINUTES;
+    const res = await publishCloudDemoTemplate(payload, {
+      updatedBy: auth.currentUser?.email?.toLowerCase() || currentUser?.email || 'Super Admin',
+      resetIntervalMinutes: minutes,
+      autoShiftDatesToToday: true
+    });
+    if (res.ok && res.meta) {
+      setDemoResetIntervalMinutes(res.meta.resetIntervalMinutes);
+    }
+    return res;
   };
 
-  const resetDemoData = () => {
-    const baseline = getDemoTemplateData();
-    setDailyTransactions(baseline.daily);
-    setBackCashTransactions(baseline.backCash);
-    setWholesalers(baseline.wholesalers);
-    setCustomers(baseline.customers);
-    setEasyloadRecords(baseline.easyload);
-    setBottleItems(baseline.bottles);
-    setStockTransactions(baseline.stockTx);
-    setCart([]);
-    localStorage.setItem('taj_pos_demo_last_reset', String(Date.now()));
-    setDemoTimeLeft(1800);
-  };
+  const resetDemoData = useCallback(
+    async (options?: { forceCloudRefresh?: boolean }) => {
+      // 100% LOCAL reset by default (0 Firestore reads, 0 Firestore writes, 0 Netlify requests!)
+      // Both 30-minute auto-reset and customer "Reset Demo Now" restore purely from localStorage cache.
+      const localCached = getLocalCachedDemoTemplate();
+      let activeData = localCached.data;
+      let activeMinutes = localCached.meta.resetIntervalMinutes || DEFAULT_DEMO_RESET_MINUTES;
 
-  // 30-Minute Auto-Restore Mechanism for Demo Store
+      // Only pull from Firestore when Super Admin explicitly clicks "Reload Saved" inside Demo Editor
+      if (options?.forceCloudRefresh) {
+        try {
+          const cloudRes = await fetchCloudDemoTemplate({ rebaseToToday: true });
+          if (cloudRes.source === 'cloud') {
+            activeData = cloudRes.data;
+            activeMinutes = cloudRes.meta.resetIntervalMinutes || DEFAULT_DEMO_RESET_MINUTES;
+          }
+        } catch {}
+      }
+
+      applyDemoPayloadToState(activeData, activeMinutes);
+      setFilterDate(getTodayDateString());
+      localStorage.setItem('taj_pos_demo_last_reset', String(Date.now()));
+      setDemoTimeLeft(activeMinutes * 60);
+    },
+    [applyDemoPayloadToState]
+  );
+
+  // 30-Minute Auto-Restore Mechanism for Customer Demo Store (Paused while Super Admin is editing!)
+  const isResettingDemoRef = useRef<boolean>(false);
   useEffect(() => {
-    if (!isDemoMode) return;
+    if (!isDemoMode || isSuperAdminDemoEditor) return;
 
-    const interval = setInterval(() => {
+    const totalSec = Math.max(60, (demoResetIntervalMinutes || DEFAULT_DEMO_RESET_MINUTES) * 60);
+
+    const tick = () => {
       const lastReset = Number(localStorage.getItem('taj_pos_demo_last_reset') || Date.now());
       const elapsed = Math.floor((Date.now() - lastReset) / 1000);
-      const remaining = 1800 - elapsed;
+      const remaining = totalSec - elapsed;
 
       if (remaining <= 0) {
-        resetDemoData();
+        if (!isResettingDemoRef.current) {
+          isResettingDemoRef.current = true;
+          resetDemoData().finally(() => {
+            isResettingDemoRef.current = false;
+          });
+        }
       } else {
         setDemoTimeLeft(remaining);
       }
-    }, 1000);
+    };
 
+    tick();
+    const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [isDemoMode]);
+  }, [isDemoMode, isSuperAdminDemoEditor, demoResetIntervalMinutes, resetDemoData]);
 
   const togglePrivacy = () => setIsPrivacyOn(prev => !prev);
   const toggleMaintenanceMode = () => {
@@ -5851,7 +6017,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setWholesalers(prev =>
               prev.map(w => {
                 if (w.id === tx.bill_id) {
-                  const updated = { ...w, remaining_balance: w.remaining_balance + tx.amount, status: 'pending' as const };
+                  const prevPaid = Number(w.total_paid) || 0;
+                  const updated = {
+                    ...w,
+                    remaining_balance: (Number(w.remaining_balance) || 0) + tx.amount,
+                    total_paid: Math.max(0, prevPaid - tx.amount),
+                    status: 'pending' as const
+                  };
                   saveDocToShop('wholesaler_bills', updated.id, updated);
                   return updated;
                 }
@@ -5864,7 +6036,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
             setCustomers(prev =>
               prev.map(c => {
                 if (c.id === tx.bill_id) {
-                  const updated = { ...c, remaining_balance: c.remaining_balance + tx.amount, status: 'pending' as const };
+                  const prevRec = Number(c.total_received) || 0;
+                  const updated = {
+                    ...c,
+                    remaining_balance: (Number(c.remaining_balance) || 0) + tx.amount,
+                    total_received: Math.max(0, prevRec - tx.amount),
+                    status: 'pending' as const
+                  };
                   saveDocToShop('customer_bills', updated.id, updated);
                   return updated;
                 }
@@ -6135,12 +6313,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
     rememberTextSuggestion(bill.customer_name, 'wholesaler');
     rememberTextSuggestion(bill.customer_name, 'note');
-    const isZero = (bill.total_bill || 0) <= 0;
+    const openingAmt = Number(bill.total_bill) || 0;
+    const isZero = openingAmt <= 0;
     const newBill: WholesalerBill = {
       ...bill,
-      total_bill: bill.total_bill || 0,
+      total_bill: openingAmt,
+      total_paid: 0,
       id: `w-${Date.now()}`,
-      remaining_balance: bill.total_bill || 0,
+      remaining_balance: openingAmt,
       created_date: filterDate,
       status: isZero ? 'paid' : 'pending'
     };
@@ -6162,7 +6342,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const target = wholesalers.find(w => w.id === billId);
     if (!target || amount <= 0) return;
 
-    const newRem = Math.max(0, target.remaining_balance - amount);
+    const newRem = Math.max(0, (Number(target.remaining_balance) || 0) - amount);
     const newStatus = newRem <= 0 ? 'paid' : 'pending';
 
     scheduleDataMutation(
@@ -6173,7 +6353,18 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setWholesalers(prev =>
           prev.map(w => {
             if (w.id === billId) {
-              const upd = { ...w, remaining_balance: newRem, status: newStatus as any };
+              const prevTotalBill = Number(w.total_bill) || 0;
+              const prevRem = Number(w.remaining_balance) || 0;
+              const prevPaid = Number(w.total_paid) || Math.max(0, prevTotalBill - prevRem);
+              const nextPaid = prevPaid + amount;
+              const nextTotalBill = Math.max(prevTotalBill, nextPaid + newRem);
+              const upd = {
+                ...w,
+                total_bill: nextTotalBill,
+                total_paid: nextPaid,
+                remaining_balance: newRem,
+                status: newStatus as any
+              };
               saveDocToShop('wholesaler_bills', upd.id, upd);
               return upd;
             }
@@ -6208,10 +6399,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setWholesalers(prev =>
           prev.map(w => {
             if (w.id === billId) {
+              const prevTotalBill = Number(w.total_bill) || 0;
+              const prevRem = Number(w.remaining_balance) || 0;
+              const prevPaid = Number(w.total_paid) || Math.max(0, prevTotalBill - prevRem);
+              const nextRem = prevRem + amount;
+              const nextTotalBill = Math.max(prevTotalBill + amount, prevPaid + nextRem);
               const upd = {
                 ...w,
-                total_bill: w.total_bill + amount,
-                remaining_balance: w.remaining_balance + amount,
+                total_bill: nextTotalBill,
+                total_paid: prevPaid,
+                remaining_balance: nextRem,
                 status: 'pending' as const
               };
               saveDocToShop('wholesaler_bills', upd.id, upd);
@@ -6272,12 +6469,14 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
     rememberTextSuggestion(bill.customer_name, 'customer');
     rememberTextSuggestion(bill.customer_name, 'note');
-    const isZero = (bill.total_bill || 0) <= 0;
+    const openingAmt = Math.max(0, Number(bill.total_bill) || 0);
+    const isZero = openingAmt <= 0;
     const newBill: CustomerBill = {
       ...bill,
-      total_bill: bill.total_bill || 0,
+      total_bill: openingAmt,
+      total_received: 0,
       id: `c-${Date.now()}`,
-      remaining_balance: bill.total_bill || 0,
+      remaining_balance: openingAmt,
       created_date: filterDate,
       status: isZero ? 'paid' : 'pending'
     };
@@ -6291,7 +6490,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
         addDailyTransaction({
           type: 'out',
-          amount: bill.total_bill || 0,
+          amount: openingAmt,
           description: isZero
             ? `Khata Started (Opening Balance: Rs. 0): ${bill.customer_name}`
             : `Credit given to Customer: ${bill.customer_name}`,
@@ -6310,7 +6509,17 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const target = customers.find(c => c.id === billId);
     if (!target || amount <= 0) return;
 
-    const newRem = Math.max(0, target.remaining_balance - amount);
+    const prevRem = Math.max(0, Number(target.remaining_balance) || 0);
+    const prevTotalBill = Math.max(0, Number(target.total_bill) || 0);
+    const prevReceived =
+      typeof target.total_received === 'number'
+        ? Math.max(0, target.total_received)
+        : Math.max(0, prevTotalBill - prevRem);
+
+    const newRem = Math.max(0, prevRem - amount);
+    const nextReceived = prevReceived + amount;
+    // Always preserve & accumulate total credit ever given so Total Di Gayi Rakam never drops to 0 on payment!
+    const nextTotalBill = Math.max(prevTotalBill, nextReceived + newRem);
     const newStatus = newRem <= 0 ? 'paid' : 'pending';
 
     scheduleDataMutation(
@@ -6321,7 +6530,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setCustomers(prev =>
           prev.map(c => {
             if (c.id === billId) {
-              const upd = { ...c, remaining_balance: newRem, status: newStatus as any };
+              const upd: CustomerBill = {
+                ...c,
+                total_bill: nextTotalBill,
+                total_received: nextReceived,
+                remaining_balance: newRem,
+                status: newStatus as any
+              };
               saveDocToShop('customer_bills', upd.id, upd);
               return upd;
             }
@@ -6356,10 +6571,19 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setCustomers(prev =>
           prev.map(c => {
             if (c.id === billId) {
-              const upd = {
+              const prevRem = Math.max(0, Number(c.remaining_balance) || 0);
+              const prevTotal = Math.max(0, Number(c.total_bill) || 0);
+              const prevReceived =
+                typeof c.total_received === 'number'
+                  ? Math.max(0, c.total_received)
+                  : Math.max(0, prevTotal - prevRem);
+              const nextRem = prevRem + amount;
+              const nextTotal = Math.max(prevTotal + amount, prevReceived + nextRem);
+              const upd: CustomerBill = {
                 ...c,
-                total_bill: c.total_bill + amount,
-                remaining_balance: c.remaining_balance + amount,
+                total_bill: nextTotal,
+                total_received: prevReceived,
+                remaining_balance: nextRem,
                 status: 'pending' as const
               };
               saveDocToShop('customer_bills', upd.id, upd);
@@ -7025,7 +7249,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         resetToCleanZeroData,
         loadDemoSampleData,
         isDemoMode,
+        isSuperAdminDemoEditor,
+        demoResetIntervalMinutes,
         loginDemoStore,
+        enterSuperAdminDemoEditor,
+        exitSuperAdminDemoEditor,
         resetDemoData,
         demoTimeLeft,
         saveCurrentAsDemoTemplate,

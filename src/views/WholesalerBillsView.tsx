@@ -5,7 +5,6 @@
 
 import React, { useState } from 'react';
 import {
-  ArrowLeft,
   Search,
   PlusCircle,
   Edit2,
@@ -15,14 +14,23 @@ import {
   FileText,
   Calendar,
   X,
-  Printer
+  Printer,
+  Image as ImageIcon,
+  MessageCircle
 } from 'lucide-react';
 import { usePOS } from '../context/POSContext';
 import { WholesalerBill } from '../types/pos';
 import { PrintReceiptModal } from '../components/PrintReceiptModal';
 import { showAppAlert, showAppConfirm } from '../components/AppDialogHost';
 import { AmountInput } from '../components/AmountInput';
+import { StickyPageHeader } from '../components/StickyPageHeader';
 import { superAdminService } from '../superadmin/superAdminService';
+import {
+  downloadLedgerAsJpg,
+  downloadLedgerAsPdf,
+  shareLedgerOnWhatsApp,
+  LedgerExportPayload
+} from '../utils/ledgerExport';
 
 export const WholesalerBillsView: React.FC = () => {
   const {
@@ -70,19 +78,115 @@ export const WholesalerBillsView: React.FC = () => {
     return rawVal;
   };
 
+  // Compute accurate lifetime totals for a wholesaler (Total Bill, Ada Kiya / Paid, Baqi Dena Hai)
+  const getWholesalerLifetimeTotals = (w: WholesalerBill) => {
+    const linkedTxs = dailyTransactions.filter(
+      t => t.bill_id === w.id && t.party_type === 'wholesaler'
+    );
+    const txPaid = linkedTxs
+      .filter(t => t.type === 'out')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    const txAdded = linkedTxs
+      .filter(t => t.type !== 'out')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+    const remaining = Math.max(0, Number(w.remaining_balance) || 0);
+    const storedTotalBill = Math.max(0, Number(w.total_bill) || 0);
+    const storedPaid = Math.max(0, Number(w.total_paid) || 0);
+
+    const totalPaid = Math.max(storedPaid, txPaid, Math.max(0, storedTotalBill - remaining));
+    const totalBill = Math.max(storedTotalBill, txAdded, totalPaid + remaining);
+
+    return {
+      totalBill,
+      totalPaid,
+      remaining
+    };
+  };
+
   const openEditWholesalerModal = (w: WholesalerBill) => {
     if (!superAdminService.isActionUnlockedForUser('allowManageBills', userWithShop)) {
       showAppAlert('🔒 ہول سیلر کھاتہ ایڈٹ کرنے کی اجازت فی الحال لاک (Locked) ہے۔');
       return;
     }
-    setEditItem(w);
-    setEditBillStr(w.total_bill === 0 ? '' : w.total_bill.toString());
-    setEditRemainingStr(w.remaining_balance === 0 ? '' : w.remaining_balance.toString());
+    const { totalBill: lifetimeBill, remaining } = getWholesalerLifetimeTotals(w);
+    setEditItem({ ...w });
+    setEditBillStr(lifetimeBill === 0 ? '' : lifetimeBill.toString());
+    setEditRemainingStr(remaining === 0 ? '' : remaining.toString());
   };
 
   // Statement Ledger Modal
   const [statementWholesaler, setStatementWholesaler] = useState<WholesalerBill | null>(null);
   const [printReceiptBill, setPrintReceiptBill] = useState<WholesalerBill | null>(null);
+  const [exportStatusMsg, setExportStatusMsg] = useState<string>('');
+
+  const triggerExportFeedback = (msg: string) => {
+    setExportStatusMsg(msg);
+    setTimeout(() => setExportStatusMsg(''), 2600);
+  };
+
+  const buildWholesalerLedgerExportPayload = (w: WholesalerBill): LedgerExportPayload => {
+    const { totalBill: lifetimeBill, totalPaid, remaining } = getWholesalerLifetimeTotals(w);
+    const wholesalerTxs = dailyTransactions.filter(
+      t => t.bill_id === w.id && t.party_type === 'wholesaler'
+    );
+
+    const entries =
+      wholesalerTxs.length > 0
+        ? wholesalerTxs.map(tx => ({
+            description: tx.description,
+            date: tx.transaction_date,
+            by: tx.created_by_name || tx.created_by,
+            type: tx.amount === 0 ? 'opening' : tx.type,
+            amount: Number(tx.amount) || 0,
+            amountLabel:
+              tx.amount === 0
+                ? 'Rs. 0 (Opening)'
+                : tx.type === 'out'
+                ? `Paid: - Rs. ${(Number(tx.amount) || 0).toLocaleString()}`
+                : `Added: + Rs. ${(Number(tx.amount) || 0).toLocaleString()}`,
+            amountTone: (tx.amount === 0
+              ? 'slate'
+              : tx.type === 'out'
+              ? 'emerald'
+              : 'blue') as 'slate' | 'emerald' | 'blue'
+          }))
+        : [
+            {
+              description:
+                lifetimeBill === 0
+                  ? 'Khata Started (Opening Balance: Rs. 0)'
+                  : 'Opening Bill / Payable',
+              date: w.created_date,
+              by: 'Khata Created',
+              type: 'opening',
+              amount: lifetimeBill,
+              amountLabel: `Rs. ${lifetimeBill.toLocaleString()} (Opening)`,
+              amountTone: 'slate' as const
+            }
+          ];
+
+    const scheduleParts: string[] = [];
+    if (w.order_day) scheduleParts.push(`Order: ${w.order_day}`);
+    if (w.supply_day) scheduleParts.push(`Supply: ${w.supply_day}`);
+
+    return {
+      shopName: currentShop?.shop_name || currentUser?.shopName || 'NH POS Shop',
+      shopPhone: currentShop?.phone,
+      partyTypeLabel: 'Wholesaler',
+      partyName: w.customer_name,
+      partyPhone: w.agency_dealer_number || w.supplier_number,
+      invoiceNumber: w.invoice_number,
+      extraMeta: scheduleParts.length > 0 ? scheduleParts.join(' | ') : undefined,
+      totalGivenLabel: 'Total Bill',
+      totalReceivedLabel: 'Ada Kiya',
+      remainingLabel: 'Baqi Dena Hai',
+      totalGiven: lifetimeBill,
+      totalReceived: totalPaid,
+      remaining,
+      entries
+    };
+  };
 
   const totalPayable = getTotalWholesalerPayable();
   const totalCount = wholesalers.length;
@@ -205,11 +309,21 @@ export const WholesalerBillsView: React.FC = () => {
       return;
     }
 
+    const effectiveTotalBill = Math.max(totalBillVal, remainingVal);
+    const nextTotalPaid = Math.max(0, effectiveTotalBill - remainingVal);
+
     const updatedWholesaler: WholesalerBill = {
       ...editItem,
       customer_name: trimmedName,
-      total_bill: totalBillVal,
+      total_bill: effectiveTotalBill,
+      total_paid: nextTotalPaid,
       remaining_balance: remainingVal,
+      invoice_number: editItem.invoice_number?.trim() || undefined,
+      agency_dealer_number: editItem.agency_dealer_number?.trim() || undefined,
+      supplier_number: editItem.supplier_number?.trim() || undefined,
+      order_day: editItem.order_day?.trim() || undefined,
+      supply_day: editItem.supply_day?.trim() || undefined,
+      created_date: editItem.created_date || wFallbackDate(editItem.created_date),
       status: remainingVal <= 0 ? 'paid' : 'pending'
     };
 
@@ -217,25 +331,15 @@ export const WholesalerBillsView: React.FC = () => {
     setEditItem(null);
   };
 
+  const wFallbackDate = (d?: string) => d || new Date().toISOString().split('T')[0];
+
   return (
     <div className="space-y-4 pb-12">
-      {/* Top Header */}
-      <div className="flex items-center justify-between bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
-        <button
-          type="button"
-          onClick={() => setActiveView('dashboard')}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2c3e50] hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-colors"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back</span>
-        </button>
-
-        <h2 className="text-base sm:text-lg font-black text-slate-800 text-center tracking-tight">
-          Wholesaler Ledger
-        </h2>
-
-        <div className="w-8" />
-      </div>
+      {/* Sticky Top Header (Shrinks 50% with frosted glass on scroll) */}
+      <StickyPageHeader
+        title="Wholesaler Ledger"
+        onBack={() => setActiveView('dashboard')}
+      />
 
       {/* Red Summary Banner */}
       <div className="bg-gradient-to-r from-rose-500 to-rose-700 text-white p-4 sm:p-5 rounded-2xl shadow-md flex items-center justify-between">
@@ -369,6 +473,7 @@ export const WholesalerBillsView: React.FC = () => {
           {filteredList.length > 0 ? (
             filteredList.map(w => {
               const isPaid = w.remaining_balance <= 0;
+              const { totalBill: lifetimeBill, totalPaid } = getWholesalerLifetimeTotals(w);
               return (
                 <div key={w.id} className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
                   {/* Info Column */}
@@ -381,14 +486,25 @@ export const WholesalerBillsView: React.FC = () => {
                         </span>
                       )}
                       {w.agency_dealer_number && (
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          {w.supplier_number ? `Agency: ${w.agency_dealer_number}` : w.agency_dealer_number}
+                        </span>
+                      )}
+                      {w.supplier_number && (
                         <span className="text-[10px] text-slate-400 font-mono">
-                          {w.agency_dealer_number}
+                          Supplier: {w.supplier_number}
                         </span>
                       )}
                     </div>
 
-                    <div className="text-slate-500 text-[11px]">
-                      Bill: Rs. {w.total_bill.toLocaleString()} | Date: {w.created_date}
+                    <div className="text-slate-500 text-[11px] flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span>Total Bill: <b className="font-mono text-slate-700">Rs. {lifetimeBill.toLocaleString()}</b></span>
+                      {totalPaid > 0 && (
+                        <span className="text-emerald-700 font-semibold">
+                          | Ada Kiya: <b className="font-mono">Rs. {totalPaid.toLocaleString()}</b>
+                        </span>
+                      )}
+                      <span>| Date: {w.created_date}</span>
                     </div>
 
                     {(w.order_day || w.supply_day) && (
@@ -494,17 +610,34 @@ export const WholesalerBillsView: React.FC = () => {
         </div>
       </div>
 
-      {/* Edit Modal */}
+      {/* Edit Modal — Exact same Wholesaler fields & clean aligned layout as Add Wholesaler Form */}
       {editItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="bg-white text-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl border border-slate-100 space-y-3">
-            <h3 className="font-bold text-sm text-slate-800 pb-2 border-b border-slate-100">
-              Edit Wholesaler Details
-            </h3>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs"
+          onClick={e => {
+            if (e.target === e.currentTarget) setEditItem(null);
+          }}
+        >
+          <div className="bg-white text-slate-800 w-full max-w-md rounded-2xl p-5 shadow-2xl border border-slate-100 space-y-3.5 max-h-[92vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between">
+              <h3 className="font-black text-base text-slate-900">
+                Wholesaler Khata Edit Karein
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditItem(null)}
+                aria-label="Close"
+                className="text-slate-400 hover:text-slate-700 p-1 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
 
-            <form onSubmit={handleEditSubmit} className="space-y-2.5 text-xs">
+            <form onSubmit={handleEditSubmit} className="space-y-3 text-xs">
               <div>
-                <label className="block text-[11px] font-bold text-slate-500 mb-1">Wholesaler Name</label>
+                <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                  Wholesaler / Company Name
+                </label>
                 <input
                   type="text"
                   name="edit_wholesaler_name"
@@ -512,14 +645,17 @@ export const WholesalerBillsView: React.FC = () => {
                   autoComplete="on"
                   value={editItem.customer_name}
                   onChange={e => setEditItem({ ...editItem, customer_name: e.target.value })}
+                  placeholder="Wholesaler / Company Name"
                   required
-                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold"
+                  className="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl font-semibold text-sm text-slate-900 focus:outline-none focus:border-blue-500"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-500 mb-1">Total Bill</label>
+              <div className="grid grid-cols-2 gap-2.5 items-end">
+                <div className="flex flex-col">
+                  <label className="min-h-[28px] flex items-end text-[11px] font-bold text-slate-600 mb-1 leading-tight">
+                    Total Bill (Rs.)
+                  </label>
                   <AmountInput
                     value={editBillStr}
                     onValueChange={val => setEditBillStr(sanitizeNumberInput(val))}
@@ -531,11 +667,13 @@ export const WholesalerBillsView: React.FC = () => {
                       }
                     }}
                     placeholder="0"
-                    className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold"
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl font-bold text-sm text-slate-900 focus:outline-none focus:border-blue-500"
                   />
                 </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-500 mb-1">Remaining Balance</label>
+                <div className="flex flex-col">
+                  <label className="min-h-[28px] flex items-end text-[11px] font-bold text-slate-600 mb-1 leading-tight">
+                    Baqi Dene Wali Rakam (Rs.)
+                  </label>
                   <AmountInput
                     value={editRemainingStr}
                     onValueChange={val => setEditRemainingStr(sanitizeNumberInput(val))}
@@ -547,45 +685,108 @@ export const WholesalerBillsView: React.FC = () => {
                       }
                     }}
                     placeholder="0"
-                    className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold"
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl font-bold text-sm text-slate-900 focus:outline-none focus:border-blue-500"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-500 mb-1">Invoice Number</label>
+              <div className="flex items-center justify-between px-3 py-2 bg-slate-50 border border-slate-200/80 rounded-xl text-[11px]">
+                <span className="font-semibold text-slate-600">Total Ada Kiya (Paid):</span>
+                <span className="font-mono font-black text-emerald-700">
+                  Rs.{' '}
+                  {Math.max(
+                    0,
+                    (parseFloat(editBillStr || '0') || 0) - (parseFloat(editRemainingStr || '0') || 0)
+                  ).toLocaleString()}
+                </span>
+              </div>
+
+              <div className="border-t border-dashed border-slate-200 pt-2.5 grid grid-cols-2 gap-2.5 items-end">
+                <div className="flex flex-col">
+                  <label className="min-h-[24px] flex items-end text-[11px] font-bold text-slate-600 mb-1 leading-tight">
+                    Invoice Number
+                  </label>
                   <input
                     type="text"
                     value={editItem.invoice_number || ''}
                     onChange={e => setEditItem({ ...editItem, invoice_number: e.target.value })}
-                    className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg"
+                    placeholder="e.g. PEP-101"
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-blue-500"
                   />
                 </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-500 mb-1">Entry Date (تاریخ)</label>
+                <div className="flex flex-col">
+                  <label className="min-h-[24px] flex items-end text-[11px] font-bold text-slate-600 mb-1 leading-tight">
+                    Entry Date (تاریخ)
+                  </label>
                   <input
                     type="date"
                     value={editItem.created_date || ''}
                     onChange={e => setEditItem({ ...editItem, created_date: e.target.value })}
-                    className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-bold text-slate-800"
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm font-semibold text-slate-900 focus:outline-none focus:border-blue-500"
                   />
                 </div>
               </div>
 
-              <div className="flex gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setEditItem(null)}
-                  className="flex-1 py-2 bg-slate-100 text-slate-600 font-bold rounded-xl"
-                >
-                  Cancel
-                </button>
+              <div className="grid grid-cols-2 gap-2.5 items-end">
+                <div className="flex flex-col">
+                  <label className="min-h-[28px] flex items-end text-[11px] font-bold text-slate-600 mb-1 leading-tight">
+                    Agency/Dealer Phone No
+                  </label>
+                  <input
+                    type="text"
+                    value={editItem.agency_dealer_number || ''}
+                    onChange={e => setEditItem({ ...editItem, agency_dealer_number: e.target.value })}
+                    placeholder="Agency/Dealer Phone"
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div className="flex flex-col">
+                  <label className="min-h-[28px] flex items-end text-[11px] font-bold text-slate-600 mb-1 leading-tight">
+                    Supplier Phone No
+                  </label>
+                  <input
+                    type="text"
+                    value={editItem.supplier_number || ''}
+                    onChange={e => setEditItem({ ...editItem, supplier_number: e.target.value })}
+                    placeholder="Supplier Phone"
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5 items-end">
+                <div className="flex flex-col">
+                  <label className="min-h-[24px] flex items-end text-[11px] font-bold text-slate-600 mb-1 leading-tight">
+                    Order Day
+                  </label>
+                  <input
+                    type="text"
+                    value={editItem.order_day || ''}
+                    onChange={e => setEditItem({ ...editItem, order_day: e.target.value })}
+                    placeholder="e.g. Monday"
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div className="flex flex-col">
+                  <label className="min-h-[24px] flex items-end text-[11px] font-bold text-slate-600 mb-1 leading-tight">
+                    Supply Day
+                  </label>
+                  <input
+                    type="text"
+                    value={editItem.supply_day || ''}
+                    onChange={e => setEditItem({ ...editItem, supply_day: e.target.value })}
+                    placeholder="e.g. Tuesday"
+                    className="w-full px-3 py-2.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-1">
                 <button
                   type="submit"
-                  className="flex-1 py-2 bg-emerald-600 text-white font-bold rounded-xl shadow-sm"
+                  className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm rounded-xl shadow-md transition-colors cursor-pointer"
                 >
-                  Save
+                  Tabdeeli Save Karein
                 </button>
               </div>
             </form>
@@ -593,9 +794,14 @@ export const WholesalerBillsView: React.FC = () => {
         </div>
       )}
 
-      {/* Statement History Modal (PDF View matching get_history.php) */}
+      {/* Statement History Modal */}
       {statementWholesaler && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs"
+          onClick={e => {
+            if (e.target === e.currentTarget) setStatementWholesaler(null);
+          }}
+        >
           <div className="bg-white text-slate-800 w-full max-w-lg rounded-2xl p-5 shadow-2xl border border-slate-100 flex flex-col max-h-[85vh]">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div>
@@ -607,18 +813,32 @@ export const WholesalerBillsView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setStatementWholesaler(null)}
-                className="text-slate-400 hover:text-slate-700 p-1"
+                className="text-slate-400 hover:text-slate-700 p-1 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-3 bg-slate-50 my-3 rounded-xl flex justify-between items-center text-xs">
-              <span className="font-semibold text-slate-700">Opening Balance: <b className="font-mono text-slate-900">Rs. {statementWholesaler.total_bill.toLocaleString()}</b></span>
-              <span className="font-bold text-rose-600">
-                Remaining Payable: <b className="font-mono">Rs. {statementWholesaler.remaining_balance.toLocaleString()}</b>
-              </span>
-            </div>
+            {(() => {
+              const { totalBill: lifetimeBill, totalPaid, remaining } =
+                getWholesalerLifetimeTotals(statementWholesaler);
+              return (
+                <div className="p-3 bg-slate-50 my-3 rounded-xl grid grid-cols-3 gap-2 text-center text-xs border border-slate-200/70">
+                  <div>
+                    <div className="text-[10px] font-bold text-slate-500">Total Bill</div>
+                    <div className="font-mono font-black text-slate-900">Rs. {lifetimeBill.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold text-slate-500">Ada Kiya</div>
+                    <div className="font-mono font-black text-emerald-700">Rs. {totalPaid.toLocaleString()}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold text-slate-500">Baqi Dena Hai</div>
+                    <div className="font-mono font-black text-rose-600">Rs. {remaining.toLocaleString()}</div>
+                  </div>
+                </div>
+              );
+            })()}
 
             <div className="flex-1 overflow-y-auto space-y-2 text-xs divide-y divide-slate-100 pr-1">
               {(() => {
@@ -668,33 +888,77 @@ export const WholesalerBillsView: React.FC = () => {
               })()}
             </div>
 
-            <div className="pt-4 border-t border-slate-100 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => window.print()}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm"
-              >
-                <Printer className="w-4 h-4" />
-                <span>Print / Download PDF</span>
-              </button>
+            <div className="pt-3.5 border-t border-slate-100 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-black uppercase tracking-wider text-slate-500">
+                  Download Format
+                </span>
+                {exportStatusMsg && (
+                  <span className="text-[11px] font-bold text-emerald-600 animate-in fade-in">
+                    {exportStatusMsg}
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    downloadLedgerAsPdf(buildWholesalerLedgerExportPayload(statementWholesaler));
+                    triggerExportFeedback('✓ PDF Downloaded!');
+                  }}
+                  className="py-2.5 px-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors cursor-pointer active:scale-95"
+                >
+                  <FileText className="w-4 h-4 shrink-0" />
+                  <span>PDF</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    downloadLedgerAsJpg(buildWholesalerLedgerExportPayload(statementWholesaler));
+                    triggerExportFeedback('✓ JPG Downloaded!');
+                  }}
+                  className="py-2.5 px-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors cursor-pointer active:scale-95"
+                >
+                  <ImageIcon className="w-4 h-4 shrink-0" />
+                  <span>JPG</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await shareLedgerOnWhatsApp(buildWholesalerLedgerExportPayload(statementWholesaler));
+                    triggerExportFeedback('✓ Ready on WhatsApp!');
+                  }}
+                  className="py-2.5 px-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[11px] sm:text-xs font-bold flex items-center justify-center gap-1 shadow-sm transition-colors cursor-pointer active:scale-95"
+                >
+                  <MessageCircle className="w-4 h-4 shrink-0" />
+                  <span className="truncate">Share WhatsApp</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
       {/* Print Thermal Slip Modal */}
-      {printReceiptBill && (
-        <PrintReceiptModal
-          isOpen={true}
-          onClose={() => setPrintReceiptBill(null)}
-          billNumber={printReceiptBill.invoice_number || `WH-${printReceiptBill.id}`}
-          customerName={printReceiptBill.customer_name}
-          items={[{ name: `Wholesaler Stock Bill`, price: printReceiptBill.total_bill, qty: 1 }]}
-          totalAmount={printReceiptBill.total_bill}
-          paidAmount={printReceiptBill.total_bill - printReceiptBill.remaining_balance}
-          remainingBalance={printReceiptBill.remaining_balance}
-        />
-      )}
+      {printReceiptBill && (() => {
+        const { totalBill: lifetimeBill, totalPaid, remaining } =
+          getWholesalerLifetimeTotals(printReceiptBill);
+        return (
+          <PrintReceiptModal
+            isOpen={true}
+            onClose={() => setPrintReceiptBill(null)}
+            billNumber={printReceiptBill.invoice_number || `WH-${printReceiptBill.id}`}
+            customerName={printReceiptBill.customer_name}
+            items={[{ name: `Wholesaler Stock Bill`, price: lifetimeBill, qty: 1 }]}
+            totalAmount={lifetimeBill}
+            paidAmount={totalPaid}
+            remainingBalance={remaining}
+          />
+        );
+      })()}
     </div>
   );
 };

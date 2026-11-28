@@ -59,9 +59,28 @@
         "status": { "type": "string", "enum": ["trusted", "revoked"] }
       },
       "required": ["email", "deviceId", "status"]
+    },
+    "PlatformSetting": {
+      "title": "PlatformSetting",
+      "description": "Super Admin controlled global settings such as module_control and demo_template",
+      "type": "object",
+      "properties": {
+        "version": { "type": "number" },
+        "updatedAt": { "type": "string", "maxLength": 64 },
+        "updatedBy": { "type": "string", "maxLength": 120 },
+        "baseDate": { "type": "string", "maxLength": 32 },
+        "resetIntervalMinutes": { "type": "number" },
+        "autoShiftDatesToToday": { "type": "boolean" },
+        "hasCustomTemplate": { "type": "boolean" },
+        "payloadJson": { "type": "string" }
+      }
     }
   },
   "firestore": {
+    "/platform_settings/{settingId}": {
+      "schema": "PlatformSetting",
+      "description": "Global platform configuration and Super Admin published Demo Store master template"
+    },
     "/shops/{shopId}": {
       "schema": "ShopProfile",
       "description": "Multi-tenant shop root documents"

@@ -5,7 +5,6 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
-  ArrowLeft,
   Share2,
   Edit2,
   Trash2,
@@ -30,6 +29,7 @@ import { ReportModal } from '../components/ReportModal';
 import { DateNavigator } from '../components/DateNavigator';
 import { showAppAlert } from '../components/AppDialogHost';
 import { AmountInput } from '../components/AmountInput';
+import { StickyPageHeader } from '../components/StickyPageHeader';
 import { superAdminService } from '../superadmin/superAdminService';
 
 export const BackCashView: React.FC = () => {
@@ -583,37 +583,26 @@ export const BackCashView: React.FC = () => {
 
   return (
     <div className="space-y-4 pb-12">
-      {/* Top Header */}
-      <div className="flex items-center justify-between bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
-        <button
-          type="button"
-          onClick={goBack}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2c3e50] hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-colors"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back</span>
-        </button>
-
-        <h2 className="text-base sm:text-lg font-black text-slate-800 text-center tracking-tight">
-          Back Cash Manager
-        </h2>
-
-        {currentUser?.role === 'admin' ? (
-          <button
-            type="button"
-            onClick={() => setActiveView('edit_logs')}
-            className={`flex items-center gap-1 px-2.5 py-1 text-white rounded-lg text-xs font-bold transition-colors ${
-              unreadEditsCount > 0 ? 'bg-rose-600 animate-pulse' : 'bg-slate-700'
-            }`}
-          >
-            <span>History</span>
-            <Bell className="w-3.5 h-3.5" />
-            {unreadEditsCount > 0 && <span>({unreadEditsCount})</span>}
-          </button>
-        ) : (
-          <div className="w-8" />
-        )}
-      </div>
+      {/* Sticky Top Header (Shrinks 50% with frosted glass on scroll) */}
+      <StickyPageHeader
+        title="Back Cash Manager"
+        onBack={goBack}
+        rightSlot={
+          currentUser?.role === 'admin' ? (
+            <button
+              type="button"
+              onClick={() => setActiveView('edit_logs')}
+              className={`flex items-center gap-1 px-2.5 py-1 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                unreadEditsCount > 0 ? 'bg-rose-600 animate-pulse' : 'bg-slate-700 hover:bg-slate-800'
+              }`}
+            >
+              <span>History</span>
+              <Bell className="w-3.5 h-3.5" />
+              {unreadEditsCount > 0 && <span>({unreadEditsCount})</span>}
+            </button>
+          ) : undefined
+        }
+      />
 
       {/* Date Filter */}
       <DateNavigator
