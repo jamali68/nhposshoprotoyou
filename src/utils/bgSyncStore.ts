@@ -19,6 +19,8 @@ export interface BgSyncShopRecord {
   databaseId: string;
   apiKey: string;
   syncBy: string;
+  shopName?: string;
+  ownerName?: string;
   queue: BgPendingSyncItem[];
   flushedIds: string[];
   flushedAtMap: Record<string, number>;
@@ -140,6 +142,8 @@ export interface MirrorBgSyncParams {
   databaseId?: string;
   apiKey: string;
   syncBy: string;
+  shopName?: string;
+  ownerName?: string;
   queue: BgPendingSyncItem[];
   nextSyncAt: number;
   autoSyncIntervalMinutes?: number;
@@ -184,6 +188,8 @@ export async function mirrorPendingSyncToIdb(params: MirrorBgSyncParams): Promis
       databaseId: params.databaseId || '(default)',
       apiKey: params.apiKey,
       syncBy: params.syncBy || 'user',
+      shopName: params.shopName || existing?.shopName || 'NH POS Shop',
+      ownerName: params.ownerName || existing?.ownerName || params.syncBy || 'Admin',
       queue: filteredQueue,
       flushedIds: existingFlushedIds,
       flushedAtMap: existingFlushedAtMap,
@@ -318,21 +324,48 @@ export async function registerBackgroundSync(options?: {
   }
 }
 
+/**
+ * Ask the active Service Worker to check & flush any due/offline-recovered records in the background
+ * (ensures uploads continue reliably even if the user immediately locks their phone screen).
+ */
+export function triggerSwBackgroundSyncCheck(shopId?: string): void {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  try {
+    if (navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'TRIGGER_BG_SYNC_CHECK',
+        shopId: shopId || ''
+      });
+    }
+  } catch {
+    // Best-effort handoff
+  }
+}
+
 // =============================================================================
 // Direct Firestore REST API Fallback (Used when Firestore SDK WebChannel stalls
 // on flaky/sleeping mobile connections so Sync Now & Auto-Sync NEVER hang!)
 // =============================================================================
 
-function cleanForRest(val: any): any {
+function cleanForRest(val: any, depth = 0, insideArray = false): any {
+  if (depth > 16) return undefined;
   if (val === undefined || typeof val === 'function' || typeof val === 'symbol') return undefined;
   if (val === null) return null;
   if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
   if (typeof val === 'boolean' || typeof val === 'string') return val;
   if (val instanceof Date) return val.toISOString();
   if (Array.isArray(val)) {
+    // Firestore strictly forbids directly nested arrays ([[...]] -> HTTP 400 INVALID_ARGUMENT)
+    if (insideArray) {
+      try {
+        return JSON.stringify(val);
+      } catch {
+        return '[]';
+      }
+    }
     const out: any[] = [];
     for (let i = 0; i < val.length; i++) {
-      const cleaned = cleanForRest(val[i]);
+      const cleaned = cleanForRest(val[i], depth + 1, true);
       if (cleaned !== undefined) out.push(cleaned);
     }
     return out;
@@ -340,7 +373,8 @@ function cleanForRest(val: any): any {
   if (typeof val === 'object') {
     const out: Record<string, any> = {};
     for (const k of Object.keys(val)) {
-      const cleaned = cleanForRest(val[k]);
+      if (!k || k.trim() === '') continue;
+      const cleaned = cleanForRest(val[k], depth + 1, false);
       if (cleaned !== undefined) out[k] = cleaned;
     }
     return out;
@@ -370,7 +404,7 @@ function toRestValue(val: any): any {
 function toRestFields(obj: Record<string, any>): Record<string, any> {
   const fields: Record<string, any> = {};
   for (const k of Object.keys(obj || {})) {
-    if (obj[k] !== undefined) {
+    if (k && obj[k] !== undefined) {
       fields[k] = toRestValue(obj[k]);
     }
   }
@@ -387,6 +421,15 @@ export interface DirectRestTarget {
   databaseId?: string;
   apiKey: string;
   authToken?: string | null;
+  refreshAuthToken?: () => Promise<string | null>;
+}
+
+export interface DirectRestResult {
+  ok: boolean;
+  status?: number;
+  code?: string;
+  error?: string;
+  transient?: boolean;
 }
 
 function buildDirectDocUrl(target: DirectRestTarget, docPath: string): string {
@@ -396,12 +439,80 @@ function buildDirectDocUrl(target: DirectRestTarget, docPath: string): string {
   )}/databases/${dbId}/documents/${docPath}`;
 }
 
+function parseFirestoreRestErrorCode(status: number, bodyText: string): string {
+  try {
+    const parsed = JSON.parse(bodyText);
+    const apiStatus = String(parsed?.error?.status || '').toUpperCase();
+    if (apiStatus) return apiStatus;
+  } catch {}
+  if (status === 401) return 'UNAUTHENTICATED';
+  if (status === 403) return 'PERMISSION_DENIED';
+  if (status === 400) return 'INVALID_ARGUMENT';
+  if (status === 404) return 'NOT_FOUND';
+  if (status === 429) return 'RESOURCE_EXHAUSTED';
+  if (status >= 500) return 'UNAVAILABLE';
+  return `HTTP_${status}`;
+}
+
+function isTransientHttpStatus(status?: number): boolean {
+  if (!status) return true;
+  return status >= 500 || status === 429 || status === 408;
+}
+
+async function executeRestFetch(
+  url: string,
+  method: 'PATCH' | 'DELETE',
+  body: string | undefined,
+  authToken: string | null | undefined,
+  timeoutMs: number
+): Promise<DirectRestResult> {
+  const headers: Record<string, string> = {};
+  if (method === 'PATCH') {
+    headers['Content-Type'] = 'application/json';
+  }
+  if (authToken) {
+    headers['Authorization'] = `Bearer ${authToken}`;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, {
+      method,
+      headers,
+      ...(body !== undefined ? { body } : {}),
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+    if (resp.ok || (method === 'DELETE' && resp.status === 404)) {
+      return { ok: true, status: resp.status, transient: false };
+    }
+    const text = await resp.text().catch(() => '');
+    const code = parseFirestoreRestErrorCode(resp.status, text);
+    return {
+      ok: false,
+      status: resp.status,
+      code,
+      error: text || `HTTP ${resp.status}`,
+      transient: isTransientHttpStatus(resp.status)
+    };
+  } catch (err: any) {
+    clearTimeout(timer);
+    return {
+      ok: false,
+      code: 'NETWORK_ERROR',
+      error: err?.message || 'REST network error',
+      transient: true
+    };
+  }
+}
+
 export async function patchFirestoreDocDirect(
   target: DirectRestTarget,
   docPath: string,
   rawData: Record<string, any>,
   timeoutMs = 9000
-): Promise<{ ok: boolean; status?: number; error?: string }> {
+): Promise<DirectRestResult> {
   const cleanData = cleanForRest(rawData);
   if (!cleanData || typeof cleanData !== 'object') return { ok: true };
   const fieldKeys = Object.keys(cleanData);
@@ -411,57 +522,99 @@ export async function patchFirestoreDocDirect(
     .map((k) => 'updateMask.fieldPaths=' + encodeURIComponent(formatRestFieldPath(k)))
     .join('&');
   const url = `${buildDirectDocUrl(target, docPath)}?${maskParams}&key=${encodeURIComponent(target.apiKey)}`;
+  const body = JSON.stringify({ fields: toRestFields(cleanData) });
 
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (target.authToken) {
-    headers['Authorization'] = `Bearer ${target.authToken}`;
+  let res = await executeRestFetch(url, 'PATCH', body, target.authToken, timeoutMs);
+  if (res.ok) return res;
+
+  // If a stale/expired/revoked Firebase Auth Bearer token caused HTTP 401 (or 403),
+  // try refreshing the token once and/or retrying without the stale Authorization header.
+  if (target.authToken && (res.status === 401 || res.status === 403)) {
+    if (res.status === 401 && typeof target.refreshAuthToken === 'function') {
+      try {
+        const freshToken = await target.refreshAuthToken();
+        if (freshToken && freshToken !== target.authToken) {
+          target.authToken = freshToken;
+          res = await executeRestFetch(url, 'PATCH', body, freshToken, timeoutMs);
+          if (res.ok) return res;
+        }
+      } catch {
+        // Proceed to headerless fallback below
+      }
+    }
+    const anonRes = await executeRestFetch(url, 'PATCH', body, null, timeoutMs);
+    if (anonRes.ok) {
+      // Clear stale token on target so subsequent writes in this batch don't hit 401 again
+      if (res.status === 401) {
+        target.authToken = null;
+      }
+      return anonRes;
+    }
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch(url, {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({ fields: toRestFields(cleanData) }),
-      signal: controller.signal
-    });
-    clearTimeout(timer);
-    if (resp.ok) return { ok: true, status: resp.status };
-    const text = await resp.text().catch(() => '');
-    return { ok: false, status: resp.status, error: text || `HTTP ${resp.status}` };
-  } catch (err: any) {
-    clearTimeout(timer);
-    return { ok: false, error: err?.message || 'REST network error' };
-  }
+  return res;
 }
 
 export async function deleteFirestoreDocDirect(
   target: DirectRestTarget,
   docPath: string,
   timeoutMs = 9000
-): Promise<{ ok: boolean; status?: number; error?: string }> {
+): Promise<DirectRestResult> {
   const url = `${buildDirectDocUrl(target, docPath)}?key=${encodeURIComponent(target.apiKey)}`;
-  const headers: Record<string, string> = {};
-  if (target.authToken) {
-    headers['Authorization'] = `Bearer ${target.authToken}`;
+
+  let res = await executeRestFetch(url, 'DELETE', undefined, target.authToken, timeoutMs);
+  if (res.ok) return res;
+
+  if (target.authToken && (res.status === 401 || res.status === 403)) {
+    if (res.status === 401 && typeof target.refreshAuthToken === 'function') {
+      try {
+        const freshToken = await target.refreshAuthToken();
+        if (freshToken && freshToken !== target.authToken) {
+          target.authToken = freshToken;
+          res = await executeRestFetch(url, 'DELETE', undefined, freshToken, timeoutMs);
+          if (res.ok) return res;
+        }
+      } catch {
+        // Proceed to headerless fallback
+      }
+    }
+    const anonRes = await executeRestFetch(url, 'DELETE', undefined, null, timeoutMs);
+    if (anonRes.ok) {
+      if (res.status === 401) {
+        target.authToken = null;
+      }
+      return anonRes;
+    }
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch(url, {
-      method: 'DELETE',
-      headers,
-      signal: controller.signal
-    });
-    clearTimeout(timer);
-    if (resp.ok || resp.status === 404) return { ok: true, status: resp.status };
-    const text = await resp.text().catch(() => '');
-    return { ok: false, status: resp.status, error: text || `HTTP ${resp.status}` };
-  } catch (err: any) {
-    clearTimeout(timer);
-    return { ok: false, error: err?.message || 'REST delete network error' };
-  }
+  return res;
 }
+
+/**
+ * Ensures the parent `shops/{shopId}` document exists in Firestore without touching immutable
+ * `id` or `owner_email` fields (passes both `isValidShopData` and `isShopOwnerImmutable` rules,
+ * preventing `parentShopExists(shopId)` 403 rejections on subcollection writes).
+ */
+export async function ensureParentShopDocDirect(
+  target: DirectRestTarget,
+  shopId: string,
+  meta?: { shopName?: string; ownerName?: string; syncBy?: string },
+  timeoutMs = 8000
+): Promise<DirectRestResult> {
+  if (!shopId) return { ok: false, code: 'INVALID_ARGUMENT', error: 'Missing shopId' };
+  const safeShopName = String(meta?.shopName || 'NH POS Shop').trim().slice(0, 120) || 'NH POS Shop';
+  const safeOwnerName = String(meta?.ownerName || meta?.syncBy || 'Admin').trim().slice(0, 120) || 'Admin';
+  const restPath = `shops/${encodeURIComponent(shopId)}`;
+  return patchFirestoreDocDirect(
+    target,
+    restPath,
+    {
+      shop_name: safeShopName,
+      owner_name: safeOwnerName,
+      last_login: new Date().toISOString()
+    },
+    timeoutMs
+  );
+}
+
 

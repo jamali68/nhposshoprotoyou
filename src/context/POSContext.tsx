@@ -41,9 +41,12 @@ import {
   mirrorPendingSyncToIdb,
   consumeSwBgSyncResults,
   registerBackgroundSync,
+  triggerSwBackgroundSyncCheck,
   withTimeout,
   patchFirestoreDocDirect,
-  deleteFirestoreDocDirect
+  deleteFirestoreDocDirect,
+  ensureParentShopDocDirect,
+  DirectRestResult
 } from '../utils/bgSyncStore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { handleFirestoreError, OperationType } from '../firestoreErrorHandler';
@@ -373,9 +376,79 @@ export const formatNHUsername = (raw: string): string => {
   return val;
 };
 
-// Helper to strip undefined fields before writing to Firestore (prevents FirebaseError: Unsupported field value: undefined)
+const ALLOWED_SHOP_SUBCOLLECTIONS = new Set<string>([
+  'daily_transactions',
+  'back_cash_transactions',
+  'wholesaler_bills',
+  'customer_bills',
+  'easyload_records',
+  'bottle_items',
+  'stock_transactions',
+  'staff_accounts',
+  'edit_history',
+  'deleted_history',
+  'auth_audit_logs'
+]);
+
+const isValidFirestoreDocId = (id: unknown): id is string =>
+  typeof id === 'string' && id.length >= 1 && id.length <= 128 && /^[a-zA-Z0-9._@-]+$/.test(id);
+
+const sanitizeFirestoreValue = (val: any, depth = 0, insideArray = false): any => {
+  if (depth > 16) return undefined;
+  if (val === undefined || typeof val === 'function' || typeof val === 'symbol') return undefined;
+  if (val === null) return null;
+  if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
+  if (typeof val === 'boolean' || typeof val === 'string') return val;
+  if (val instanceof Date) return val.toISOString();
+  if (Array.isArray(val)) {
+    if (insideArray) {
+      try {
+        return JSON.stringify(val);
+      } catch {
+        return '[]';
+      }
+    }
+    const out: any[] = [];
+    for (let i = 0; i < val.length; i++) {
+      const cleaned = sanitizeFirestoreValue(val[i], depth + 1, true);
+      if (cleaned !== undefined) out.push(cleaned);
+    }
+    return out;
+  }
+  if (typeof val === 'object') {
+    const out: Record<string, any> = {};
+    for (const k of Object.keys(val)) {
+      if (!k || k.trim() === '') continue;
+      const cleaned = sanitizeFirestoreValue(val[k], depth + 1, false);
+      if (cleaned !== undefined) out[k] = cleaned;
+    }
+    return out;
+  }
+  return String(val);
+};
+
+// Helper to strip undefined/NaN/empty keys/nested arrays before writing to Firestore
 const sanitizeForFirestore = <T,>(obj: T): T => {
-  return JSON.parse(JSON.stringify(obj));
+  try {
+    return sanitizeFirestoreValue(obj) as T;
+  } catch {
+    return JSON.parse(JSON.stringify(obj));
+  }
+};
+
+// Ensures shop & subcollection payloads never carry accidental privilege-escalation fields
+// that firestore.rules blocks when logged in via password/offline session (request.auth == null).
+const sanitizeShopDocPayload = (obj: Record<string, any>): Record<string, any> => {
+  const cleaned = sanitizeForFirestore(obj || {});
+  if (cleaned && typeof cleaned === 'object' && !Array.isArray(cleaned)) {
+    if (cleaned.role === 'super_admin') {
+      cleaned.role = 'admin';
+    }
+    if (cleaned.isSuperAdmin === true) {
+      delete cleaned.isSuperAdmin;
+    }
+  }
+  return cleaned;
 };
 
 const POSContext = createContext<POSContextType | undefined>(undefined);
@@ -882,13 +955,24 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
         apiKey: firebaseConfig.apiKey,
         syncBy: currentUser?.name || currentUser?.username || currentUser?.role || 'user',
+        shopName: currentShop?.shop_name || currentUser?.shopName || 'NH POS Shop',
+        ownerName: currentShop?.owner_name || currentUser?.name || 'Admin',
         queue: queueToSave,
         nextSyncAt: nextSyncToSave,
         autoSyncIntervalMinutes: intervalMins,
         waitingForOnline: waitingToSave
       });
     },
-    [currentShopId, isDemoMode, currentUser?.name, currentUser?.username, currentUser?.role]
+    [
+      currentShopId,
+      isDemoMode,
+      currentUser?.name,
+      currentUser?.username,
+      currentUser?.role,
+      currentUser?.shopName,
+      currentShop?.shop_name,
+      currentShop?.owner_name
+    ]
   );
 
   const reconcileSwBackgroundSync = useCallback(async (): Promise<number> => {
@@ -900,22 +984,19 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const flushedAtMap = swResult.flushedAtMap || {};
     const bgSyncedAt = swResult.lastBgSyncAt || Date.now();
 
-    let remainingCount = 0;
-    setPendingSyncQueue(prev => {
-      const filtered = prev.filter(item => {
-        if (!item || !item.id) return false;
-        if (!flushedSet.has(item.id)) return true;
-        const flushedTs = flushedAtMap[item.id] || bgSyncedAt;
-        // Keep item only if the user edited it again AFTER the background sync uploaded it
-        return Number(item.timestamp || 0) > flushedTs;
-      });
-      remainingCount = filtered.length;
-      pendingSyncQueueRef.current = filtered;
-      try {
-        localStorage.setItem(`taj_pos_pending_queue_${currentShopId}`, JSON.stringify(filtered));
-      } catch {}
-      return filtered;
+    const filtered = pendingSyncQueueRef.current.filter(item => {
+      if (!item || !item.id) return false;
+      if (!flushedSet.has(item.id)) return true;
+      const flushedTs = flushedAtMap[item.id] || bgSyncedAt;
+      // Keep item only if the user edited it again AFTER the background sync uploaded it
+      return Number(item.timestamp || 0) > flushedTs;
     });
+    const remainingCount = filtered.length;
+    pendingSyncQueueRef.current = filtered;
+    try {
+      localStorage.setItem(`taj_pos_pending_queue_${currentShopId}`, JSON.stringify(filtered));
+    } catch {}
+    setPendingSyncQueue(filtered);
 
     const syncedDate = new Date(bgSyncedAt);
     setLastSyncTime(syncedDate);
@@ -965,18 +1046,24 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [currentShopId, syncStateToBgIdb]);
 
   // If a sync fails or partially fails while online, retry in 30s instead of waiting a full 15m/30m cycle
+  // Keep waitingForOnline = true in IndexedDB when pending entries remain so locking/closing the phone
+  // still lets the Service Worker flush them automatically as soon as internet stabilizes!
   const scheduleShortRetrySync = useCallback(
     (delayMs: number = 30000) => {
       const nextTarget = Date.now() + delayMs;
       nextSyncAtRef.current = nextTarget;
       setNextSyncRemainingSec(Math.max(1, Math.ceil(delayMs / 1000)));
+      const hasRemaining = pendingSyncQueueRef.current.length > 0;
       try {
         if (currentShopId) {
           localStorage.setItem(`taj_pos_next_sync_${currentShopId}`, String(nextTarget));
+          if (hasRemaining) {
+            localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'true');
+          }
         }
         localStorage.setItem('taj_pos_next_sync_global', String(nextTarget));
       } catch {}
-      syncStateToBgIdb(undefined, false, nextTarget);
+      syncStateToBgIdb(undefined, hasRemaining, nextTarget);
     },
     [currentShopId, syncStateToBgIdb]
   );
@@ -1651,10 +1738,10 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return { success: true, count: 0, noPendingData: true, message: 'No Pending Data' };
     }
 
-    // Self-healing guard: if a previous sync somehow exceeded 25s, release the lock so UI never stays stuck on "Syncing..."
+    // Self-healing guard: if a previous sync somehow exceeded 45s without progress, release the lock
     if (isSyncingRef.current) {
       const elapsedMs = Date.now() - (syncStartedAtRef.current || 0);
-      if (elapsedMs > 25000) {
+      if (elapsedMs > 45000) {
         isSyncingRef.current = false;
         syncStartedAtRef.current = 0;
         setIsSyncing(false);
@@ -1712,8 +1799,11 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setLastSyncTime(now);
       setIsFirebaseConnected(true);
       setFirebaseSyncStatus('connected');
+      waitingForOnlineSyncRef.current = false;
+      setIsWaitingForOnlineSync(false);
       try {
         localStorage.setItem(`taj_pos_last_sync_${currentShopId}`, now.toISOString());
+        localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'false');
       } catch {}
       if (manual || isTimerExpired) {
         resetSyncTimer30m();
@@ -1763,67 +1853,201 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         projectId: firebaseConfig.projectId,
         databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
         apiKey: firebaseConfig.apiKey,
-        authToken
+        authToken,
+        refreshAuthToken: async () => {
+          try {
+            if (auth.currentUser) {
+              return await withTimeout(auth.currentUser.getIdToken(true), 2500, 'getIdTokenForce');
+            }
+          } catch {}
+          return null;
+        }
       };
 
-      // Helper: Write doc via Firestore SDK (7.5s timeout), automatically falling back to Direct REST API if socket stalls
+      // If Firestore SDK WebChannel times out once in this sync run, immediately route all remaining
+      // operations via Direct REST API so multi-batch sync finishes in ~1-2s instead of stalling!
+      let preferDirectRest = false;
+      let parentShopBootstrapped = false;
+      let lastFailureCode: string | undefined;
+      let lastFailureStatus: number | undefined;
+
+      const isTimeoutErr = (err: any): boolean => {
+        const msg = String(err?.message || '').toLowerCase();
+        return msg.includes('timeout') || msg.includes('aborted');
+      };
+
+      const isPermissionDeniedErr = (err: any): boolean => {
+        const txt = String(err?.code || err?.message || '').toLowerCase();
+        return txt.includes('permission-denied') || txt.includes('permission_denied') || txt.includes('missing or insufficient permissions');
+      };
+
+      const ensureParentShopDocExists = async (): Promise<boolean> => {
+        if (parentShopBootstrapped) return true;
+        parentShopBootstrapped = true;
+        const safeShopPayload = sanitizeShopDocPayload({
+          shop_name: String(currentShop?.shop_name || currentUser?.shopName || 'NH POS Shop').trim().slice(0, 120) || 'NH POS Shop',
+          owner_name: String(currentShop?.owner_name || currentUser?.name || 'Admin').trim().slice(0, 120) || 'Admin',
+          last_login: new Date().toISOString()
+        });
+        if (!preferDirectRest) {
+          try {
+            await withTimeout(
+              setDoc(doc(db, 'shops', currentShopId), safeShopPayload, { merge: true }),
+              5500,
+              `bootstrapShop:${currentShopId}`
+            );
+            return true;
+          } catch (bootSdkErr) {
+            if (isTimeoutErr(bootSdkErr)) preferDirectRest = true;
+          }
+        }
+        const bootRest = await ensureParentShopDocDirect(
+          restTarget,
+          currentShopId,
+          {
+            shopName: safeShopPayload.shop_name,
+            ownerName: safeShopPayload.owner_name,
+            syncBy: currentUser?.name || currentUser?.username || 'Admin'
+          },
+          8000
+        );
+        return bootRest.ok;
+      };
+
+      // Helper: Write doc via Firestore SDK (6.5s timeout), automatically falling back to Direct REST API
+      // AND automatically bootstrapping `shops/{currentShopId}` if `parentShopExists(shopId)` rejected with 403!
       const writeDocResilient = async (
         collectionName: string,
         docId: string,
         cleanData: Record<string, any>
-      ): Promise<boolean> => {
-        try {
-          await withTimeout(
-            setDoc(doc(db, 'shops', currentShopId, collectionName, docId), cleanData, { merge: true }),
-            7500,
-            `setDoc:${collectionName}/${docId}`
-          );
-          return true;
-        } catch (sdkErr) {
-          console.warn(`SDK setDoc timed out/failed (${collectionName}/${docId}), trying direct REST:`, sdkErr);
-          const restPath = `shops/${encodeURIComponent(currentShopId)}/${encodeURIComponent(collectionName)}/${encodeURIComponent(docId)}`;
-          const restRes = await patchFirestoreDocDirect(restTarget, restPath, cleanData, 8500);
-          return restRes.ok;
+      ): Promise<DirectRestResult> => {
+        const restPath = `shops/${encodeURIComponent(currentShopId)}/${encodeURIComponent(collectionName)}/${encodeURIComponent(docId)}`;
+
+        if (!preferDirectRest) {
+          try {
+            await withTimeout(
+              setDoc(doc(db, 'shops', currentShopId, collectionName, docId), cleanData, { merge: true }),
+              6500,
+              `setDoc:${collectionName}/${docId}`
+            );
+            return { ok: true, status: 200, transient: false };
+          } catch (sdkErr: any) {
+            if (isTimeoutErr(sdkErr)) {
+              preferDirectRest = true;
+            }
+            if (isPermissionDeniedErr(sdkErr) && !parentShopBootstrapped) {
+              const createdParent = await ensureParentShopDocExists();
+              if (createdParent && !preferDirectRest) {
+                try {
+                  await withTimeout(
+                    setDoc(doc(db, 'shops', currentShopId, collectionName, docId), cleanData, { merge: true }),
+                    6500,
+                    `setDocRetry:${collectionName}/${docId}`
+                  );
+                  return { ok: true, status: 200, transient: false };
+                } catch {}
+              }
+            }
+            console.warn(`SDK setDoc failed (${collectionName}/${docId}), trying direct REST:`, sdkErr?.code || sdkErr?.message || sdkErr);
+          }
         }
+
+        let restRes = await patchFirestoreDocDirect(restTarget, restPath, cleanData, 8500);
+        if (!restRes.ok && restRes.status === 403 && !parentShopBootstrapped) {
+          const createdParent = await ensureParentShopDocExists();
+          if (createdParent) {
+            restRes = await patchFirestoreDocDirect(restTarget, restPath, cleanData, 8500);
+          }
+        }
+        if (!restRes.ok) {
+          lastFailureCode = restRes.code || lastFailureCode;
+          lastFailureStatus = restRes.status || lastFailureStatus;
+          console.warn(`Direct REST write failed (${collectionName}/${docId}):`, restRes.status, restRes.code, restRes.error);
+        }
+        return restRes;
       };
 
       const deleteDocResilient = async (
         collectionName: string,
         docId: string
-      ): Promise<boolean> => {
-        try {
-          await withTimeout(
-            deleteDoc(doc(db, 'shops', currentShopId, collectionName, docId)),
-            7500,
-            `deleteDoc:${collectionName}/${docId}`
-          );
-          return true;
-        } catch (sdkErr) {
-          console.warn(`SDK deleteDoc timed out/failed (${collectionName}/${docId}), trying direct REST:`, sdkErr);
-          const restPath = `shops/${encodeURIComponent(currentShopId)}/${encodeURIComponent(collectionName)}/${encodeURIComponent(docId)}`;
-          const restRes = await deleteFirestoreDocDirect(restTarget, restPath, 8500);
-          return restRes.ok;
+      ): Promise<DirectRestResult> => {
+        const restPath = `shops/${encodeURIComponent(currentShopId)}/${encodeURIComponent(collectionName)}/${encodeURIComponent(docId)}`;
+
+        if (!preferDirectRest) {
+          try {
+            await withTimeout(
+              deleteDoc(doc(db, 'shops', currentShopId, collectionName, docId)),
+              6500,
+              `deleteDoc:${collectionName}/${docId}`
+            );
+            return { ok: true, status: 200, transient: false };
+          } catch (sdkErr: any) {
+            if (isTimeoutErr(sdkErr)) {
+              preferDirectRest = true;
+            }
+            if (isPermissionDeniedErr(sdkErr) && !parentShopBootstrapped) {
+              const createdParent = await ensureParentShopDocExists();
+              if (createdParent && !preferDirectRest) {
+                try {
+                  await withTimeout(
+                    deleteDoc(doc(db, 'shops', currentShopId, collectionName, docId)),
+                    6500,
+                    `deleteDocRetry:${collectionName}/${docId}`
+                  );
+                  return { ok: true, status: 200, transient: false };
+                } catch {}
+              }
+            }
+            console.warn(`SDK deleteDoc failed (${collectionName}/${docId}), trying direct REST:`, sdkErr?.code || sdkErr?.message || sdkErr);
+          }
         }
+
+        let restRes = await deleteFirestoreDocDirect(restTarget, restPath, 8500);
+        if (!restRes.ok && restRes.status === 403 && !parentShopBootstrapped) {
+          const createdParent = await ensureParentShopDocExists();
+          if (createdParent) {
+            restRes = await deleteFirestoreDocDirect(restTarget, restPath, 8500);
+          }
+        }
+        if (!restRes.ok) {
+          lastFailureCode = restRes.code || lastFailureCode;
+          lastFailureStatus = restRes.status || lastFailureStatus;
+          console.warn(`Direct REST delete failed (${collectionName}/${docId}):`, restRes.status, restRes.code, restRes.error);
+        }
+        return restRes;
       };
 
       const patchRootDocResilient = async (
         rootCollection: string,
         docId: string,
         cleanData: Record<string, any>
-      ): Promise<boolean> => {
-        try {
-          await withTimeout(
-            setDoc(doc(db, rootCollection, docId), cleanData, { merge: true }),
-            7500,
-            `setDoc:${rootCollection}/${docId}`
-          );
-          return true;
-        } catch (sdkErr) {
-          console.warn(`SDK root setDoc timed out/failed (${rootCollection}/${docId}), trying direct REST:`, sdkErr);
-          const restPath = `${encodeURIComponent(rootCollection)}/${encodeURIComponent(docId)}`;
-          const restRes = await patchFirestoreDocDirect(restTarget, restPath, cleanData, 8500);
-          return restRes.ok;
+      ): Promise<DirectRestResult> => {
+        const safePayload = rootCollection === 'shops' ? sanitizeShopDocPayload(cleanData) : sanitizeForFirestore(cleanData);
+        const restPath = `${encodeURIComponent(rootCollection)}/${encodeURIComponent(docId)}`;
+
+        if (!preferDirectRest) {
+          try {
+            await withTimeout(
+              setDoc(doc(db, rootCollection, docId), safePayload, { merge: true }),
+              6500,
+              `setDoc:${rootCollection}/${docId}`
+            );
+            return { ok: true, status: 200, transient: false };
+          } catch (sdkErr: any) {
+            if (isTimeoutErr(sdkErr)) {
+              preferDirectRest = true;
+            }
+            console.warn(`SDK root setDoc failed (${rootCollection}/${docId}), trying direct REST:`, sdkErr?.code || sdkErr?.message || sdkErr);
+          }
         }
+
+        const restRes = await patchFirestoreDocDirect(restTarget, restPath, safePayload, 8500);
+        if (!restRes.ok) {
+          lastFailureCode = restRes.code || lastFailureCode;
+          lastFailureStatus = restRes.status || lastFailureStatus;
+          console.warn(`Direct REST root write failed (${rootCollection}/${docId}):`, restRes.status, restRes.code, restRes.error);
+        }
+        return restRes;
       };
 
       // 1. Flush pending queue items in fast parallel batches (chunks of 5)
@@ -1836,24 +2060,51 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       const BATCH_SIZE = 5;
       for (let i = 0; i < currentQueue.length; i += BATCH_SIZE) {
+        // Refresh watchdog timestamp as each batch advances so slow connections never prematurely unlock
+        syncStartedAtRef.current = Date.now();
         const chunk = currentQueue.slice(i, i + BATCH_SIZE);
         await Promise.all(
           chunk.map(async (item) => {
-            if (!item || !item.id || !item.collection || !item.docId) return;
-            let ok = false;
-            if (item.type === 'save' && item.data) {
-              const cleanData = sanitizeForFirestore({
-                ...item.data,
-                shop_id: currentShopId
-              });
-              ok = await writeDocResilient(item.collection, item.docId, cleanData);
-            } else if (item.type === 'delete') {
-              ok = await deleteDocResilient(item.collection, item.docId);
-            } else {
-              ok = true;
+            // Auto-prune malformed/poisoned queue entries so they can NEVER block valid entries forever
+            if (
+              !item ||
+              !item.id ||
+              !item.collection ||
+              !item.docId ||
+              !ALLOWED_SHOP_SUBCOLLECTIONS.has(item.collection) ||
+              (item.type === 'save' && (!item.data || typeof item.data !== 'object'))
+            ) {
+              if (item?.id) {
+                flushedIds.add(item.id);
+                flushedAtMap[item.id] = Number(item.timestamp || Date.now());
+              }
+              return;
             }
 
-            if (ok) {
+            const normalizedDocId = isValidFirestoreDocId(item.docId)
+              ? item.docId
+              : String(item.docId).replace(/[^a-zA-Z0-9._@-]/g, '_').slice(0, 128);
+            if (!isValidFirestoreDocId(normalizedDocId)) {
+              flushedIds.add(item.id);
+              flushedAtMap[item.id] = Number(item.timestamp || Date.now());
+              return;
+            }
+
+            let res: DirectRestResult = { ok: false };
+            if (item.type === 'save' && item.data) {
+              const cleanData = sanitizeShopDocPayload({
+                ...item.data,
+                id: item.data.id || normalizedDocId,
+                shop_id: currentShopId
+              });
+              res = await writeDocResilient(item.collection, normalizedDocId, cleanData);
+            } else if (item.type === 'delete') {
+              res = await deleteDocResilient(item.collection, normalizedDocId);
+            } else {
+              res = { ok: true };
+            }
+
+            if (res.ok) {
               flushedIds.add(item.id);
               flushedAtMap[item.id] = Number(item.timestamp || Date.now());
               touchedCollections.add(item.collection);
@@ -1864,28 +2115,27 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
 
       // Safely remove ONLY items that actually succeeded (preserving failed items & any new edits added mid-sync)
-      let remainingUnsyncedCount = 0;
-      setPendingSyncQueue(prev => {
-        const nextQueue = prev.filter(p => {
-          if (!p || !p.id) return false;
-          if (!flushedIds.has(p.id)) return true;
-          const flushedTs = flushedAtMap[p.id] || 0;
-          return Number(p.timestamp || 0) > flushedTs;
-        });
-        remainingUnsyncedCount = nextQueue.length;
-        pendingSyncQueueRef.current = nextQueue;
-        try {
-          localStorage.setItem(`taj_pos_pending_queue_${currentShopId}`, JSON.stringify(nextQueue));
-        } catch {}
-        syncStateToBgIdb(nextQueue, false);
-        return nextQueue;
-      });
-      // Also compute remainingUnsyncedCount synchronously from currentQueue in case React batches the state updater
-      remainingUnsyncedCount = pendingSyncQueueRef.current.filter(p => {
+      const mergedPostFlushMap = new Map<string, PendingSyncItem>();
+      for (const qItem of currentQueue) {
+        if (qItem && qItem.id) mergedPostFlushMap.set(qItem.id, qItem);
+      }
+      for (const liveItem of pendingSyncQueueRef.current) {
+        if (liveItem && liveItem.id) mergedPostFlushMap.set(liveItem.id, liveItem);
+      }
+      const nextQueueAfterFlush = Array.from(mergedPostFlushMap.values()).filter(p => {
         if (!p || !p.id) return false;
         if (!flushedIds.has(p.id)) return true;
-        return Number(p.timestamp || 0) > (flushedAtMap[p.id] || 0);
-      }).length;
+        const flushedTs = flushedAtMap[p.id] || 0;
+        return Number(p.timestamp || 0) > flushedTs;
+      });
+      const remainingUnsyncedCount = nextQueueAfterFlush.length;
+      pendingSyncQueueRef.current = nextQueueAfterFlush;
+      try {
+        localStorage.setItem(`taj_pos_pending_queue_${currentShopId}`, JSON.stringify(nextQueueAfterFlush));
+      } catch {}
+      setPendingSyncQueue(nextQueueAfterFlush);
+      // Preserve waitingForOnline = true in IndexedDB whenever items remain unsynced so SW flushes if phone locks!
+      syncStateToBgIdb(nextQueueAfterFlush, remainingUnsyncedCount > 0);
 
       // 1b. Flush any pending offline Admin Profile changes (Shop Name, Owner Name, Phone, Address)
       let profileStillPending = false;
@@ -1894,27 +2144,27 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         if (rawPendingProfile) {
           const pendingProfile = JSON.parse(rawPendingProfile);
           if (pendingProfile && typeof pendingProfile === 'object') {
-            const shopOk = await patchRootDocResilient(
+            const shopRes = await patchRootDocResilient(
               'shops',
               currentShopId,
-              sanitizeForFirestore({
-                shop_name: pendingProfile.shop_name,
-                owner_name: pendingProfile.owner_name,
+              sanitizeShopDocPayload({
+                shop_name: String(pendingProfile.shop_name || '').slice(0, 120),
+                owner_name: String(pendingProfile.owner_name || '').slice(0, 120),
                 owner_name_updated_date: pendingProfile.owner_name_updated_date,
-                phone: pendingProfile.phone,
-                address: pendingProfile.address,
+                phone: String(pendingProfile.phone || '').slice(0, 32),
+                address: String(pendingProfile.address || '').slice(0, 240),
                 last_login: new Date().toISOString()
               })
             );
 
-            if (shopOk) {
+            if (shopRes.ok) {
               const cleanEmail = (pendingProfile.owner_email || currentShop?.owner_email || currentUser?.email || '').toLowerCase().trim();
               const cleanEmailKey = cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
               if (cleanEmailKey) {
                 await patchRootDocResilient(
                   'account_registry',
                   cleanEmailKey,
-                  sanitizeForFirestore({
+                  sanitizeShopDocPayload({
                     shop_name: pendingProfile.shop_name,
                     owner_name: pendingProfile.owner_name
                   })
@@ -1924,7 +2174,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
               await patchRootDocResilient(
                 'users',
                 currentShopId,
-                sanitizeForFirestore({
+                sanitizeShopDocPayload({
                   displayName: pendingProfile.owner_name,
                   shopName: pendingProfile.shop_name,
                   updatedAt: new Date().toISOString()
@@ -1967,8 +2217,9 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         }
       }
 
-      // 2b. Check if ALL local uploads failed (network unreachable/stalled):
-      // Do NOT deduct bypass count, do NOT update lastSyncTime, and schedule a 30s retry instead of 15m/30m!
+      // 2b. Check if ALL local uploads failed:
+      // Do NOT deduct bypass count, do NOT update lastSyncTime, keep waitingForOnline armed for SW,
+      // schedule a 30s retry, and show an accurate diagnostic message!
       if (hadLocalUploadWork && flushedCount === 0 && (remainingUnsyncedCount > 0 || profileStillPending)) {
         setFirebaseSyncStatus('offline');
         scheduleShortRetrySync(30000);
@@ -1977,11 +2228,27 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           registerPeriodic: true,
           intervalMinutes: autoSyncIntervalMinutes
         });
+
+        let diagnosticUrdu =
+          'نیٹ ورک سست ہونے کی وجہ سے سنک مکمل نہ ہو سکا — 30 سیکنڈ بعد خودکار دوبارہ کوشش ہوگی (بائی پاس کاؤنٹ محفوظ رہا)';
+        if (lastFailureStatus === 403 || lastFailureCode === 'PERMISSION_DENIED') {
+          diagnosticUrdu =
+            'کلاؤڈ پرمیشن ایرر (403) کی وجہ سے سنک رکا ہوا ہے — براہ کرم گوگل اکاؤنٹ سے دوبارہ لاگ ان کر کے کوشش کریں (بائی پاس کاؤنٹ محفوظ رہا)';
+        } else if (lastFailureStatus === 401 || lastFailureCode === 'UNAUTHENTICATED') {
+          diagnosticUrdu =
+            'سیشن کی مدت ختم ہونے (401) کی وجہ سے سنک نہ ہو سکا — 30 سیکنڈ میں دوبارہ کوشش ہوگی (بائی پاس کاؤنٹ محفوظ رہا)';
+        } else if (lastFailureStatus === 429 || lastFailureCode === 'RESOURCE_EXHAUSTED') {
+          diagnosticUrdu =
+            'کلاؤڈ کوٹہ عارضی طور پر مصروف ہے (429) — 30 سیکنڈ بعد خودکار دوبارہ کوشش ہوگی (بائی پاس کاؤنٹ محفوظ رہا)';
+        } else if (lastFailureStatus === 400 || lastFailureCode === 'INVALID_ARGUMENT') {
+          diagnosticUrdu =
+            'ڈیٹا فارمیٹ ایرر (400) — براہ کرم انٹری چیک کر کے دوبارہ سنک کریں (بائی پاس کاؤنٹ محفوظ رہا)';
+        }
+
         return {
           success: false,
           count: 0,
-          error:
-            'نیٹ ورک سست ہونے کی وجہ سے سنک مکمل نہ ہو سکا — 30 سیکنڈ بعد خودکار دوبارہ کوشش ہوگی (بائی پاس کاؤنٹ محفوظ رہا)'
+          error: diagnosticUrdu
         };
       }
 
@@ -1994,12 +2261,13 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           currentUser?.name || currentUser?.username || currentUser?.role || 'User',
           { skipCloudWrite: true }
         );
-        setShopBypassStatus(superAdminService.getShopDailyBypassStatus(currentShopId));
+        const latestBypass = superAdminService.getShopDailyBypassStatus(currentShopId);
+        setShopBypassStatus(latestBypass);
         consumedBypassRemaining = bypassCheck.remainingCount;
         pendingBypassCloudState = bypassCheck.nextState;
       }
 
-      // 4. Broadcast Cross-Device Sync Pulse on `shops/{currentShopId}` (with SDK timeout + REST fallback)
+      // 4. Broadcast Cross-Device Sync Pulse + Daily Bypass State on `shops/{currentShopId}`
       if (flushedCount > 0 || touchedCollections.size > 0) {
         const pulseTs = Date.now();
         const nextColMap: Record<string, number> = {
@@ -2021,7 +2289,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         await patchRootDocResilient(
           'shops',
           currentShopId,
-          sanitizeForFirestore({
+          sanitizeShopDocPayload({
             last_data_sync_at: pulseTs,
             last_data_sync_by: currentUser?.name || currentUser?.username || currentUser?.role || 'user',
             collection_sync_at: nextColMap,
@@ -2041,7 +2309,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           await patchRootDocResilient(
             'shops',
             currentShopId,
-            sanitizeForFirestore({ daily_bypass_state: pendingBypassCloudState })
+            sanitizeShopDocPayload({ daily_bypass_state: pendingBypassCloudState })
           );
         }
       }
@@ -2058,8 +2326,22 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // Reset full package timer ONLY when all pending items are cleared; otherwise retry remaining items in 30s!
       if (remainingUnsyncedCount > 0 || profileStillPending) {
         scheduleShortRetrySync(30000);
-      } else if (manual || isTimerExpired || flushedCount > 0) {
-        resetSyncTimer30m();
+        void registerBackgroundSync({
+          registerOneShot: true,
+          registerPeriodic: true,
+          intervalMinutes: autoSyncIntervalMinutes
+        });
+      } else {
+        waitingForOnlineSyncRef.current = false;
+        setIsWaitingForOnlineSync(false);
+        try {
+          localStorage.setItem(`taj_pos_waiting_online_${currentShopId}`, 'false');
+        } catch {}
+        if (manual || isTimerExpired || flushedCount > 0) {
+          resetSyncTimer30m();
+        } else {
+          syncStateToBgIdb(nextQueueAfterFlush, false);
+        }
       }
 
       return {
@@ -2195,6 +2477,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     // 3. When device comes back online (WiFi or SIM mobile data):
     //    Reconcile any SW background flush, then immediately upload remaining pending entries!
+    //    Note: Keep waitingForOnline armed in storage until syncNow actually clears the queue.
     const handleOnlineEvent = () => {
       waitingForOnlineSyncRef.current = false;
       setIsWaitingForOnlineSync(false);
@@ -2215,13 +2498,25 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     };
 
-    // 3c. When user leaves/minimizes/closes app: persist latest queue to IDB & arm OS Background Sync
-    //     When user returns to app: reconcile SW uploads & flush immediately if timer expired or was offline
+    // 3c. When user leaves/minimizes/locks phone: persist latest queue to IDB, arm OS Background Sync,
+    //     and hand off to SW if offline-recovered or timer already expired.
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-        syncStateToBgIdb();
-        if (pendingSyncQueueRef.current.length > 0) {
-          void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
+        const hasPending = pendingSyncQueueRef.current.length > 0;
+        const shouldWaitFlag =
+          waitingForOnlineSyncRef.current ||
+          !navigator.onLine ||
+          (hasPending && Date.now() >= nextSyncAtRef.current);
+        syncStateToBgIdb(undefined, shouldWaitFlag);
+        if (hasPending) {
+          void registerBackgroundSync({
+            registerOneShot: true,
+            registerPeriodic: true,
+            intervalMinutes: superAdminService.getShopEffectiveSyncPolicy(currentShopId).autoSyncIntervalMinutes
+          });
+          if (navigator.onLine && shouldWaitFlag) {
+            triggerSwBackgroundSyncCheck(currentShopId);
+          }
         }
       } else if (document.visibilityState === 'visible') {
         void (async () => {
@@ -2242,9 +2537,21 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
 
     const handlePageHide = () => {
-      syncStateToBgIdb();
-      if (pendingSyncQueueRef.current.length > 0) {
-        void registerBackgroundSync({ registerOneShot: true, registerPeriodic: true });
+      const hasPending = pendingSyncQueueRef.current.length > 0;
+      const shouldWaitFlag =
+        waitingForOnlineSyncRef.current ||
+        !navigator.onLine ||
+        (hasPending && Date.now() >= nextSyncAtRef.current);
+      syncStateToBgIdb(undefined, shouldWaitFlag);
+      if (hasPending) {
+        void registerBackgroundSync({
+          registerOneShot: true,
+          registerPeriodic: true,
+          intervalMinutes: superAdminService.getShopEffectiveSyncPolicy(currentShopId).autoSyncIntervalMinutes
+        });
+        if (navigator.onLine && shouldWaitFlag) {
+          triggerSwBackgroundSyncCheck(currentShopId);
+        }
       }
     };
 
@@ -2301,7 +2608,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     // 4. 1-Second Heartbeat Watcher + Stuck-Sync Watchdog:
-    //    - Auto-recovers if any sync lock exceeds 25s
+    //    - Auto-recovers if any sync lock exceeds 45s without progress
     //    - If offline: keeps checking when device comes online
     //    - If online & was waiting for online: triggers smart check (0 requests if no pending data)
     //    - If online & timer completed: triggers fresh syncNowRef.current(false)
@@ -2309,7 +2616,7 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const nowMs = Date.now();
 
       // Stuck-Sync Watchdog: guarantee button never stays frozen on "Syncing..."
-      if (isSyncingRef.current && syncStartedAtRef.current > 0 && nowMs - syncStartedAtRef.current > 25000) {
+      if (isSyncingRef.current && syncStartedAtRef.current > 0 && nowMs - syncStartedAtRef.current > 45000) {
         isSyncingRef.current = false;
         syncStartedAtRef.current = 0;
         setIsSyncing(false);
@@ -2459,7 +2766,16 @@ export const POSProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setStaffAccounts(readList('staff_accounts', []));
 
       const savedQueue = localStorage.getItem(`taj_pos_pending_queue_${shopId}`);
-      setPendingSyncQueue(savedQueue ? JSON.parse(savedQueue) : []);
+      const parsedQueue: PendingSyncItem[] = savedQueue ? JSON.parse(savedQueue) : [];
+      pendingSyncQueueRef.current = Array.isArray(parsedQueue) ? parsedQueue : [];
+      setPendingSyncQueue(pendingSyncQueueRef.current);
+
+      const savedWaiting = localStorage.getItem(`taj_pos_waiting_online_${shopId}`) === 'true';
+      const effectiveWaiting =
+        (typeof navigator !== 'undefined' && !navigator.onLine) ||
+        (savedWaiting && pendingSyncQueueRef.current.length > 0);
+      waitingForOnlineSyncRef.current = effectiveWaiting;
+      setIsWaitingForOnlineSync(effectiveWaiting);
 
       const savedSyncTime = localStorage.getItem(`taj_pos_last_sync_${shopId}`);
       if (savedSyncTime) {

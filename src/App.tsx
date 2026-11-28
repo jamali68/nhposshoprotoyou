@@ -88,7 +88,7 @@ const MainAppContent: React.FC = () => {
   } | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [showStatusToast, setShowStatusToast] = useState<boolean>(false);
-  const [topSyncFeedback, setTopSyncFeedback] = useState<{ text: string; isNoPending?: boolean } | null>(null);
+  const [topSyncFeedback, setTopSyncFeedback] = useState<{ text: string; isNoPending?: boolean; isError?: boolean } | null>(null);
   const [showInstallGuide, setShowInstallGuide] = useState<boolean>(false);
   const [showExitToast, setShowExitToast] = useState<boolean>(false);
   const [showSuperAdminAuthModal, setShowSuperAdminAuthModal] = useState<boolean>(false);
@@ -748,10 +748,11 @@ const MainAppContent: React.FC = () => {
                       } else {
                         setTopSyncFeedback({
                           text: res.error || 'اپڈیٹ نہیں ہو سکا',
-                          isNoPending: false
+                          isNoPending: false,
+                          isError: true
                         });
                       }
-                      setTimeout(() => setTopSyncFeedback(null), 4500);
+                      setTimeout(() => setTopSyncFeedback(null), res.success ? 4500 : 6500);
                     }}
                     className={`w-full mt-1 py-2 px-3.5 rounded-xl text-xs font-bold flex items-center justify-between gap-2 transition-all ${
                       isOnline && dailyBypassRemaining > 0
@@ -792,7 +793,9 @@ const MainAppContent: React.FC = () => {
                   {topSyncFeedback && (
                     <div
                       className={`mt-1.5 py-1.5 px-2.5 rounded-xl text-[10.5px] font-bold text-center border animate-in fade-in ${
-                        topSyncFeedback.isNoPending
+                        topSyncFeedback.isError
+                          ? 'bg-rose-50 border-rose-200 text-rose-800'
+                          : topSyncFeedback.isNoPending
                           ? 'bg-amber-50 border-amber-200 text-amber-800'
                           : 'bg-emerald-50 border-emerald-200 text-emerald-800'
                       }`}

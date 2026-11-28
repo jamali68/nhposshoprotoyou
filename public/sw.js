@@ -1,9 +1,9 @@
 /**
  * Service Worker for NH POS Shop PWA
- * Version: v18.2.2
+ * Version: v18.2.3
  * Smart Background Pre-Download, Non-Disruptive Updates & True Background Cloud Sync (GitHub Pages + Netlify)
  */
-const SW_VERSION = 'v18.2.2';
+const SW_VERSION = 'v18.2.3';
 const BUILD_ID = '/* __BUILD_ID__ */';
 const SMART_CACHE_PREFIX = 'nh-pos-smart-';
 const CACHE_NAME =
@@ -376,8 +376,8 @@ self.addEventListener('message', (event) => {
     event.ports[0]?.postMessage({ version: SW_VERSION, cacheName: CACHE_NAME });
     return;
   }
-  if (event.data && event.data.type === 'CHECK_BG_SYNC') {
-    event.waitUntil(runAllBackgroundSyncs('message'));
+  if (event.data && (event.data.type === 'CHECK_BG_SYNC' || event.data.type === 'TRIGGER_BG_SYNC_CHECK')) {
+    event.waitUntil(runAllBackgroundSyncs('message_check'));
   }
 });
 
@@ -453,7 +453,23 @@ function putBgRecordSw(db, record) {
   });
 }
 
-function cleanValueForFirestoreRest(val) {
+const ALLOWED_SHOP_SUBCOLLECTIONS_SW = new Set([
+  'daily_transactions',
+  'back_cash_transactions',
+  'wholesaler_bills',
+  'customer_bills',
+  'easyload_records',
+  'bottle_items',
+  'stock_transactions',
+  'staff_accounts',
+  'edit_history',
+  'deleted_history',
+  'auth_audit_logs'
+]);
+
+function cleanValueForFirestoreRest(val, depth, insideArray) {
+  const curDepth = typeof depth === 'number' ? depth : 0;
+  if (curDepth > 16) return undefined;
   if (val === undefined || typeof val === 'function' || typeof val === 'symbol') {
     return undefined;
   }
@@ -465,9 +481,16 @@ function cleanValueForFirestoreRest(val) {
     return val;
   }
   if (Array.isArray(val)) {
+    if (insideArray) {
+      try {
+        return JSON.stringify(val);
+      } catch {
+        return '[]';
+      }
+    }
     const out = [];
     for (let i = 0; i < val.length; i++) {
-      const cleaned = cleanValueForFirestoreRest(val[i]);
+      const cleaned = cleanValueForFirestoreRest(val[i], curDepth + 1, true);
       if (cleaned !== undefined) out.push(cleaned);
     }
     return out;
@@ -477,12 +500,30 @@ function cleanValueForFirestoreRest(val) {
     const keys = Object.keys(val);
     for (let i = 0; i < keys.length; i++) {
       const k = keys[i];
-      const cleaned = cleanValueForFirestoreRest(val[k]);
+      if (!k || String(k).trim() === '') continue;
+      const cleaned = cleanValueForFirestoreRest(val[k], curDepth + 1, false);
       if (cleaned !== undefined) out[k] = cleaned;
     }
     return out;
   }
   return String(val);
+}
+
+function sanitizeShopPayloadSw(rawData, shopId) {
+  const cleanData = cleanValueForFirestoreRest(
+    Object.assign({}, rawData || {}, { shop_id: shopId }),
+    0,
+    false
+  );
+  if (cleanData && typeof cleanData === 'object' && !Array.isArray(cleanData)) {
+    if (cleanData.role === 'super_admin') {
+      cleanData.role = 'admin';
+    }
+    if (cleanData.isSuperAdmin === true) {
+      delete cleanData.isSuperAdmin;
+    }
+  }
+  return cleanData;
 }
 
 function toFirestoreRestValue(val) {
@@ -549,10 +590,40 @@ function buildFirestoreDocUrl(record, docPath) {
   );
 }
 
+async function ensureParentShopDocSw(record) {
+  if (!record || !record.shopId) return false;
+  const docPath = 'shops/' + encodeURIComponent(record.shopId);
+  const safeShopName = String(record.shopName || 'NH POS Shop').trim().slice(0, 120) || 'NH POS Shop';
+  const safeOwnerName = String(record.ownerName || record.syncBy || 'Admin').trim().slice(0, 120) || 'Admin';
+  const fields = {
+    shop_name: { stringValue: safeShopName },
+    owner_name: { stringValue: safeOwnerName },
+    last_login: { stringValue: new Date().toISOString() }
+  };
+  const url =
+    buildFirestoreDocUrl(record, docPath) +
+    '?updateMask.fieldPaths=shop_name&updateMask.fieldPaths=owner_name&updateMask.fieldPaths=last_login&key=' +
+    encodeURIComponent(record.apiKey);
+
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), 8000) : null;
+  try {
+    const resp = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields }),
+      ...(controller ? { signal: controller.signal } : {})
+    });
+    if (timer) clearTimeout(timer);
+    return resp.ok;
+  } catch {
+    if (timer) clearTimeout(timer);
+    return false;
+  }
+}
+
 async function patchFirestoreDocSw(record, collectionName, docId, rawData) {
-  const cleanData = cleanValueForFirestoreRest(
-    Object.assign({}, rawData, { shop_id: record.shopId })
-  );
+  const cleanData = sanitizeShopPayloadSw(rawData, record.shopId);
   if (!cleanData || typeof cleanData !== 'object') {
     return { ok: true, transient: false };
   }
@@ -712,15 +783,16 @@ async function flushShopRecordInBackground(db, record, reason) {
     return { transientFailure: false };
   }
 
-  // If app is minimized (hidden tab still alive) and neither offline-recovered nor 30m expired:
-  // Wait for 30m timer or app close unless periodic sync says timer expired.
-  if (hasAnyWindow && !isWaitingForOnline && !isTimerExpired) {
+  // If app is minimized/locked (hidden tab still alive in memory):
+  // - Always flush immediately on OS 'sync' reconnect event (internet just returned while phone locked!)
+  // - Also flush if waitingForOnline or timer expired!
+  if (hasAnyWindow && !isWaitingForOnline && !isTimerExpired && reason !== 'sync') {
     return { transientFailure: false };
   }
 
-  // If app appears completely closed (0 windows) with unexpired timer & not offline-recovered,
+  // If app appears completely closed (0 windows) with unexpired timer & not offline-recovered & not OS sync,
   // wait 1.5s briefly so normal page reloads don't trigger a premature flush.
-  if (!hasAnyWindow && !isWaitingForOnline && !isTimerExpired) {
+  if (!hasAnyWindow && !isWaitingForOnline && !isTimerExpired && reason !== 'sync') {
     await new Promise((r) => setTimeout(r, 1500));
     windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     hasVisibleWindow = windowClients.some((c) => c.visibilityState === 'visible');
@@ -737,17 +809,48 @@ async function flushShopRecordInBackground(db, record, reason) {
   let writesCount = 0;
   let deletesCount = 0;
   let transientFailure = false;
+  let parentBootstrapped = false;
 
   for (let i = 0; i < record.queue.length; i++) {
     const item = record.queue[i];
-    if (!item || !item.id || !item.collection || !item.docId) continue;
+    if (
+      !item ||
+      !item.id ||
+      !item.collection ||
+      !item.docId ||
+      !ALLOWED_SHOP_SUBCOLLECTIONS_SW.has(item.collection)
+    ) {
+      if (item && item.id) {
+        flushedIds.push(item.id);
+        flushedAtMap[item.id] = Number(item.timestamp || Date.now());
+      }
+      continue;
+    }
+
+    const safeDocId = /^[a-zA-Z0-9._@-]+$/.test(String(item.docId))
+      ? String(item.docId).slice(0, 128)
+      : String(item.docId).replace(/[^a-zA-Z0-9._@-]/g, '_').slice(0, 128);
 
     let res = { ok: false, transient: false };
     if (item.type === 'save' && item.data) {
-      res = await patchFirestoreDocSw(record, item.collection, item.docId, item.data);
+      res = await patchFirestoreDocSw(record, item.collection, safeDocId, item.data);
+      if (!res.ok && res.status === 403 && !parentBootstrapped) {
+        parentBootstrapped = true;
+        const created = await ensureParentShopDocSw(record);
+        if (created) {
+          res = await patchFirestoreDocSw(record, item.collection, safeDocId, item.data);
+        }
+      }
       if (res.ok) writesCount += 1;
     } else if (item.type === 'delete') {
-      res = await deleteFirestoreDocSw(record, item.collection, item.docId);
+      res = await deleteFirestoreDocSw(record, item.collection, safeDocId);
+      if (!res.ok && res.status === 403 && !parentBootstrapped) {
+        parentBootstrapped = true;
+        const created = await ensureParentShopDocSw(record);
+        if (created) {
+          res = await deleteFirestoreDocSw(record, item.collection, safeDocId);
+        }
+      }
       if (res.ok) deletesCount += 1;
     } else {
       res = { ok: true, transient: false };
@@ -793,14 +896,14 @@ async function flushShopRecordInBackground(db, record, reason) {
       Math.min(360, Math.round(Number(latestRecord.autoSyncIntervalMinutes || record.autoSyncIntervalMinutes || 30)))
     );
     const nextSyncAt =
-      remainingQueue.length > 0 && transientFailure
+      remainingQueue.length > 0
         ? pulseTs + 30 * 1000
         : pulseTs + intervalMins * 60 * 1000;
     const updatedRecord = Object.assign({}, latestRecord, {
       queue: remainingQueue,
       flushedIds: Array.from(mergedFlushedIdsSet),
       flushedAtMap: mergedFlushedAtMap,
-      waitingForOnline: remainingQueue.length > 0 && transientFailure,
+      waitingForOnline: remainingQueue.length > 0,
       lastBgSyncAt: pulseTs,
       nextSyncAt,
       updatedAt: pulseTs
@@ -812,18 +915,29 @@ async function flushShopRecordInBackground(db, record, reason) {
     const latestClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of latestClients) {
       try {
-          client.postMessage({
-            type: 'BG_SYNC_COMPLETED',
-            shopId: record.shopId,
-            flushedIds,
-            flushedCount: flushedIds.length,
-            writesCount,
-            deletesCount,
-            syncedAt: pulseTs,
-            nextSyncAt
-          });
+        client.postMessage({
+          type: 'BG_SYNC_COMPLETED',
+          shopId: record.shopId,
+          flushedIds,
+          flushedCount: flushedIds.length,
+          writesCount,
+          deletesCount,
+          syncedAt: pulseTs,
+          nextSyncAt
+        });
       } catch {}
     }
+  } else if (transientFailure) {
+    // Keep waitingForOnline armed so next OS sync or reopen flushes immediately
+    const latestRecord = (await getBgRecordSw(db, record.shopId)) || record;
+    await putBgRecordSw(
+      db,
+      Object.assign({}, latestRecord, {
+        waitingForOnline: true,
+        nextSyncAt: Date.now() + 30 * 1000,
+        updatedAt: Date.now()
+      })
+    );
   }
 
   return { transientFailure };

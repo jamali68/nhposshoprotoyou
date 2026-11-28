@@ -1217,14 +1217,39 @@ export const superAdminService = {
       const prevRaw = localStorage.getItem(`taj_shop_bypass_state_${shopId}`);
       const prevParsed: ShopDailyBypassState | null = prevRaw ? JSON.parse(prevRaw) : null;
 
+      const prevSameDay = Boolean(prevParsed && prevParsed.date === today);
+      const incomingSameDay = Boolean(incoming && incoming.date === today);
+
+      const prevUsed = prevSameDay ? Math.max(0, Math.round(Number(prevParsed?.usedCount) || 0)) : 0;
+      const incomingUsed = incomingSameDay
+        ? Math.max(0, Math.round(Number(incoming?.usedCount) || 0))
+        : 0;
+
+      const prevAtMs = prevSameDay && prevParsed?.lastBypassedAt ? Date.parse(prevParsed.lastBypassedAt) || 0 : 0;
+      const incomingAtMs =
+        incomingSameDay && incoming?.lastBypassedAt ? Date.parse(incoming.lastBypassedAt) || 0 : 0;
+
+      // Honor an explicit newer "Super Admin Reset" back to 0; otherwise merge forward with Math.max
+      // so stale/cached snapshots can NEVER roll back a freshly decremented bypass count!
+      const isNewerAdminReset =
+        incomingSameDay &&
+        incoming?.lastBypassedBy === 'Super Admin Reset' &&
+        incomingUsed === 0 &&
+        incomingAtMs >= prevAtMs;
+
+      const resolvedUsedCount = isNewerAdminReset
+        ? 0
+        : incomingSameDay
+        ? Math.max(prevUsed, incomingUsed)
+        : prevUsed;
+
+      const useIncomingMeta =
+        isNewerAdminReset ||
+        (incomingSameDay && (incomingAtMs >= prevAtMs || incomingUsed > prevUsed));
+
       const nextState: ShopDailyBypassState = {
-        date: incoming?.date === today ? today : today,
-        usedCount:
-          incoming && incoming.date === today
-            ? Math.max(0, Math.round(Number(incoming.usedCount) || 0))
-            : prevParsed && prevParsed.date === today
-            ? prevParsed.usedCount
-            : 0,
+        date: today,
+        usedCount: resolvedUsedCount,
         dailyLimit:
           typeof shopDocOverrides?.daily_manual_bypass_limit === 'number'
             ? shopDocOverrides.daily_manual_bypass_limit
@@ -1239,8 +1264,8 @@ export const superAdminService = {
             : prevParsed?.autoSyncIntervalMinutes,
         packageType:
           shopDocOverrides?.package_type || incoming?.packageType || prevParsed?.packageType,
-        lastBypassedBy: incoming?.date === today ? incoming.lastBypassedBy : prevParsed?.lastBypassedBy,
-        lastBypassedAt: incoming?.date === today ? incoming.lastBypassedAt : prevParsed?.lastBypassedAt
+        lastBypassedBy: useIncomingMeta ? incoming?.lastBypassedBy : prevParsed?.lastBypassedBy,
+        lastBypassedAt: useIncomingMeta ? incoming?.lastBypassedAt : prevParsed?.lastBypassedAt
       };
 
       const nextRaw = JSON.stringify(nextState);
